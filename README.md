@@ -179,6 +179,12 @@ Thinking budgets map to Kiro's native `effort` field automatically:
 
 Details and the full JSON example: [docs/MODELS.md](docs/MODELS.md).
 
+> **Note:** OpenCode's per-agent thinking level (`--variant` / an agent's
+> `variant` in `oh-my-openagent.json`) isn't honored per agent by this
+> plugin — OpenCode consumes it upstream. Use the global `effort` key in
+> `kiro.json` instead. See
+> [Reasoning effort](docs/CONFIGURATION.md#reasoning-effort) for details.
+
 ## Troubleshooting
 
 Common issues — 403/AccessDeniedException with IAM Identity Center, "No

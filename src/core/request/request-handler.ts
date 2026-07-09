@@ -135,6 +135,28 @@ export class RequestHandler {
 
       const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
 
+      if (this.config.enable_log_effort_debug) {
+        try {
+          logger.log('[effort-debug] request effort resolution', {
+            model,
+            effectiveModel: sdkPrep.effectiveModel,
+            think,
+            budget,
+            resolvedEffort: sdkPrep.effort ?? 'undefined (not effort-capable or not thinking)',
+            inboundBodyKeys: Object.keys(body),
+            messagesCount: body.messages?.length,
+            reasoningSubtree: {
+              reasoningEffort: body.reasoningEffort,
+              reasoning_effort: body.reasoning_effort,
+              reasoning: body.reasoning,
+              providerOptions: body.providerOptions,
+              thinkingConfig: body.thinkingConfig,
+              providerOptionsThinkingConfig: body.providerOptions?.thinkingConfig
+            }
+          })
+        } catch (e) {}
+      }
+
       const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null
       if (apiTimestamp) {
         this.logSdkRequest(sdkPrep, acc, apiTimestamp)
