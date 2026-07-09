@@ -84,6 +84,14 @@ export const KiroConfigSchema = z.object({
   enable_log_api_request: z.boolean().default(false),
 
   /**
+   * Enable config-gated debug logging that records the inbound
+   * OpenAI-compatible request body shape (top-level keys, reasoning-related
+   * fields only — no message content) and the resolved Kiro effort for each
+   * request. Independent from `enable_log_api_request`; off by default.
+   */
+  enable_log_effort_debug: z.boolean().default(false),
+
+  /**
    * Default effort level for thinking models. Controls reasoning depth.
    * When set, this overrides the automatic budget-based mapping.
    * Values: 'low', 'medium', 'high', 'xhigh' (opus-4.7/4.8 only), 'max'
@@ -114,5 +122,6 @@ export const DEFAULT_CONFIG: KiroConfig = {
   usage_tracking_enabled: true,
   auto_sync_kiro_cli: true,
   enable_log_api_request: false,
+  enable_log_effort_debug: false,
   auto_effort_mapping: true
 }

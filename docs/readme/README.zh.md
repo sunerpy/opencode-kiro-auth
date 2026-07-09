@@ -162,6 +162,13 @@ Thinking budget 会自动映射到 Kiro 原生的 `effort` 字段：
 
 详情与完整 JSON 示例见 [docs/MODELS.md](../MODELS.md)。
 
+> **注意：** 推理强度（effort）通过 `kiro.json` 里的全局 `effort` 生效；按
+> agent 设置的思考等级（OpenCode 的 `--variant`，或 `oh-my-openagent.json`
+> 里某个 agent 的 `variant`）不会被本插件识别，因为 OpenCode 在上层就消费
+> 掉了这个信号，不会转发给插件。想控制推理强度，请使用全局 `effort`，或者
+> 给某个 agent 指定带 `-thinking` 后缀的模型。详见
+> [docs/CONFIGURATION.md](../CONFIGURATION.md#reasoning-effort)。
+
 ## 故障排查
 
 常见问题——IAM Identity Center 下的 403/AccessDeniedException、"No accounts"、

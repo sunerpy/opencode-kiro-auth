@@ -53,6 +53,77 @@ root [README](../README.md#configuration) for the short version.
   for the budget-to-effort table.
 - `enable_log_api_request`: Enable detailed API request logging.
 
+## Reasoning effort
+
+Kiro's reasoning depth is controlled by a global `effort` setting in
+`kiro.json`, not by OpenCode's per-agent thinking level. Read the
+[limitation](#limitation-per-agent-thinking-level-isnt-honored) below before
+trying to give different agents different reasoning depths.
+
+- `effort` (`low | medium | high | xhigh | max`, optional): sets Kiro's
+  reasoning effort for every request sent through the plugin. Leave it unset
+  to fall back to automatic budget-based mapping (below), or `medium` for
+  thinking-enabled requests with no budget set.
+- `auto_effort_mapping` (default `true`): when `effort` isn't set, this maps
+  OpenCode's thinking budget (`thinkingConfig.thinkingBudget` on a
+  `-thinking` model variant) to a Kiro effort level automatically. See the
+  budget table in
+  [docs/MODELS.md](MODELS.md#thinking-effort-configuration). Set to `false`
+  to disable the mapping and always fall back to `medium` unless `effort` is
+  explicit.
+
+### Which models support effort
+
+Effort only changes behavior on effort-capable models:
+
+- `claude-opus-4-5`, `claude-opus-4-6`, `claude-opus-4-6-1m`
+- `claude-sonnet-4-5`, `claude-sonnet-4-5-1m`, `claude-sonnet-4-6`,
+  `claude-sonnet-4-6-1m`
+- `claude-opus-4-7`, `claude-opus-4-8`
+
+`xhigh` is only honored on `claude-opus-4-7` and `claude-opus-4-8`; on every
+other effort-capable model it's clamped down to `max`. Any model outside
+this list (Haiku, the open-weight models, etc.) ignores `effort` entirely.
+
+### `-thinking` model ids
+
+Model ids ending in `-thinking` (e.g. `claude-opus-4-8-thinking`) trigger
+Kiro's reasoning mode directly, independent of the global `effort` key.
+Their `thinkingConfig.thinkingBudget` variant maps to an effort level
+through the same budget table (default `medium` when no budget is set). See
+[docs/MODELS.md](MODELS.md) for the full variant catalog.
+
+### Debugging effort resolution
+
+Set `enable_log_effort_debug` (default `false`) to log each request's
+inbound body shape (top-level keys and reasoning-related fields only, never
+message content) plus the effort level the plugin resolved, to
+`~/.config/opencode/kiro-logs/plugin.log`. This is independent from
+`enable_log_api_request`.
+
+### Limitation: per-agent thinking level isn't honored
+
+OpenCode lets you set a thinking/reasoning level per agent, either with
+`--variant high|low|max` on the CLI or a per-agent `variant` in
+`oh-my-openagent.json`. **This plugin cannot see that setting.** Capturing
+real inbound request bodies with `--variant high` and `--variant low`
+produced byte-identical payloads: a plain OpenAI-style
+`{model, max_tokens, messages, ...}` body with no `reasoningEffort`,
+`reasoning`, or `thinkingConfig` field anywhere. OpenCode's orchestration
+layer consumes the variant upstream and never forwards it to this plugin's
+custom `fetch`.
+
+In practice:
+
+- You can't give different agents different Kiro effort levels through
+  OpenCode's per-agent variant mechanism.
+- Use the global `effort` key in `kiro.json` (applies to every request
+  across every agent), or pin an agent to a `-thinking` model id with an
+  explicit budget in `provider.kiro-auth.models`, to control effort.
+- Genuinely per-agent effort would need to be implemented at the
+  OpenCode/omo orchestration layer, for example by mapping each agent to a
+  distinct model id (model choice *is* forwarded), not inside this plugin.
+
 ## Account selection strategy
 
 `account_selection_strategy` controls how the plugin picks which stored Kiro
