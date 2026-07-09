@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.2.0...v0.2.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* **auth:** remove-account no longer prompts for API key (self-drawn TTY menu, drop type:api) ([#2](https://github.com/sunerpy/opencode-kiro-auth/issues/2)) ([bf67356](https://github.com/sunerpy/opencode-kiro-auth/commit/bf673564ca34b2611368484445da80b199e805ce))
+
 ## [0.2.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.1.0...v0.2.0) (2026-07-09)
 
 
