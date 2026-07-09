@@ -60,19 +60,55 @@ export class AuthHandler {
     this.accountManager = am
   }
 
+  /** Summarize stored accounts for a label; guards limit=0 divide-by-zero. */
+  private buildUsageSummary(accounts: any[]): string {
+    if (!accounts.length) return ''
+
+    const CAP = 3
+    const parts = accounts.slice(0, CAP).map((acc) => {
+      const email = acc.email || 'unknown'
+      const used = acc.usedCount ?? 0
+      const limit = acc.limitCount ?? 0
+      if (limit > 0) {
+        const pct = Math.round((used / limit) * 100)
+        return `${email} ${used}/${limit} (${pct}%)`
+      }
+      return `${email} ${used} used`
+    })
+
+    const remaining = accounts.length - Math.min(accounts.length, CAP)
+    const body = remaining > 0 ? `${parts.join(' · ')} +${remaining} more` : parts.join(' · ')
+    return `[current: ${body}]`
+  }
+
+  /** Format a single account as a select-option label for the remove flow. */
+  private formatAccountOption(acc: any): string {
+    const email = acc.email || 'unknown'
+    const used = acc.usedCount ?? 0
+    const limit = acc.limitCount ?? 0
+    const region = acc.region || 'unknown-region'
+    const health = acc.isHealthy ? 'healthy' : 'unhealthy'
+    return `${email} — ${used}/${limit} (${region}, ${health})`
+  }
+
   getMethods(): AuthHook['methods'] {
     if (!this.accountManager) {
       return []
     }
+
+    const currentAccounts: any[] = this.accountManager.getAccounts?.() ?? []
+    const usageSummary = this.buildUsageSummary(currentAccounts)
+    const firstLabelBase = 'AWS Builder ID / IAM Identity Center'
+    const firstLabel = usageSummary ? `${firstLabelBase}  ${usageSummary}` : firstLabelBase
 
     const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)
 
     const configStartUrl = this.config.idc_start_url
     const configRegion = this.config.idc_region
 
-    return [
+    const methods: AuthHook['methods'] = [
       {
-        label: 'AWS Builder ID / IAM Identity Center',
+        label: firstLabel,
         type: 'oauth' as const,
         prompts: [
           {
@@ -166,5 +202,49 @@ export class AuthHandler {
         authorize: (inputs?: any) => idcMethod.authorize(inputs)
       }
     ]
+
+    const count = currentAccounts.length
+    const removeLabel =
+      count > 0 ? `Remove a Kiro account (${count} stored)` : 'Remove a Kiro account (none stored)'
+    const removeOptions = currentAccounts.map((acc) => ({
+      label: this.formatAccountOption(acc),
+      value: String(acc.id)
+    }))
+    removeOptions.push({ label: 'Cancel', value: '__cancel__' })
+
+    methods.push({
+      label: removeLabel,
+      type: 'api' as const,
+      prompts: [
+        {
+          type: 'select' as const,
+          key: 'account_id',
+          message: 'Select the account to remove',
+          options: removeOptions
+        }
+      ],
+      authorize: async (inputs?: Record<string, string>) => {
+        const accountId = inputs?.account_id
+        if (!accountId || accountId === '__cancel__') {
+          logger.log('Remove Kiro account: cancelled (no-op)')
+          return { type: 'failed' as const }
+        }
+
+        const target = currentAccounts.find((acc) => String(acc.id) === accountId)
+        if (!target) {
+          logger.warn('Remove Kiro account: id not found', { accountId })
+          return { type: 'failed' as const }
+        }
+
+        this.accountManager.removeAccount(target)
+        logger.log('Removed Kiro account', { email: target.email, accountId })
+
+        // Return 'failed' after the deletion side-effect: 'success' would make
+        // OpenCode persist a bogus auth.json credential for a removal action.
+        return { type: 'failed' as const }
+      }
+    })
+
+    return methods
   }
 }
