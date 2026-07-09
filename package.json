@@ -10,7 +10,8 @@
     "format": "prettier --write 'src/**/*.ts'",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "prepare": "husky"
+    "prepare": "husky",
+    "prepublishOnly": "bun run build"
   },
   "keywords": [
     "opencode",
@@ -26,8 +27,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tickernelz/opencode-kiro-auth.git"
+    "url": "git+https://github.com/sunerpy/opencode-kiro-auth.git"
   },
+  "bugs": {
+    "url": "https://github.com/sunerpy/opencode-kiro-auth/issues"
+  },
+  "homepage": "https://github.com/sunerpy/opencode-kiro-auth#readme",
   "publishConfig": {
     "access": "public"
   },
@@ -58,7 +63,8 @@
   "files": [
     "dist",
     "package.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "lint-staged": {
     "*.ts": [
