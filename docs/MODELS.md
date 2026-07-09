@@ -48,6 +48,22 @@ Haiku variants plus the open-weight models Kiro proxies):
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
+        "claude-sonnet-5": {
+          "name": "Claude Sonnet 5",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+        },
+        "claude-sonnet-5-thinking": {
+          "name": "Claude Sonnet 5 Thinking",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "variants": {
+            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
+            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
+            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
+          }
+        },
         "claude-haiku-4-5": {
           "name": "Claude Haiku 4.5",
           "limit": { "context": 200000, "output": 64000 },

@@ -45,6 +45,17 @@ describe('resolveKiroModel', () => {
     expect(() => resolveKiroModel('claude-opus-9')).toThrow('Unsupported model')
   })
 
+  test('resolves probe-confirmed Sonnet 5 to wire id claude-sonnet-5 (no dot suffix)', () => {
+    expect(resolveKiroModel('claude-sonnet-5')).toBe('claude-sonnet-5')
+    expect(resolveKiroModel('claude-sonnet-5-thinking')).toBe('claude-sonnet-5')
+    expect(resolveKiroModel('claude-sonnet-5-thinking')).toBe(resolveKiroModel('claude-sonnet-5'))
+  })
+
+  test('rejects the probe-rejected Sonnet 5 variants (.0 and -1m returned 400)', () => {
+    expect(() => resolveKiroModel('claude-sonnet-5.0')).toThrow('Unsupported model')
+    expect(() => resolveKiroModel('claude-sonnet-5-1m')).toThrow('Unsupported model')
+  })
+
   test('rejects removed qwen3-coder-480b slug', () => {
     expect(() => resolveKiroModel('qwen3-coder-480b')).toThrow(
       'Unsupported model: qwen3-coder-480b'

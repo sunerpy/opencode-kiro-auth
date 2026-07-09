@@ -107,9 +107,11 @@ and is the only class with direct access to the OpenCode `client` (used for
   - `auth.desktop.kiro.dev` refresh endpoint (`constants.ts:39,102`, `plugin/token.ts:11`).
   - `q.{region}.amazonaws.com` CodeWhisperer base URL (`constants.ts:41-42`).
   - `ORIGIN_AI_EDITOR: 'AI_EDITOR'` message origin (`constants.ts:49`, used in `history-builder.ts` and `plugin/request.ts`).
-- **Do not hardcode a wire id for "Sonnet 5"** or any unreleased model — every
-  entry in `MODEL_MAPPING` (`src/constants.ts:52`) must be backed by an
-  observed 200 response from the real API before being added.
+- **Do not hardcode a wire id for an unreleased model** — every entry in
+  `MODEL_MAPPING` (`src/constants.ts:52`) must be backed by an observed 200
+  response from the real API before being added. Sonnet 5 is now probe-confirmed
+  (wire id `claude-sonnet-5`, no dot suffix, HTTP 200 in us-east-1); its `.0` and
+  `-1m` variants returned 400 "Invalid model" and must NOT be added.
 
 ## 5. Build / test / dev
 
