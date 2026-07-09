@@ -231,14 +231,59 @@ export class AuthHandler {
   }
 
   /**
-   * Self-drawn account-removal flow returning method:'auto' + failed-callback in
-   * all cases, so the auth flow ends with no key prompt and NO credential written.
+   * Ends the flow after a successful deletion. If a healthy account (or any
+   * account with a usable access token) remains, returns a SUCCESS callback
+   * keyed on that account's token so OpenCode shows success and persists a
+   * still-valid credential. If nothing usable remains, falls back to a failed
+   * callback (nothing left to authorize with).
+   */
+  private endWithRemainingCredentialOrFailed(instructions: string):
+    | {
+        url: string
+        instructions: string
+        method: 'auto'
+        callback: () => Promise<{ type: 'success'; key: string }>
+      }
+    | {
+        url: string
+        instructions: string
+        method: 'auto'
+        callback: () => Promise<{ type: 'failed' }>
+      } {
+    const remaining: any[] = this.accountManager?.getAccounts?.() ?? []
+    const hasToken = (acc: any): boolean =>
+      typeof acc?.accessToken === 'string' && acc.accessToken.length > 0
+    const fallback =
+      remaining.find((acc) => acc?.isHealthy && hasToken(acc)) ??
+      remaining.find((acc) => hasToken(acc))
+
+    if (fallback) {
+      const key: string = fallback.accessToken
+      return {
+        url: '',
+        instructions: `${instructions} Using ${fallback.email || 'a remaining account'} for future requests.`,
+        method: 'auto' as const,
+        callback: async () => ({ type: 'success' as const, key })
+      }
+    }
+
+    return this.endWithoutCredential(
+      `${instructions} No accounts remain — run \`opencode auth login\` to reauthenticate.`
+    )
+  }
+
+  /**
+   * Self-drawn account-removal flow. No-op paths (cancel / no accounts /
+   * not-confirmed / non-TTY) end with method:'auto' + a failed callback so no
+   * key prompt appears and no bogus success is shown. The actual-deletion path
+   * ends with a remaining-account success (or failed if none remain), so a
+   * successful removal is not misreported as "Failed to authorize".
    */
   private async authorizeRemoveAccounts(): Promise<{
     url: string
     instructions: string
     method: 'auto'
-    callback: () => Promise<{ type: 'failed' }>
+    callback: () => Promise<{ type: 'failed' } | { type: 'success'; key: string }>
   }> {
     const accounts: any[] = this.accountManager?.getAccounts?.() ?? []
 
@@ -278,6 +323,6 @@ export class AuthHandler {
     this.accountManager.removeAccount(target)
     logger.log('Removed Kiro account', { email: target.email, accountId: String(target.id) })
     process.stdout.write('Account deleted.\n')
-    return this.endWithoutCredential(`Account deleted: ${target.email || 'unknown'}.`)
+    return this.endWithRemainingCredentialOrFailed(`Account deleted: ${target.email || 'unknown'}.`)
   }
 }
