@@ -172,8 +172,8 @@ Agent 贡献者请参阅 [AGENTS.md](../../AGENTS.md)，其中包含代码库架
 到本 fork 中。
 
 注意：上面致谢的 [AIClient-2-API](https://github.com/justlovemaki/AIClient-2-API)
-采用 **GPLv3** 强 copyleft 许可证——TODO：发布前需确认本项目是否有代码直接
-衍生自该项目，因为 GPLv3 与简单的 MIT 再分发并不兼容，需要额外的合规步骤。
+采用 **GPLv3** 强 copyleft 许可证。由于本项目的 Kiro 认证逻辑与请求模式衍生自
+该项目，为遵守 AIClient-2-API 的 copyleft 要求，本项目现已采用 **GPLv3** 许可证。
 
 ## 免责声明
 
@@ -185,4 +185,4 @@ Agent 贡献者请参阅 [AGENTS.md](../../AGENTS.md)，其中包含代码库架
 
 ## 许可证
 
-[MIT](../../LICENSE)
+本项目采用 GPLv3 许可证，详见 [LICENSE](../../LICENSE)。

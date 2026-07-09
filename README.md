@@ -188,10 +188,10 @@ Upstream fixes and improvements are tracked via the `upstream` git remote
 this fork as needed.
 
 Note: [AIClient-2-API](https://github.com/justlovemaki/AIClient-2-API) (credited
-above) is licensed under **GPLv3**, a strong copyleft license — TODO confirm
-before publish whether any code was directly derived from it, since GPLv3 is
-incompatible with straightforward MIT redistribution without additional
-compliance steps.
+above) is licensed under **GPLv3**, a strong copyleft license. Because this
+project's Kiro authentication logic and request patterns are derived from it,
+this project is now licensed under **GPLv3** as well, to comply with
+AIClient-2-API's copyleft requirements.
 
 ## Disclaimer
 
@@ -204,4 +204,4 @@ Feel free to open a PR to optimize this plugin further.
 
 ## License
 
-[MIT](LICENSE)
+GPL-3.0-or-later, see [LICENSE](LICENSE)
