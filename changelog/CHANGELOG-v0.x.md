@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.2.2...v0.3.0) (2026-07-09)
+
+
+### Features
+
+* **effort:** add enable_log_effort_debug flag + document per-agent effort limitation ([#7](https://github.com/sunerpy/opencode-kiro-auth/issues/7)) ([774adf8](https://github.com/sunerpy/opencode-kiro-auth/commit/774adf85de0d1804e71afd47afdbd2a352a41daf))
+
 ## [0.2.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.2.1...v0.2.2) (2026-07-09)
 
 
