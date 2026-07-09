@@ -39,7 +39,9 @@ export class RequestHandler {
   ) {
     this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
-    this.errorHandler = new ErrorHandler(config, accountManager, repository)
+    this.errorHandler = new ErrorHandler(config, accountManager, repository, (acc, toast) =>
+      this.tokenRefresher.forceRefresh(acc, toast)
+    )
     this.responseHandler = new ResponseHandler()
     this.usageTracker = new UsageTracker(config, accountManager, repository)
     this.retryStrategy = new RetryStrategy(config)
@@ -87,7 +89,7 @@ export class RequestHandler {
       body.thinkingConfig?.budget_tokens ||
       20000
 
-    let retry = 0
+    let handlerContext: { retry: number; bearerRefreshAttempted?: boolean } = { retry: 0 }
     let consecutiveNullAccounts = 0
     const retryContext = this.retryStrategy.createContext()
 
@@ -180,13 +182,13 @@ export class RequestHandler {
             e,
             mockResponse,
             acc,
-            { retry },
+            handlerContext,
             showToast
           )
 
           if (errorResult.shouldRetry) {
             if (errorResult.newContext) {
-              retry = errorResult.newContext.retry
+              handlerContext = errorResult.newContext
             }
             if (errorResult.switchAccount) {
               continue
@@ -197,11 +199,15 @@ export class RequestHandler {
           throw new Error(`Kiro Error: ${httpStatus}`)
         }
 
-        const networkResult = await this.errorHandler.handleNetworkError(e, { retry }, showToast)
+        const networkResult = await this.errorHandler.handleNetworkError(
+          e,
+          handlerContext,
+          showToast
+        )
 
         if (networkResult.shouldRetry) {
           if (networkResult.newContext) {
-            retry = networkResult.newContext.retry
+            handlerContext = { ...handlerContext, ...networkResult.newContext }
           }
           continue
         }

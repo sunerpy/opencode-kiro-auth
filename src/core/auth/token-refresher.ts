@@ -41,6 +41,24 @@ export class TokenRefresher {
     }
   }
 
+  async forceRefresh(account: ManagedAccount, showToast: ToastFunction): Promise<boolean> {
+    const auth = this.accountManager.toAuthDetails(account)
+    try {
+      const newAuth = await refreshAccessToken(auth)
+      this.accountManager.updateFromAuth(account, newAuth)
+      await this.repository.batchSave(this.accountManager.getAccounts())
+      return true
+    } catch (e: any) {
+      logger.error('Forced token refresh failed', {
+        email: account.email,
+        code: e instanceof KiroTokenRefreshError ? e.code : undefined,
+        message: e instanceof Error ? e.message : String(e)
+      })
+      showToast('403: Token refresh failed after stale-token detection.', 'warning')
+      return false
+    }
+  }
+
   private async handleRefreshError(
     error: any,
     account: ManagedAccount,

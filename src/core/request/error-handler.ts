@@ -6,7 +6,11 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 interface RequestContext {
   retry: number
+  // One-shot guard: set once the invalid-bearer 403 forced refresh+retry has fired.
+  bearerRefreshAttempted?: boolean
 }
+
+type ForceRefreshFn = (account: ManagedAccount, showToast: ToastFunction) => Promise<boolean>
 
 interface ErrorHandlerConfig {
   rate_limit_max_retries: number
@@ -17,7 +21,8 @@ export class ErrorHandler {
   constructor(
     private config: ErrorHandlerConfig,
     private accountManager: AccountManager,
-    private repository: AccountRepository
+    private repository: AccountRepository,
+    private forceRefresh?: ForceRefreshFn
   ) {}
 
   async handle(
@@ -114,10 +119,27 @@ export class ErrorHandler {
         errorReason = 'Account Suspended'
         isPermanent = true
       }
-      if (
+      const isInvalidBearer =
         errorReason.includes('bearer token included in the request is invalid') ||
         errorReason.includes('The bearer token included in the request is invalid')
+
+      if (
+        response.status === 403 &&
+        isInvalidBearer &&
+        !context.bearerRefreshAttempted &&
+        this.forceRefresh
       ) {
+        const refreshed = await this.forceRefresh(account, showToast)
+        if (refreshed) {
+          showToast('403: Stale token detected. Refreshed and retrying...', 'warning')
+          return {
+            shouldRetry: true,
+            newContext: { ...context, bearerRefreshAttempted: true }
+          }
+        }
+      }
+
+      if (isInvalidBearer) {
         isPermanent = true
       }
       if (isPermanent) {
