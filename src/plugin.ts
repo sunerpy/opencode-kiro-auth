@@ -9,7 +9,7 @@ import { loadConfig } from './plugin/config/index.js'
 
 type ToastFunction = (message: string, variant: string) => void
 
-const KIRO_PROVIDER_ID = 'kiro'
+const KIRO_PROVIDER_ID = 'kiro-auth'
 
 export const createKiroPlugin =
   (id: string) =>

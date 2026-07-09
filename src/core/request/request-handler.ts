@@ -339,12 +339,12 @@ export class RequestHandler {
     try {
       showToast('Session expired. Re-authenticating...', 'warning')
       await this.client.provider.oauth.authorize({
-        path: { id: 'kiro' },
+        path: { id: 'kiro-auth' },
         body: { method: 0 }
       })
 
       await this.client.provider.oauth.callback({
-        path: { id: 'kiro' },
+        path: { id: 'kiro-auth' },
         body: { method: 0 }
       })
 

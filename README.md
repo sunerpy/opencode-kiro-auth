@@ -34,7 +34,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
 {
   "plugin": ["@zhafron/opencode-kiro-auth"],
   "provider": {
-    "kiro": {
+    "kiro-auth": {
       "models": {
         "claude-sonnet-4-5": {
           "name": "Claude Sonnet 4.5",
@@ -196,7 +196,7 @@ not need to hardcode a global `effort` value in `~/.config/opencode/kiro.json`.
 ```json
 {
   "provider": {
-    "kiro": {
+    "kiro-auth": {
       "models": {
         "claude-opus-4-7-thinking": {
           "name": "Claude Opus 4.7 Thinking",
@@ -239,7 +239,7 @@ setting is a global override for all supported models, not a per-model setting.
      registration (OIDC client credentials) from the `kiro-cli` database.
 2. **Direct Authentication**:
    - Run `opencode auth login`.
-   - Select `Other`, type `kiro`, and press enter.
+   - Select `Other`, type `kiro-auth`, and press enter.
    - You'll be prompted for your **IAM Identity Center Start URL** and **IAM Identity
      Center region** (`sso_region`).
      - Leave it blank to sign in with **AWS Builder ID**.
