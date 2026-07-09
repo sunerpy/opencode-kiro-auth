@@ -48,7 +48,7 @@ describe('bootstrapAuthIfNeeded', () => {
     const { home, authPath } = setupBootstrapFixture()
     writeFileSync(authPath, '{"github":')
 
-    bootstrapAuthIfNeeded('kiro')
+    bootstrapAuthIfNeeded('kiro-auth')
 
     expect(readFileSync(authPath, 'utf-8')).toBe('{"github":')
     rmSync(home, { recursive: true, force: true })
@@ -58,11 +58,11 @@ describe('bootstrapAuthIfNeeded', () => {
     const { home, authPath } = setupBootstrapFixture()
     writeFileSync(authPath, JSON.stringify({ github: { type: 'api', key: 'existing' } }, null, 2))
 
-    bootstrapAuthIfNeeded('kiro')
+    bootstrapAuthIfNeeded('kiro-auth')
 
     expect(JSON.parse(readFileSync(authPath, 'utf-8'))).toEqual({
       github: { type: 'api', key: 'existing' },
-      kiro: { type: 'api', key: 'kiro-bootstrap-placeholder' }
+      'kiro-auth': { type: 'api', key: 'kiro-bootstrap-placeholder' }
     })
     rmSync(home, { recursive: true, force: true })
   })
@@ -72,7 +72,7 @@ describe('bootstrapAuthIfNeeded', () => {
     writeFileSync(authPath, JSON.stringify({ github: { type: 'api', key: 'existing' } }, null, 2))
     chmodSync(authPath, 0o600)
 
-    bootstrapAuthIfNeeded('kiro')
+    bootstrapAuthIfNeeded('kiro-auth')
 
     expect(statSync(authPath).mode & 0o777).toBe(0o600)
     rmSync(home, { recursive: true, force: true })
