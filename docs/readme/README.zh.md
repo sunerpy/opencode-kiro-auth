@@ -204,6 +204,21 @@ make build      # tsc + fix-esm-imports -> dist/
 Agent 贡献者请参阅 [AGENTS.md](../../AGENTS.md)，其中包含代码库架构图、不可
 破坏的不变量，以及 CodeGraph 辅助的工作流说明。
 
+### 发布
+
+发布流程由 [release-please](https://github.com/googleapis/release-please)
+自动完成：
+
+- 提交信息与 PR 标题请使用
+  [Conventional Commits](https://www.conventionalcommits.org/)
+  规范（`feat:`、`fix:`、`chore:` 等）——版本号会据此自动递增。
+- release-please 会在 `main` 上创建并维护一个 release PR。**合并该 PR**
+  即会打出 git tag 与 GitHub Release，并触发工作流先执行
+  typecheck/test/build，再发布到 npm。
+- 贡献者无需手动修改 `package.json` 中的版本号，也不要手改
+  [`changelog/`](../../changelog/) 目录下的文件——这些均由 release-please
+  自动维护。
+
 ## 存储位置
 
 **Linux/macOS：**

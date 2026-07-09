@@ -225,6 +225,20 @@ make build      # tsc + fix-esm-imports -> dist/
 Agent contributors: see [AGENTS.md](AGENTS.md) for the codebase architecture
 map, invariants that must not break, and the CodeGraph-assisted workflow.
 
+### Releasing
+
+Releases are automated with
+[release-please](https://github.com/googleapis/release-please):
+
+- Use [Conventional Commits](https://www.conventionalcommits.org/) for commit
+  messages and pull request titles (`feat:`, `fix:`, `chore:`, …) — these drive
+  the next version bump automatically.
+- release-please opens and maintains a release pull request on `main`.
+  **Merging that PR** cuts the git tag + GitHub Release and triggers the
+  workflow that runs typecheck/test/build and then publishes to npm.
+- Contributors never hand-edit the version in `package.json` or the files under
+  [`changelog/`](changelog/) — release-please maintains both.
+
 ## Storage
 
 **Linux/macOS:**
