@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.2.1...v0.2.2) (2026-07-09)
+
+
+### Bug Fixes
+
+* **auth:** account removal shows success (keyed on remaining account) instead of 'Failed to authorize' ([#5](https://github.com/sunerpy/opencode-kiro-auth/issues/5)) ([622d2ef](https://github.com/sunerpy/opencode-kiro-auth/commit/622d2ef024af55085b236cdb900b92aa6be4bee5))
+
 ## [0.2.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.2.0...v0.2.1) (2026-07-09)
 
 
