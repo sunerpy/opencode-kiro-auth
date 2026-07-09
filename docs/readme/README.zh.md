@@ -16,6 +16,8 @@
 - [安装](#安装)
 - [配置认证](#配置认证)
 - [插件配置](#插件配置)
+- [多账号与轮换](#多账号与轮换)
+- [用量显示](#用量显示)
 - [模型](#模型)
 - [故障排查](#故障排查)
 - [迁移说明](#迁移说明)
@@ -86,6 +88,61 @@
 插件级行为（认证同步、账号选择策略、重试限制、effort 映射）位于
 `~/.config/opencode/kiro.json`。完整示例和全部选项见
 [docs/CONFIGURATION.md](../CONFIGURATION.md)。
+
+## 多账号与轮换
+
+你可以注册多个 Kiro 账号，让插件在这些账号之间分配请求，从而合并额度并获得
+自动故障切换能力。
+
+**添加账号**，有两种方式：
+
+1. 执行 `opencode auth login`，选择 `kiro-auth`，完成一次 Builder ID 或
+   IAM Identity Center 登录。每个账号只需执行一次——每个不同的 AWS 身份都会
+   单独存入 `kiro.db`。对同一身份重新登录会原地更新；用不同身份登录则会新增
+   一个账号。
+2. 从 Kiro CLI 自动同步：当 `auto_sync_kiro_cli: true`（默认值）时，插件会
+   从本地 `kiro-cli` 数据库导入凭据。通过 `kiro-cli login` 在 `kiro-cli`
+   中切换或新增账号后会自动流入插件，无需额外操作。
+
+**轮换策略** —— 在 `~/.config/opencode/kiro.json` 中设置
+`account_selection_strategy`：
+
+| 策略           | 行为                                                       | 默认值 |
+| -------------- | ------------------------------------------------------------ | ------ |
+| `lowest-usage` | 每次请求都选择剩余额度最低的健康账号                        | ✅     |
+| `round-robin`  | 按顺序依次轮流使用各账号                                     |        |
+| `sticky`       | 始终使用第一个账号；仅当该账号变为不健康时才切换             |        |
+
+**自动故障切换**无需任何配置：被限流或返回 403 的账号会被标记为不健康，插件
+会自动切换到下一个健康账号。如果所有账号都被限流，插件会等待最短的重置时间
+后重试。连续 10 次选择失败会触发熔断，避免死循环。
+
+**移除账号**：执行 `opencode auth login`，选择 `kiro-auth`，选择
+"Remove a Kiro account (N stored)"，然后在下拉列表中选中要移除的账号（或选
+Cancel 取消）。
+
+完整配置项参考见 [docs/CONFIGURATION.md](../CONFIGURATION.md)。
+
+## 用量显示
+
+插件会从 Kiro 的用量接口读取真实额度（每个账号的 `usedCount`/`limitCount`，
+例如 `929/10000`），并在三处展示：
+
+1. **认证菜单标签**——执行 `opencode auth login` 并选择 `kiro-auth` 时，第
+   一个登录方式会显示 `[current: <email> <used>/<limit> (<pct>%)]`；有多个
+   账号时用 ` · ` 连接，最多显示 3 个，超出部分显示为 `+N more`。
+2. **启动 Toast**——每次插件初始化后，OpenCode 启动几秒后会弹出一条 Toast：
+   `Kiro usage (<email>): <used>/<limit> (<pct>%)`，用量 ≥90% 时变为黄色
+   （`warning`）。
+3. **运行时告警**——当前选中账号用量 ≥90% 时会弹出告警 Toast。
+
+TUI 状态栏中**没有持久化的用量小组件**——用量只通过上述标签和 Toast 展示。
+如果想随时查看用量，可以重启 OpenCode（触发启动 Toast），或直接查询
+`kiro.db`：
+
+```bash
+python3 -c "import sqlite3;r=sqlite3.connect('$HOME/.config/opencode/kiro.db').execute('SELECT email,used_count,limit_count FROM accounts').fetchall();[print(f'{e}: {u}/{l} (left {l-u})') for e,u,l in r]"
+```
 
 ## 模型
 

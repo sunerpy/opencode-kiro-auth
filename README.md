@@ -16,6 +16,8 @@
 - [Installation](#installation)
 - [Setup / Auth](#setup--auth)
 - [Configuration](#configuration)
+- [Multiple accounts & rotation](#multiple-accounts--rotation)
+- [Usage display](#usage-display)
 - [Models](#models)
 - [Troubleshooting](#troubleshooting)
 - [Migration](#migration)
@@ -97,6 +99,67 @@ Plugin-wide behavior (auth sync, account selection, retry limits, effort
 mapping) lives in `~/.config/opencode/kiro.json`. See
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full example and every
 option.
+
+## Multiple accounts & rotation
+
+You can register more than one Kiro account and let the plugin spread
+requests across them for combined quota and automatic failover.
+
+**Adding accounts**, two ways:
+
+1. Run `opencode auth login`, select `kiro-auth`, and complete a Builder ID
+   or IAM Identity Center login. Run this once per account — each distinct
+   AWS identity is stored separately in `kiro.db`. Re-running login for the
+   same identity updates it in place; logging in with a different identity
+   adds a new account.
+2. Auto-sync from Kiro CLI: with `auto_sync_kiro_cli: true` (the default),
+   the plugin imports credentials from your local `kiro-cli` database.
+   Switching or adding accounts via `kiro-cli login` flows into the plugin
+   automatically, no extra step needed.
+
+**Rotation strategy** — set `account_selection_strategy` in
+`~/.config/opencode/kiro.json`:
+
+| Strategy       | Behavior                                                            | Default |
+| -------------- | -------------------------------------------------------------------- | ------- |
+| `lowest-usage` | Each request picks the healthy account with the lowest used quota    | ✅      |
+| `round-robin`  | Cycles through accounts in order                                     |         |
+| `sticky`       | Always uses the first account; switches only when it becomes unhealthy |       |
+
+**Automatic failover** requires no configuration: a rate-limited or 403
+account is marked unhealthy and the next healthy account takes over. If every
+account is rate-limited, the plugin waits out the minimum reset time and
+retries. A circuit breaker trips after 10 consecutive selection failures to
+avoid a hot loop.
+
+**Removing an account**: run `opencode auth login`, select `kiro-auth`,
+choose "Remove a Kiro account (N stored)", then pick the account from the
+dropdown (or cancel).
+
+Full config key reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## Usage display
+
+The plugin reads real quota from Kiro's usage API (`usedCount`/`limitCount`
+per account, e.g. `929/10000`) and surfaces it in three places:
+
+1. **Auth menu label** — running `opencode auth login` and selecting
+   `kiro-auth` shows `[current: <email> <used>/<limit> (<pct>%)]` on the
+   first login method; with multiple accounts they're joined with ` · `,
+   capped at 3 with a `+N more` suffix.
+2. **Startup toast** — once per plugin init, a toast shows
+   `Kiro usage (<email>): <used>/<limit> (<pct>%)` a few seconds after
+   OpenCode starts, turning yellow (`warning`) at ≥90% usage.
+3. **Runtime warning** — a warning toast fires whenever a selected account
+   is at ≥90% usage.
+
+There is **no persistent usage widget** in the TUI status bar — usage only
+shows up via the label and toasts above. To check usage at any time, either
+restart OpenCode (triggers the startup toast) or query `kiro.db` directly:
+
+```bash
+python3 -c "import sqlite3;r=sqlite3.connect('$HOME/.config/opencode/kiro.db').execute('SELECT email,used_count,limit_count FROM accounts').fetchall();[print(f'{e}: {u}/{l} (left {l-u})') for e,u,l in r]"
+```
 
 ## Models
 
