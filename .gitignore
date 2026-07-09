@@ -8,3 +8,6 @@ dist/
 .codegraph
 .kiro
 .omo
+
+# npm auth token — never commit
+.npmrc
