@@ -8,6 +8,7 @@ type FakeAccount = {
   limitCount: number
   isHealthy: boolean
   region: string
+  accessToken?: string
 }
 
 function makeHandler(accounts: FakeAccount[]) {
@@ -104,5 +105,99 @@ describe('auth account management', () => {
   test('getMethods without an account manager returns [] (existing behavior)', () => {
     const handler = new AuthHandler({}, {} as any)
     expect(handler.getMethods()).toEqual([])
+  })
+
+  test('post-delete: with a healthy remaining account, ends with success keyed on its accessToken', async () => {
+    const { handler } = makeHandler([
+      {
+        id: 'x',
+        email: 'a@b.com',
+        usedCount: 1,
+        limitCount: 10,
+        isHealthy: true,
+        region: 'us-east-1',
+        accessToken: 'tok-abc'
+      }
+    ])
+    const result = (handler as any).endWithRemainingCredentialOrFailed(
+      'Account deleted: gone@b.com.'
+    )
+    expect(result.method).toBe('auto')
+    expect(result.url).toBe('')
+    expect(result.instructions).toContain('a@b.com')
+    expect(await result.callback()).toEqual({ type: 'success', key: 'tok-abc' })
+  })
+
+  test('post-delete: prefers a healthy account over an unhealthy one with a token', async () => {
+    const { handler } = makeHandler([
+      {
+        id: 'u',
+        email: 'unhealthy@b.com',
+        usedCount: 1,
+        limitCount: 10,
+        isHealthy: false,
+        region: 'us-east-1',
+        accessToken: 'tok-unhealthy'
+      },
+      {
+        id: 'h',
+        email: 'healthy@b.com',
+        usedCount: 1,
+        limitCount: 10,
+        isHealthy: true,
+        region: 'us-east-1',
+        accessToken: 'tok-healthy'
+      }
+    ])
+    const result = (handler as any).endWithRemainingCredentialOrFailed(
+      'Account deleted: gone@b.com.'
+    )
+    expect(await result.callback()).toEqual({ type: 'success', key: 'tok-healthy' })
+  })
+
+  test('post-delete: falls back to any account with a token when none are healthy', async () => {
+    const { handler } = makeHandler([
+      {
+        id: 'u',
+        email: 'unhealthy@b.com',
+        usedCount: 1,
+        limitCount: 10,
+        isHealthy: false,
+        region: 'us-east-1',
+        accessToken: 'tok-only'
+      }
+    ])
+    const result = (handler as any).endWithRemainingCredentialOrFailed(
+      'Account deleted: gone@b.com.'
+    )
+    expect(await result.callback()).toEqual({ type: 'success', key: 'tok-only' })
+  })
+
+  test('post-delete: with no accounts remaining, ends with a failed callback', async () => {
+    const { handler } = makeHandler([])
+    const result = (handler as any).endWithRemainingCredentialOrFailed(
+      'Account deleted: gone@b.com.'
+    )
+    expect(result.method).toBe('auto')
+    expect(result.url).toBe('')
+    expect(result.instructions).toContain('No accounts remain')
+    expect(await result.callback()).toEqual({ type: 'failed' })
+  })
+
+  test('post-delete: skips accounts without a usable accessToken', async () => {
+    const { handler } = makeHandler([
+      {
+        id: 'x',
+        email: 'a@b.com',
+        usedCount: 1,
+        limitCount: 10,
+        isHealthy: true,
+        region: 'us-east-1'
+      }
+    ])
+    const result = (handler as any).endWithRemainingCredentialOrFailed(
+      'Account deleted: gone@b.com.'
+    )
+    expect(await result.callback()).toEqual({ type: 'failed' })
   })
 })
