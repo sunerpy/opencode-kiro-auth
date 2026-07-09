@@ -9,5 +9,3 @@ dist/
 .kiro
 .omo
 
-# npm auth token — never commit
-.npmrc
