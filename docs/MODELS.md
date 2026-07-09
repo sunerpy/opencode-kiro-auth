@@ -69,6 +69,17 @@ Haiku variants plus the open-weight models Kiro proxies):
           "limit": { "context": 200000, "output": 64000 },
           "modalities": { "input": ["text", "image"], "output": ["text"] }
         },
+        "claude-haiku-4-5-thinking": {
+          "name": "Claude Haiku 4.5 Thinking",
+          "limit": { "context": 200000, "output": 64000 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
+            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
+            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
+          }
+        },
         "claude-opus-4-5": {
           "name": "Claude Opus 4.5",
           "limit": { "context": 200000, "output": 64000 },
@@ -133,10 +144,37 @@ Haiku variants plus the open-weight models Kiro proxies):
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
+        "claude-opus-4-8": {
+          "name": "Claude Opus 4.8",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+        },
+        "claude-opus-4-8-thinking": {
+          "name": "Claude Opus 4.8 Thinking",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "variants": {
+            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
+            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
+            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
+          }
+        },
         "claude-sonnet-4-5-1m": {
           "name": "Claude Sonnet 4.5 (1M Context)",
           "limit": { "context": 1000000, "output": 64000 },
           "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+        },
+        "claude-sonnet-4-5-1m-thinking": {
+          "name": "Claude Sonnet 4.5 (1M Context) Thinking",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "variants": {
+            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
+            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
+            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
+          }
         },
         "claude-sonnet-4-6-1m": {
           "name": "Claude Sonnet 4.6 (1M Context)",
@@ -171,6 +209,27 @@ Haiku variants plus the open-weight models Kiro proxies):
         "minimax-m2.1": {
           "name": "MiniMax 2.1 (0.15x)",
           "limit": { "context": 200000, "output": 64000 }
+        },
+        "minimax-m2": {
+          "name": "MiniMax M2",
+          "limit": { "context": 200000, "output": 64000 }
+        },
+        "nova-swe": {
+          "name": "Nova SWE",
+          "limit": { "context": 200000, "output": 64000 }
+        },
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B",
+          "limit": { "context": 200000, "output": 64000 }
+        },
+        "kimi-k2-thinking": {
+          "name": "Kimi K2 Thinking",
+          "limit": { "context": 256000, "output": 64000 }
+        },
+        "claude-3-7-sonnet": {
+          "name": "Claude 3.7 Sonnet",
+          "limit": { "context": 200000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "qwen3-coder-next": {
           "name": "Qwen3 Coder Next (0.05x)",
