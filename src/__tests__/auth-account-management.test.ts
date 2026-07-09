@@ -39,6 +39,7 @@ describe('auth account management', () => {
     ])
     const methods = handler.getMethods()
     const first = methods[0]!
+    expect(first.label).toContain('Add account')
     expect(first.label).toContain('a@b.com')
     expect(first.label).toContain('929/10000')
     expect(first.label).toContain('9%')
@@ -55,8 +56,9 @@ describe('auth account management', () => {
     }
     const { handler, removed } = makeHandler([acc])
     const methods = handler.getMethods()
-    const remove = methods.find((m) => m.label.includes('Remove'))
+    const remove = methods.find((m) => m.label.includes('Remove account'))
     expect(remove).toBeDefined()
+    expect(remove!.label).toContain('Remove account')
     expect(remove!.type).toBe('api')
 
     const prompt = remove!.prompts![0]!
@@ -87,7 +89,7 @@ describe('auth account management', () => {
     }
     const { handler, removed } = makeHandler([acc])
     const methods = handler.getMethods()
-    const remove = methods.find((m) => m.label.includes('Remove'))!
+    const remove = methods.find((m) => m.label.includes('Remove account'))!
     const authorize = (remove as { authorize: (i?: Record<string, string>) => Promise<any> })
       .authorize
     const result = await authorize({ account_id: '__cancel__' })

@@ -98,7 +98,7 @@ export class AuthHandler {
 
     const currentAccounts: any[] = this.accountManager.getAccounts?.() ?? []
     const usageSummary = this.buildUsageSummary(currentAccounts)
-    const firstLabelBase = 'AWS Builder ID / IAM Identity Center'
+    const firstLabelBase = 'Add account · AWS Builder ID / IAM Identity Center'
     const firstLabel = usageSummary ? `${firstLabelBase}  ${usageSummary}` : firstLabelBase
 
     const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)
@@ -147,7 +147,7 @@ export class AuthHandler {
         authorize: (inputs?: any) => idcMethod.authorize(inputs)
       },
       {
-        label: 'IAM Identity Center with Profile ARN',
+        label: 'Add account · IAM Identity Center (with Profile ARN)',
         type: 'oauth' as const,
         prompts: [
           {
@@ -205,7 +205,7 @@ export class AuthHandler {
 
     const count = currentAccounts.length
     const removeLabel =
-      count > 0 ? `Remove a Kiro account (${count} stored)` : 'Remove a Kiro account (none stored)'
+      count > 0 ? `Remove account · ${count} stored` : 'Remove account · none stored'
     const removeOptions = currentAccounts.map((acc) => ({
       label: this.formatAccountOption(acc),
       value: String(acc.id)
