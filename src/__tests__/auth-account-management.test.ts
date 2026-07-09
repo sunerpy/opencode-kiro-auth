@@ -45,7 +45,7 @@ describe('auth account management', () => {
     expect(first.label).toContain('9%')
   })
 
-  test('remove method exists with select options for account + Cancel; authorize removes and returns failed', async () => {
+  test('remove method is type:oauth and, in a non-TTY env, its authorize returns method:auto with a failed callback and no key prompt', async () => {
     const acc: FakeAccount = {
       id: 'x',
       email: 'a@b.com',
@@ -56,45 +56,49 @@ describe('auth account management', () => {
     }
     const { handler, removed } = makeHandler([acc])
     const methods = handler.getMethods()
-    const remove = methods.find((m) => m.label.includes('Remove account'))
+    const remove = methods.find((m) => m.label.includes('remove') || m.label.includes('Manage'))
     expect(remove).toBeDefined()
-    expect(remove!.label).toContain('Remove account')
-    expect(remove!.type).toBe('api')
-
-    const prompt = remove!.prompts![0]!
-    expect(prompt.type).toBe('select')
-    const select = prompt as { type: 'select'; options: Array<{ label: string; value: string }> }
-    const values = select.options.map((o) => o.value)
-    expect(values).toContain('x')
-    expect(values).toContain('__cancel__')
-    const accountOption = select.options.find((o) => o.value === 'x')
-    expect(accountOption!.label).toContain('a@b.com')
+    expect(remove!.type).toBe('oauth')
+    expect((remove as { prompts?: unknown }).prompts).toBeUndefined()
 
     const authorize = (remove as { authorize: (i?: Record<string, string>) => Promise<any> })
       .authorize
-    const result = await authorize({ account_id: 'x' })
-    expect(removed).toHaveLength(1)
-    expect(removed[0]).toBe(acc)
-    expect(result).toEqual({ type: 'failed' })
+    const result = await authorize()
+    expect(result.url).toBe('')
+    expect(result.method).toBe('auto')
+    expect(typeof result.callback).toBe('function')
+    expect(await result.callback()).toEqual({ type: 'failed' })
+    expect(removed).toHaveLength(0)
   })
 
-  test('authorize with __cancel__ does not remove and returns failed', async () => {
-    const acc: FakeAccount = {
-      id: 'x',
-      email: 'a@b.com',
-      usedCount: 1,
-      limitCount: 10,
-      isHealthy: true,
-      region: 'us-east-1'
-    }
-    const { handler, removed } = makeHandler([acc])
+  test('remove method with zero accounts returns method:auto/failed without prompting', async () => {
+    const { handler } = makeHandler([])
     const methods = handler.getMethods()
-    const remove = methods.find((m) => m.label.includes('Remove account'))!
+    const remove = methods.find((m) => m.label.includes('remove') || m.label.includes('Manage'))!
     const authorize = (remove as { authorize: (i?: Record<string, string>) => Promise<any> })
       .authorize
-    const result = await authorize({ account_id: '__cancel__' })
-    expect(removed).toHaveLength(0)
-    expect(result).toEqual({ type: 'failed' })
+    const result = await authorize()
+    expect(result.method).toBe('auto')
+    expect(result.url).toBe('')
+    expect(await result.callback()).toEqual({ type: 'failed' })
+  })
+
+  test('all three methods are type:oauth (no type:api anywhere)', () => {
+    const { handler } = makeHandler([
+      {
+        id: 'x',
+        email: 'a@b.com',
+        usedCount: 1,
+        limitCount: 10,
+        isHealthy: true,
+        region: 'us-east-1'
+      }
+    ])
+    const methods = handler.getMethods()
+    expect(methods).toHaveLength(3)
+    for (const m of methods) {
+      expect(m.type).toBe('oauth')
+    }
   })
 
   test('getMethods without an account manager returns [] (existing behavior)', () => {

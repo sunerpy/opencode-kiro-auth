@@ -3,6 +3,7 @@ import type { AccountRepository } from '../../infrastructure/database/account-re
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
+import { isInteractiveTty, ttyConfirm, ttySelect } from './tty-menu.js'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
@@ -203,48 +204,80 @@ export class AuthHandler {
       }
     ]
 
-    const count = currentAccounts.length
-    const removeLabel =
-      count > 0 ? `Remove account · ${count} stored` : 'Remove account · none stored'
-    const removeOptions = currentAccounts.map((acc) => ({
-      label: this.formatAccountOption(acc),
-      value: String(acc.id)
-    }))
-    removeOptions.push({ label: 'Cancel', value: '__cancel__' })
-
+    // Removal must be `type:'oauth'`, not `type:'api'`: OpenCode forces an
+    // "Enter your API key" prompt on `api` methods, breaking a removal flow.
     methods.push({
-      label: removeLabel,
-      type: 'api' as const,
-      prompts: [
-        {
-          type: 'select' as const,
-          key: 'account_id',
-          message: 'Select the account to remove',
-          options: removeOptions
-        }
-      ],
-      authorize: async (inputs?: Record<string, string>) => {
-        const accountId = inputs?.account_id
-        if (!accountId || accountId === '__cancel__') {
-          logger.log('Remove Kiro account: cancelled (no-op)')
-          return { type: 'failed' as const }
-        }
-
-        const target = currentAccounts.find((acc) => String(acc.id) === accountId)
-        if (!target) {
-          logger.warn('Remove Kiro account: id not found', { accountId })
-          return { type: 'failed' as const }
-        }
-
-        this.accountManager.removeAccount(target)
-        logger.log('Removed Kiro account', { email: target.email, accountId })
-
-        // Return 'failed' after the deletion side-effect: 'success' would make
-        // OpenCode persist a bogus auth.json credential for a removal action.
-        return { type: 'failed' as const }
-      }
+      label: 'Manage / remove accounts',
+      type: 'oauth' as const,
+      authorize: async () => this.authorizeRemoveAccounts()
     })
 
     return methods
+  }
+
+  /** Ends the auth flow cleanly with no key prompt and no credential written. */
+  private endWithoutCredential(instructions: string): {
+    url: string
+    instructions: string
+    method: 'auto'
+    callback: () => Promise<{ type: 'failed' }>
+  } {
+    return {
+      url: '',
+      instructions,
+      method: 'auto' as const,
+      callback: async () => ({ type: 'failed' as const })
+    }
+  }
+
+  /**
+   * Self-drawn account-removal flow returning method:'auto' + failed-callback in
+   * all cases, so the auth flow ends with no key prompt and NO credential written.
+   */
+  private async authorizeRemoveAccounts(): Promise<{
+    url: string
+    instructions: string
+    method: 'auto'
+    callback: () => Promise<{ type: 'failed' }>
+  }> {
+    const accounts: any[] = this.accountManager?.getAccounts?.() ?? []
+
+    if (accounts.length === 0) {
+      logger.log('Remove Kiro account: no accounts to remove')
+      return this.endWithoutCredential('No accounts to remove.')
+    }
+
+    if (!isInteractiveTty()) {
+      logger.log('Remove Kiro account: non-TTY, skipping interactive menu')
+      const sqliteHint =
+        'sqlite3 ~/.config/opencode/kiro.db "DELETE FROM accounts WHERE email=\'<email>\';"'
+      return this.endWithoutCredential(
+        'Account removal requires an interactive terminal. Run `opencode auth login` ' +
+          `in a TTY, or remove via: ${sqliteHint}`
+      )
+    }
+
+    const items = accounts.map((acc) => ({
+      label: this.formatAccountOption(acc),
+      value: acc
+    }))
+    items.push({ label: 'Cancel', value: null as any })
+
+    const target = await ttySelect<any>(items, { message: 'Select an account to remove' })
+    if (!target) {
+      logger.log('Remove Kiro account: cancelled (no-op)')
+      return this.endWithoutCredential('Cancelled. No account removed.')
+    }
+
+    const confirmed = await ttyConfirm(`Delete ${target.email || 'this account'}?`)
+    if (!confirmed) {
+      logger.log('Remove Kiro account: delete not confirmed (no-op)')
+      return this.endWithoutCredential('Cancelled. No account removed.')
+    }
+
+    this.accountManager.removeAccount(target)
+    logger.log('Removed Kiro account', { email: target.email, accountId: String(target.id) })
+    process.stdout.write('Account deleted.\n')
+    return this.endWithoutCredential(`Account deleted: ${target.email || 'unknown'}.`)
   }
 }
