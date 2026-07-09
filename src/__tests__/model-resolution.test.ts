@@ -18,6 +18,33 @@ describe('resolveKiroModel', () => {
     expect(resolveKiroModel('claude-opus-4-8-thinking')).toBe('claude-opus-4.8')
   })
 
+  // Opus model-resolution coverage. Wire ids confirmed against
+  // src/constants.ts MODEL_MAPPING (lines: claude-opus-4-5 -> claude-opus-4.5,
+  // 4-6 -> 4.6, 4-7 -> 4.7, 4-8 -> 4.8; each `-thinking` variant maps to the
+  // same non-thinking wire id).
+  test('resolves the full Opus 4.5 -> 4.8 slug range to dotted wire ids', () => {
+    expect(resolveKiroModel('claude-opus-4-5')).toBe('claude-opus-4.5')
+    expect(resolveKiroModel('claude-opus-4-6')).toBe('claude-opus-4.6')
+    expect(resolveKiroModel('claude-opus-4-7')).toBe('claude-opus-4.7')
+    expect(resolveKiroModel('claude-opus-4-8')).toBe('claude-opus-4.8')
+  })
+
+  test('Opus -thinking variants resolve to the same wire id as their base slug', () => {
+    expect(resolveKiroModel('claude-opus-4-5-thinking')).toBe('claude-opus-4.5')
+    expect(resolveKiroModel('claude-opus-4-6-thinking')).toBe('claude-opus-4.6')
+    expect(resolveKiroModel('claude-opus-4-7-thinking')).toBe('claude-opus-4.7')
+    expect(resolveKiroModel('claude-opus-4-8-thinking')).toBe('claude-opus-4.8')
+
+    expect(resolveKiroModel('claude-opus-4-5-thinking')).toBe(resolveKiroModel('claude-opus-4-5'))
+    expect(resolveKiroModel('claude-opus-4-6-thinking')).toBe(resolveKiroModel('claude-opus-4-6'))
+    expect(resolveKiroModel('claude-opus-4-7-thinking')).toBe(resolveKiroModel('claude-opus-4-7'))
+    expect(resolveKiroModel('claude-opus-4-8-thinking')).toBe(resolveKiroModel('claude-opus-4-8'))
+  })
+
+  test('rejects an unconfirmed Opus slug (claude-opus-9)', () => {
+    expect(() => resolveKiroModel('claude-opus-9')).toThrow('Unsupported model')
+  })
+
   test('rejects removed qwen3-coder-480b slug', () => {
     expect(() => resolveKiroModel('qwen3-coder-480b')).toThrow(
       'Unsupported model: qwen3-coder-480b'
