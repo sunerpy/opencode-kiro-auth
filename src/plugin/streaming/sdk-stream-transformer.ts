@@ -32,6 +32,12 @@ export async function* transformSdkStream(
   const toolCalls: ToolCallState[] = []
   let currentToolCall: ToolCallState | null = null
 
+  // Probe (opus-4.8): reasoning streams via `reasoningContentEvent{text,signature}` as a
+  // contiguous run BEFORE `assistantResponseEvent.content`; no `<thinking>` tags emitted.
+  // signature is metadata and ignored for rendering.
+  let reasoningStarted = false
+  let reasoningClosed = false
+
   const eventStream = sdkResponse.generateAssistantResponseResponse
   if (!eventStream) {
     throw new Error('SDK response has no event stream')
@@ -39,10 +45,43 @@ export async function* transformSdkStream(
 
   try {
     for await (const event of eventStream) {
+      if (event.reasoningContentEvent?.text) {
+        const reasoningText = event.reasoningContentEvent.text
+
+        if (reasoningClosed) {
+          // Defensive, normally unreached (probe: reasoning is contiguous-before-text).
+          // The stopped thinking index cannot be reused, so open a fresh one.
+          streamState.thinkingBlockIndex = null
+          reasoningClosed = false
+        }
+        reasoningStarted = true
+        for (const ev of createThinkingDeltaEvents(reasoningText, streamState)) {
+          const _c = convertToOpenAI(ev, conversationId, model)
+          if (_c !== null) yield _c
+        }
+        continue
+      }
+
       if (event.assistantResponseEvent?.content) {
         const text = event.assistantResponseEvent.content
         totalContent += text
         textOnlyContent += text
+
+        if (reasoningStarted && !reasoningClosed) {
+          for (const ev of stopBlock(streamState.thinkingBlockIndex, streamState)) {
+            const _c = convertToOpenAI(ev, conversationId, model)
+            if (_c !== null) yield _c
+          }
+          reasoningClosed = true
+        }
+
+        if (reasoningStarted) {
+          for (const ev of createTextDeltaEvents(text, streamState)) {
+            const _c = convertToOpenAI(ev, conversationId, model)
+            if (_c !== null) yield _c
+          }
+          continue
+        }
 
         if (!thinkingRequested) {
           for (const ev of createTextDeltaEvents(text, streamState)) {
@@ -160,6 +199,15 @@ export async function* transformSdkStream(
     if (currentToolCall) {
       toolCalls.push(currentToolCall)
       currentToolCall = null
+    }
+
+    // Reasoning-only responses (reasoning but no reply text): close the thinking block.
+    if (reasoningStarted && !reasoningClosed) {
+      for (const ev of stopBlock(streamState.thinkingBlockIndex, streamState)) {
+        const _c = convertToOpenAI(ev, conversationId, model)
+        if (_c !== null) yield _c
+      }
+      reasoningClosed = true
     }
 
     if (thinkingRequested && streamState.buffer) {
