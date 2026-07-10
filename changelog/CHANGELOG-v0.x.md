@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.0...v0.4.1) (2026-07-10)
+
+
+### Miscellaneous Chores
+
+* verify OIDC trusted publishing ([#12](https://github.com/sunerpy/opencode-kiro-auth/issues/12)) ([7184e2e](https://github.com/sunerpy/opencode-kiro-auth/commit/7184e2e37e2a2444ae99669e9493fa0a23207ddf))
+
 ## [0.4.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.3.0...v0.4.0) (2026-07-10)
 
 
