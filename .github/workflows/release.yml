@@ -61,9 +61,12 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      # OIDC Trusted Publishing requires npm CLI >= 11.5.1; the runner's bundled
-      # npm may be older, so upgrade it before publishing.
-      - run: npm install -g npm@latest
+      # OIDC Trusted Publishing requires npm CLI >= 11.5.1. setup-node@v4 with
+      # Node 24 ships npm 11.x (>= 11.5.1) with a complete install, so we rely
+      # on the bundled npm rather than `npm install -g npm@latest` — the latter
+      # is known to leave the global npm's node_modules incomplete for the
+      # provenance codepath (Cannot find module 'sigstore').
+      - run: npm --version && node --version
 
       # OIDC-first, token-fallback publish:
       #   - When the npmjs.com trusted-publisher is configured for this repo +
