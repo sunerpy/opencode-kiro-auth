@@ -198,6 +198,13 @@ Details and the full JSON example: [docs/MODELS.md](docs/MODELS.md).
 > as "Thought: `<duration>`" above the final reply. No config needed. See
 > [Reasoning display](docs/CONFIGURATION.md#reasoning-display) for details.
 
+> **Note:** Per-request thinking level via model variants — pick
+> `kiro-auth/claude-opus-4-8-xhigh` (or similar) straight from the model
+> list to pin an explicit Kiro effort level for that model, no `kiro.json`
+> edit needed. Base models like `claude-opus-4-8` remain available and keep
+> using the global `effort` setting. See [docs/VARIANTS.md](docs/VARIANTS.md)
+> for the full variant list and why they exist.
+
 ## Troubleshooting
 
 Common issues — 403/AccessDeniedException with IAM Identity Center, "No

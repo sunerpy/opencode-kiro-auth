@@ -9,7 +9,7 @@ export const EFFORT_LEVELS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh
  * Models that support the 5-value effort enum (including xhigh).
  * These models support up to 128k thinking tokens with max effort.
  */
-const XHIGH_CAPABLE_MODELS = new Set(['claude-opus-4.7', 'claude-opus-4.8'])
+const XHIGH_CAPABLE_MODELS = new Set(['claude-opus-4.7', 'claude-opus-4.8', 'claude-sonnet-5'])
 
 /**
  * Models that support the 4-value effort enum (no xhigh).
