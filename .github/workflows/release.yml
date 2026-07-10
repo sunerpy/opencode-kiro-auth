@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
 
+# Per-job permissions:
+#   - release-please needs `contents: write` (create tags/releases) and
+#     `pull-requests: write` (open/maintain the release PR).
+#   - publish-npm needs `id-token: write` for npm OIDC Trusted Publishing
+#     (short-lived credentials, no long-lived token) and only `contents: read`.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,6 +19,9 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -30,6 +37,10 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      # id-token: write enables npm OIDC Trusted Publishing.
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,6 +61,17 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
+      # OIDC Trusted Publishing requires npm CLI >= 11.5.1; the runner's bundled
+      # npm may be older, so upgrade it before publishing.
+      - run: npm install -g npm@latest
+
+      # OIDC-first, token-fallback publish:
+      #   - When the npmjs.com trusted-publisher is configured for this repo +
+      #     workflow (release.yml), npm auto-detects the OIDC id-token and
+      #     publishes with short-lived credentials, auto-generating provenance.
+      #   - Otherwise npm falls back to NODE_AUTH_TOKEN (NPM_TOKEN), so this
+      #     workflow keeps working today and switches to OIDC transparently
+      #     once the trusted publisher is set up on npmjs.com.
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
