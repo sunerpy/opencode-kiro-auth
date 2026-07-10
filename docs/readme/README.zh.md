@@ -176,6 +176,11 @@ Thinking budget 会自动映射到 Kiro 原生的 `effort` 字段：
 > 给某个 agent 指定带 `-thinking` 后缀的模型。详见
 > [docs/CONFIGURATION.md](../CONFIGURATION.md#reasoning-effort)。
 
+> **注意：** 推理模型（如 Claude Opus 4.x 等具备推理能力的 Kiro 模型）的
+> 思考过程会作为独立的 reasoning 块流式呈现在回复上方，不再被丢弃或与正文
+> 混在一起，无需额外配置。详见
+> [docs/CONFIGURATION.md](../CONFIGURATION.md#reasoning-display)。
+
 ## 故障排查
 
 常见问题——IAM Identity Center 下的 403/AccessDeniedException、"No accounts"、

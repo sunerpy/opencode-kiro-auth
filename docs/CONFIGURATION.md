@@ -124,6 +124,25 @@ In practice:
   OpenCode/omo orchestration layer, for example by mapping each agent to a
   distinct model id (model choice *is* forwarded), not inside this plugin.
 
+## Reasoning display
+
+Reasoning-capable Kiro models (Claude Opus 4.x, and other reasoning-capable
+Kiro models) stream their chain-of-thought through a distinct event,
+separate from the final answer text. The plugin picks that event up and
+surfaces it as OpenCode's own reasoning block (`reasoning_content`), shown
+as "Thought: `<duration>`" plus a collapsible reasoning section above the
+final reply, instead of dropping it or merging it into the visible answer.
+
+This is separate from the `effort` setting above:
+
+- **Reasoning is emitted by default** for reasoning models, regardless of
+  `effort` or `auto_effort_mapping`.
+- **`effort` only scales reasoning depth** (how much the model thinks), not
+  whether reasoning is shown. Even at `low` effort, any reasoning the model
+  produces still streams into the reasoning block.
+- **No config needed.** There's no toggle for this — reasoning display is
+  automatic for any model/request that has reasoning content to stream.
+
 ## Account selection strategy
 
 `account_selection_strategy` controls how the plugin picks which stored Kiro
