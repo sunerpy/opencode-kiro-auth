@@ -192,6 +192,12 @@ Details and the full JSON example: [docs/MODELS.md](docs/MODELS.md).
 > `kiro.json` instead. See
 > [Reasoning effort](docs/CONFIGURATION.md#reasoning-effort) for details.
 
+> **Note:** Reasoning-capable Kiro models (Claude Opus 4.x and other
+> reasoning-capable models) stream their chain-of-thought as a separate
+> event, which the plugin surfaces as OpenCode's own reasoning block — shown
+> as "Thought: `<duration>`" above the final reply. No config needed. See
+> [Reasoning display](docs/CONFIGURATION.md#reasoning-display) for details.
+
 ## Troubleshooting
 
 Common issues — 403/AccessDeniedException with IAM Identity Center, "No

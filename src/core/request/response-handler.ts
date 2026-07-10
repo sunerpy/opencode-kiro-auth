@@ -122,6 +122,7 @@ export class ResponseHandler {
   ): Promise<Response> {
     // For non-streaming SDK responses, collect all events
     let content = ''
+    let reasoningContent = ''
     const toolCalls: any[] = []
     let inputTokens = 0
     let outputTokens = 0
@@ -129,6 +130,9 @@ export class ResponseHandler {
     const eventStream = sdkResponse.generateAssistantResponseResponse
     if (eventStream) {
       for await (const event of eventStream) {
+        if (event.reasoningContentEvent?.text) {
+          reasoningContent += event.reasoningContentEvent.text
+        }
         if (event.assistantResponseEvent?.content) {
           content += event.assistantResponseEvent.content
         }
@@ -142,6 +146,11 @@ export class ResponseHandler {
       }
     }
 
+    const message: any = { role: 'assistant', content }
+    if (reasoningContent) {
+      message.reasoning_content = reasoningContent
+    }
+
     const oai: any = {
       id: conversationId,
       object: 'chat.completion',
@@ -150,7 +159,7 @@ export class ResponseHandler {
       choices: [
         {
           index: 0,
-          message: { role: 'assistant', content },
+          message,
           finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
         }
       ],
