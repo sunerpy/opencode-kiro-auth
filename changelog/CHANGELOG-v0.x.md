@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.3...v0.5.0) (2026-07-10)
+
+
+### Features
+
+* **models:** add effort-level model variants for opus 4.8/4.7 + sonnet 5/4.6 ([#19](https://github.com/sunerpy/opencode-kiro-auth/issues/19)) ([c44a6cd](https://github.com/sunerpy/opencode-kiro-auth/commit/c44a6cdd6702c2fbe28896cb38b74edbb5a9a0b0))
+
 ## [0.4.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.2...v0.4.3) (2026-07-10)
 
 
