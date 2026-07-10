@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.1...v0.4.2) (2026-07-10)
+
+
+### Miscellaneous Chores
+
+* re-verify OIDC publishing after sigstore fix ([#15](https://github.com/sunerpy/opencode-kiro-auth/issues/15)) ([0a2c14c](https://github.com/sunerpy/opencode-kiro-auth/commit/0a2c14cdbe50b3e46c64849af9dfb7357a196739))
+
 ## [0.4.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.0...v0.4.1) (2026-07-10)
 
 
