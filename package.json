@@ -1,6 +1,6 @@
 {
   "name": "@sunerpy/opencode-kiro-auth",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to Claude models",
   "type": "module",
   "main": "dist/index.js",
