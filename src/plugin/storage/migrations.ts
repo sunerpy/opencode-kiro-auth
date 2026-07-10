@@ -9,6 +9,7 @@ export function runMigrations(db: Database): void {
   migrateStartUrlColumn(db)
   migrateOidcRegionColumn(db)
   migrateDropRefreshTokenUniqueIndex(db)
+  migrateRemovedAccountsTable(db)
 }
 
 function migrateToUniqueRefreshToken(db: Database): void {
@@ -182,4 +183,12 @@ function migrateDropRefreshTokenUniqueIndex(db: Database): void {
       db.prepare('DELETE FROM accounts WHERE id = ?').run(row.id)
     }
   }
+}
+
+function migrateRemovedAccountsTable(db: Database): void {
+  // Tombstone table: records account ids the user explicitly removed via the auth menu,
+  // so kiro-cli auto-sync does not silently re-import them. Cleared only on deliberate login.
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS removed_accounts (id TEXT PRIMARY KEY, removed_at INTEGER NOT NULL)'
+  )
 }

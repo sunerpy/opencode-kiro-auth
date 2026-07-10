@@ -175,6 +175,13 @@ export class AccountManager {
         error: e instanceof Error ? e.message : String(e)
       })
     )
+    kiroDb.addRemovedAccount(a.id).catch((e) =>
+      logger.warn('DB write failed', {
+        method: 'removeAccount:tombstone',
+        email: a.email,
+        error: e instanceof Error ? e.message : String(e)
+      })
+    )
     if (this.accounts.length === 0) this.cursor = 0
     else if (this.cursor >= this.accounts.length) this.cursor = this.accounts.length - 1
     else if (removedIndex <= this.cursor && this.cursor > 0) this.cursor--

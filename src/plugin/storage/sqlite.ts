@@ -138,6 +138,28 @@ export class KiroDatabase {
     })
   }
 
+  async addRemovedAccount(id: string): Promise<void> {
+    await withDatabaseLock(this.path, async () => {
+      this.db
+        .prepare('INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)')
+        .run(id, Date.now())
+    })
+  }
+
+  async isAccountRemoved(id: string): Promise<boolean> {
+    return !!this.db.prepare('SELECT id FROM removed_accounts WHERE id = ?').get(id)
+  }
+
+  async clearRemovedAccount(id: string): Promise<void> {
+    await withDatabaseLock(this.path, async () => {
+      this.db.prepare('DELETE FROM removed_accounts WHERE id = ?').run(id)
+    })
+  }
+
+  async listRemovedAccounts(): Promise<string[]> {
+    return (this.db.prepare('SELECT id FROM removed_accounts').all() as any[]).map((r) => r.id)
+  }
+
   async markAccountsUnhealthy(ids: string[], reason: string): Promise<void> {
     if (ids.length === 0) return
 
