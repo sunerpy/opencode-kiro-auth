@@ -181,6 +181,14 @@ Thinking budget 会自动映射到 Kiro 原生的 `effort` 字段：
 > 混在一起，无需额外配置。详见
 > [docs/CONFIGURATION.md](../CONFIGURATION.md#reasoning-display)。
 
+> **注意：** 按请求选择思考等级的模型变体——直接从模型列表中选择
+> `kiro-auth/claude-opus-4-8-xhigh` 这类带效果后缀的模型 id，即可为该请求
+> 指定明确的 Kiro effort 等级，无需修改 `kiro.json`。基础模型（如
+> `claude-opus-4-8`）依然可用，继续遵循全局 `effort` 设置。之所以用模型 id
+> 变体来实现，是因为 OpenCode 的 Ctrl+T 思考等级选择器（`reasoningEffort`）
+> 不会转发给 `@ai-sdk/openai-compatible` 这类 provider，属于上游限制。完整
+> 变体列表与原因详见 [docs/VARIANTS.md](../VARIANTS.md)。
+
 ## 故障排查
 
 常见问题——IAM Identity Center 下的 403/AccessDeniedException、"No accounts"、
