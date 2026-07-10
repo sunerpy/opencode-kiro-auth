@@ -44,6 +44,7 @@ export async function syncFromKiroCli() {
     const deviceReg = safeJsonParse(deviceRegRow?.value)
     const regCreds = deviceReg ? findClientCredsRecursive(deviceReg) : {}
     const syncedAccounts: SyncedCliAccount[] = []
+    let skippedRemoved = 0
 
     for (const row of rows) {
       if (row.key.includes(':token')) {
@@ -156,7 +157,9 @@ export async function syncFromKiroCli() {
           )
           if (placeholderId !== id) {
             const placeholderRow = all.find((a) => a.id === placeholderId)
-            if (placeholderRow) {
+            if (placeholderRow && (await kiroDb.isAccountRemoved(placeholderId))) {
+              skippedRemoved++
+            } else if (placeholderRow) {
               await kiroDb.upsertAccount({
                 id: placeholderId,
                 email: placeholderRow.email,
@@ -180,6 +183,11 @@ export async function syncFromKiroCli() {
               })
             }
           }
+        }
+
+        if (await kiroDb.isAccountRemoved(id)) {
+          skippedRemoved++
+          continue
         }
 
         await kiroDb.upsertAccount({
@@ -218,6 +226,8 @@ export async function syncFromKiroCli() {
       await kiroDb.markAccountsUnhealthy(staleIds, STALE_CLI_ACCOUNT_REASON)
       logger.warn('Kiro CLI sync: deactivated stale cached accounts', { count: staleIds.length })
     }
+
+    logger.log('Kiro CLI sync: done', { synced: syncedAccounts.length, skippedRemoved })
 
     cliDb.close()
   } catch (e) {

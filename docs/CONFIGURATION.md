@@ -159,6 +159,35 @@ account, or by switching accounts in `kiro-cli`), and the plugin cycles
 through them on each request instead of always favoring the account with
 the most quota left.
 
+## Removing accounts & the removal tombstone
+
+Removing an account (`opencode auth login` → `kiro-auth` → "Remove a Kiro
+account (N stored)" → pick one) deletes it from `kiro.db` and records its
+account id in a `removed_accounts` table — a tombstone.
+
+That tombstone matters because of `auto_sync_kiro_cli`. With auto-sync on
+(the default), the plugin re-scans your local `kiro-cli` database on every
+auth init and imports whatever sessions it finds there. Before the
+tombstone existed, this meant a removed account would simply get re-imported
+on the next startup if it was still present in `kiro-cli`'s own store — the
+exact bug reported with recurring `idc-placeholder+...@awsapps.local`
+accounts. Now `syncFromKiroCli` checks the tombstone first and skips any
+account id it lists, so:
+
+- **`auto_sync_kiro_cli: true` will not revive a removed account.** Once
+  removed, it stays removed across restarts and every subsequent sync, no
+  matter how many times auto-sync runs.
+- **Re-login clears the tombstone.** If you deliberately want that account
+  back, run `opencode auth login` and log in with it again (Builder ID or
+  IAM Identity Center, matching the identity you removed). That login clears
+  the tombstone entry and the account is stored normally again — auto-sync
+  will also pick it up from `kiro-cli` afterward if it's still there.
+- **This only affects this plugin's own `kiro.db`.** Removing an account
+  here does **not** touch `kiro-cli`'s own credential store
+  (`data.sqlite3`). If you also want `kiro-cli` itself to forget that
+  identity, log it out there directly (`kiro-cli logout` or equivalent) —
+  that's a separate, unrelated store from this plugin's tombstone.
+
 ## Reading usage
 
 The plugin surfaces live usage (`usedCount`/`limitCount` per account) in the
