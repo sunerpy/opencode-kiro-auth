@@ -16,13 +16,13 @@ import {
   convertToolsToCodeWhisperer,
   deduplicateToolResults
 } from '../infrastructure/transformers/tool-transformer.js'
-import { getEffectiveEffort } from './effort.js'
+import { getEffectiveEffort, resolveEffort } from './effort.js'
 import {
   convertImagesToKiroFormat,
   extractAllImages,
   extractTextFromParts
 } from './image-handler.js'
-import { resolveKiroModel } from './models.js'
+import { resolveModelVariant } from './models.js'
 import type {
   CodeWhispererRequest,
   Effort,
@@ -35,6 +35,7 @@ interface TransformResult {
   request: CodeWhispererRequest
   resolved: string
   convId: string
+  variantEffort?: Effort
 }
 
 interface EffortConfig {
@@ -56,7 +57,7 @@ function buildCodeWhispererRequest(
   const { messages, tools, system } = req
   const convId = crypto.randomUUID()
   if (!messages || messages.length === 0) throw new Error('No messages')
-  const resolved = resolveKiroModel(model)
+  const { wireId: resolved, effort: variantEffort } = resolveModelVariant(model)
   const systemMsgs = messages.filter((m: any) => m.role === 'system')
   const otherMsgs = messages.filter((m: any) => m.role !== 'system')
   let sys = system || ''
@@ -277,7 +278,7 @@ function buildCodeWhispererRequest(
     }
   }
 
-  return { request, resolved, convId }
+  return { request, resolved, convId, variantEffort }
 }
 
 export function transformToCodeWhisperer(
@@ -327,7 +328,7 @@ export function transformToSdkRequest(
   showToast?: ToastFunction,
   effortConfig?: EffortConfig
 ): SdkPreparedRequest {
-  const { request, resolved, convId } = buildCodeWhispererRequest(
+  const { request, resolved, convId, variantEffort } = buildCodeWhispererRequest(
     body,
     model,
     auth,
@@ -336,14 +337,15 @@ export function transformToSdkRequest(
     showToast
   )
 
-  // Resolve effort level based on config and model capabilities
-  const effort = getEffectiveEffort(
-    resolved,
-    think,
-    budget,
-    effortConfig?.effort,
-    effortConfig?.autoEffortMapping ?? true
-  )
+  const effort = variantEffort
+    ? resolveEffort(resolved, variantEffort)
+    : getEffectiveEffort(
+        resolved,
+        think,
+        budget,
+        effortConfig?.effort,
+        effortConfig?.autoEffortMapping ?? true
+      )
 
   return {
     conversationState: request.conversationState,
