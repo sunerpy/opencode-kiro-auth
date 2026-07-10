@@ -136,6 +136,13 @@ avoid a hot loop.
 choose "Remove a Kiro account (N stored)", then pick the account from the
 dropdown (or cancel).
 
+> **Note:** removal is persistent. Once you remove an account it stays
+> removed across restarts and Kiro CLI auto-sync — it won't come back on its
+> own. To re-add it, just log in with that account again via
+> `opencode auth login`. See
+> [Removing accounts & the removal tombstone](docs/CONFIGURATION.md#removing-accounts--the-removal-tombstone)
+> for how this works.
+
 Full config key reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Usage display

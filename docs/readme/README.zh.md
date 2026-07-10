@@ -121,6 +121,13 @@
 "Remove a Kiro account (N stored)"，然后在下拉列表中选中要移除的账号（或选
 Cancel 取消）。
 
+> **注意：** 移除账号现在是持久的。一旦移除，该账号在重启和 Kiro CLI 自动同步
+> 之后都不会自己恢复——kiro-cli 的自动同步不会再把它同步回来。如需重新添加，
+> 只需通过 `opencode auth login` 用该账号再登录一次，重新登录会清除对应的
+> "墓碑"记录从而恢复该账号。如需从 kiro-cli 源头彻底移除，请使用 kiro-cli
+> 自己的登出命令（本插件不会修改 kiro-cli 的 `data.sqlite3`）。详见
+> [docs/CONFIGURATION.md](../CONFIGURATION.md#removing-accounts--the-removal-tombstone)。
+
 完整配置项参考见 [docs/CONFIGURATION.md](../CONFIGURATION.md)。
 
 ## 用量显示
