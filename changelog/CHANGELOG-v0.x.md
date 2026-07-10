@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.2...v0.4.3) (2026-07-10)
+
+
+### Bug Fixes
+
+* **streaming:** render Kiro reasoningContentEvent as separate reasoning block ([#17](https://github.com/sunerpy/opencode-kiro-auth/issues/17)) ([6d28d0f](https://github.com/sunerpy/opencode-kiro-auth/commit/6d28d0f6c07f86e022f33b5cc49605069c2a6350))
+
 ## [0.4.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.1...v0.4.2) (2026-07-10)
 
 
