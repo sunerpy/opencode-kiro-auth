@@ -1,10 +1,16 @@
-import { parseBracketToolCalls } from '../../infrastructure/transformers/tool-call-parser.js'
 import { getContextWindowSize } from '../models.js'
 import { estimateTokens } from '../response.js'
+import { DialectGate } from './dialect-gate.js'
 import { convertToOpenAI } from './openai-converter.js'
 import { findRealTag } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
-import { StreamState, THINKING_END_TAG, THINKING_START_TAG, ToolCallState } from './types.js'
+import {
+  StreamEvent,
+  StreamState,
+  THINKING_END_TAG,
+  THINKING_START_TAG,
+  ToolCallState
+} from './types.js'
 
 export async function* transformSdkStream(
   sdkResponse: any,
@@ -31,6 +37,19 @@ export async function* transformSdkStream(
   let contextUsagePercentage: number | null = null
   const toolCalls: ToolCallState[] = []
   let currentToolCall: ToolCallState | null = null
+
+  // Text deltas route through the gate so a dialect span is withheld from the
+  // visible stream once its opening marker appears (recovered at finalization).
+  const dialectGate = new DialectGate()
+  const toChunk = (ev: StreamEvent): any => {
+    if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+      const safe = dialectGate.push(ev.delta.text ?? '')
+      if (!safe) return null
+      const gated: StreamEvent = { ...ev, delta: { ...ev.delta, text: safe } }
+      return convertToOpenAI(gated, conversationId, model)
+    }
+    return convertToOpenAI(ev, conversationId, model)
+  }
 
   // Probe (opus-4.8): reasoning streams via `reasoningContentEvent{text,signature}` as a
   // contiguous run BEFORE `assistantResponseEvent.content`; no `<thinking>` tags emitted.
@@ -77,7 +96,7 @@ export async function* transformSdkStream(
 
         if (reasoningStarted) {
           for (const ev of createTextDeltaEvents(text, streamState)) {
-            const _c = convertToOpenAI(ev, conversationId, model)
+            const _c = toChunk(ev)
             if (_c !== null) yield _c
           }
           continue
@@ -86,7 +105,7 @@ export async function* transformSdkStream(
         if (!thinkingRequested) {
           for (const ev of createTextDeltaEvents(text, streamState)) {
             {
-              const _c = convertToOpenAI(ev, conversationId, model)
+              const _c = toChunk(ev)
               if (_c !== null) yield _c
             }
           }
@@ -160,7 +179,7 @@ export async function* transformSdkStream(
         }
 
         for (const ev of deltaEvents) {
-          const chunk = convertToOpenAI(ev, conversationId, model)
+          const chunk = toChunk(ev)
           if (chunk !== null) yield chunk
         }
       } else if (event.toolUseEvent) {
@@ -227,10 +246,18 @@ export async function* transformSdkStream(
         }
       } else {
         for (const ev of createTextDeltaEvents(streamState.buffer, streamState)) {
-          const _c = convertToOpenAI(ev, conversationId, model)
+          const _c = toChunk(ev)
           if (_c !== null) yield _c
         }
         streamState.buffer = ''
+      }
+    }
+
+    const { toolCalls: dialectToolCalls, remainderText } = dialectGate.finalize()
+    if (remainderText) {
+      for (const ev of createTextDeltaEvents(remainderText, streamState)) {
+        const _c = convertToOpenAI(ev, conversationId, model)
+        if (_c !== null) yield _c
       }
     }
 
@@ -239,9 +266,8 @@ export async function* transformSdkStream(
       if (_c !== null) yield _c
     }
 
-    const bracketToolCalls = parseBracketToolCalls(totalContent)
-    if (bracketToolCalls.length > 0) {
-      for (const btc of bracketToolCalls) {
+    if (dialectToolCalls.length > 0) {
+      for (const btc of dialectToolCalls) {
         toolCalls.push({
           toolUseId: btc.toolUseId,
           name: btc.name,

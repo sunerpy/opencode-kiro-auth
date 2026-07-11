@@ -45,6 +45,33 @@ interface EffortConfig {
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
+function jsonSchemaTypeOf(value: unknown): string {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'string'
+  const t = typeof value
+  if (t === 'number' || t === 'boolean' || t === 'string' || t === 'object') return t
+  return 'string'
+}
+
+// No `required` fields are inferred: fabricated required keys risk a 400.
+function inferToolSpecFromHistory(
+  name: string,
+  toolUsesInHistory: Array<{ input?: any; name?: string }>
+): { name: string; description: string; inputSchema: { json: Record<string, unknown> } } {
+  const sample = toolUsesInHistory.find(
+    (tu) => tu.name === name && tu.input && typeof tu.input === 'object' && !Array.isArray(tu.input)
+  )
+  const properties: Record<string, unknown> = {}
+  if (sample && sample.input) {
+    for (const [key, val] of Object.entries(sample.input as Record<string, unknown>)) {
+      properties[key] = { type: jsonSchemaTypeOf(val) }
+    }
+  }
+  const json: Record<string, unknown> =
+    Object.keys(properties).length > 0 ? { type: 'object', properties } : { type: 'object' }
+  return { name, description: `Tool ${name}`, inputSchema: { json } }
+}
+
 function buildCodeWhispererRequest(
   body: any,
   model: string,
@@ -264,13 +291,10 @@ function buildCodeWhispererRequest(
           (name) => !existingToolNames.has(name)
         )
         if (missingToolNames.length > 0) {
-          const placeholderTools = missingToolNames.map((name) => ({
-            toolSpecification: {
-              name,
-              description: 'Tool',
-              inputSchema: { json: { type: 'object', properties: {} } }
-            }
-          }))
+          const placeholderTools = missingToolNames.map((name) => {
+            const inferred = inferToolSpecFromHistory(name, toolUsesInHistory)
+            return { toolSpecification: inferred }
+          })
           if (!uim.userInputMessageContext) uim.userInputMessageContext = {}
           uim.userInputMessageContext.tools = [...existingTools, ...placeholderTools]
         }
