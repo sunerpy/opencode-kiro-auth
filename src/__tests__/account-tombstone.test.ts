@@ -199,12 +199,10 @@ describe('account tombstone: sync skips tombstoned exact id (MOMUS #1)', () => {
 })
 
 describe('account tombstone: placeholder-email stability (MOMUS #2)', () => {
-  test('a no-email account tombstoned by placeholder id stays absent after sync', async () => {
+  test('a no-email placeholder-only identity is re-created after a stale tombstone (bootstrap wins)', async () => {
     const arn = 'arn:aws:codewhisperer:us-east-1:123:profile/placeholder'
     const clientId = 'cid-placeholder'
 
-    // Compute the placeholder id the SAME way sync will: serviceRegion is
-    // derived from the profile ARN (us-east-1), matching remove-time.
     const placeholderEmail = makePlaceholderEmail('idc', 'us-east-1', clientId, arn)
     const placeholderId = createDeterministicAccountId(placeholderEmail, 'idc', clientId, arn)
 
@@ -213,10 +211,11 @@ describe('account tombstone: placeholder-email stability (MOMUS #2)', () => {
     makeCliFixture([placeholderToken(clientId, arn)], arn)
     await syncFromKiroCli()
 
-    // This proves remove-time id == later-sync id for placeholder accounts:
-    // the exact field bug (idc-placeholder@awsapps.local re-appearing).
-    expect(accountIds()).not.toContain(placeholderId)
-    expect(await kiroDb.isAccountRemoved(placeholderId)).toBe(true)
+    // No same-identity REAL account coexists, so the stale tombstone must NOT
+    // strand a placeholder-only identity: the tombstone is cleared and the
+    // bootstrap placeholder is re-created so the user has a usable account.
+    expect(accountIds()).toContain(placeholderId)
+    expect(await kiroDb.isAccountRemoved(placeholderId)).toBe(false)
   })
 
   test('control: an identical no-email account WITHOUT a tombstone IS imported', async () => {
