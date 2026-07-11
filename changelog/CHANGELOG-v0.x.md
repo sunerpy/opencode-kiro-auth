@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.5.2...v0.6.0) (2026-07-11)
+
+
+### Features
+
+* **accounts:** quota-aware avoidance (reserve threshold + drain + single-account bypass) ([#25](https://github.com/sunerpy/opencode-kiro-auth/issues/25)) ([aff04f8](https://github.com/sunerpy/opencode-kiro-auth/commit/aff04f8538cc34e7b64bf38b12c530134b140075))
+
 ## [0.5.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.5.1...v0.5.2) (2026-07-11)
 
 
