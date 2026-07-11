@@ -4,6 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@sunerpy/opencode-kiro-auth)](https://www.npmjs.com/package/@sunerpy/opencode-kiro-auth)
 [![npm downloads](https://img.shields.io/npm/dm/@sunerpy/opencode-kiro-auth)](https://www.npmjs.com/package/@sunerpy/opencode-kiro-auth)
+[![codecov](https://codecov.io/gh/sunerpy/opencode-kiro-auth/branch/main/graph/badge.svg)](https://codecov.io/gh/sunerpy/opencode-kiro-auth)
 [![license](https://img.shields.io/npm/l/@sunerpy/opencode-kiro-auth)](https://www.npmjs.com/package/@sunerpy/opencode-kiro-auth)
 
 > OpenCode plugin that lets OpenCode use AWS Kiro (CodeWhisperer) as a model
