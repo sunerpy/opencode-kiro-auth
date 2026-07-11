@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.6.0...v0.6.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **sync:** eliminate ghost placeholder accounts at source (delete+tombstone on real-email sync incl reuse path) ([#27](https://github.com/sunerpy/opencode-kiro-auth/issues/27)) ([7f9008e](https://github.com/sunerpy/opencode-kiro-auth/commit/7f9008e875d2931100dbb4e100af7b1e52c6ad73))
+
 ## [0.6.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.5.2...v0.6.0) (2026-07-11)
 
 
