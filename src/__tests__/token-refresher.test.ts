@@ -240,8 +240,8 @@ describe('TokenRefresher.forceRefresh', () => {
         headers: { 'Content-Type': 'application/json' }
       })) as any
 
-    const ok = await refresher.forceRefresh(acc, noToast)
-    expect(ok).toBe(true)
+    const result = await refresher.forceRefresh(acc, noToast)
+    expect(result).toEqual({ ok: true, dead: false })
     expect(mgr.getAccounts().find((a) => a.id === 'A')!.accessToken).toBe('forced-access')
     expect(repo.batchSave).toHaveBeenCalledTimes(1)
   })
@@ -260,8 +260,9 @@ describe('TokenRefresher.forceRefresh', () => {
       new Response(JSON.stringify({ message: 'denied' }), { status: 403 })) as any
 
     const toastMsgs: Array<[string, Variant]> = []
-    const ok = await refresher.forceRefresh(acc, (m, v) => toastMsgs.push([m, v]))
-    expect(ok).toBe(false)
+    const result = await refresher.forceRefresh(acc, (m, v) => toastMsgs.push([m, v]))
+    expect(result.ok).toBe(false)
+    expect(result.dead).toBe(true)
     expect(toastMsgs.some(([m, v]) => v === 'warning' && m.includes('403'))).toBe(true)
   })
 })

@@ -1,16 +1,24 @@
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
+import { isAccessTokenError, toDeadReason } from '../../plugin/health'
 import type { ManagedAccount } from '../../plugin/types'
+import type { ForceRefreshResult } from '../auth/token-refresher'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
-interface RequestContext {
+export interface RequestContext {
   retry: number
-  // One-shot guard: set once the invalid-bearer 403 forced refresh+retry has fired.
-  bearerRefreshAttempted?: boolean
+  // Loop-bound invariant: account ids already force-refreshed this request.
+  // Threaded across retries AND account switches (never reset on switch) so
+  // each account force-refreshes at most once, bounding the loop with the
+  // RetryStrategy iteration cap.
+  forcedRefreshAccountIds?: Set<string>
 }
 
-type ForceRefreshFn = (account: ManagedAccount, showToast: ToastFunction) => Promise<boolean>
+type ForceRefreshFn = (
+  account: ManagedAccount,
+  showToast: ToastFunction
+) => Promise<ForceRefreshResult>
 
 interface ErrorHandlerConfig {
   rate_limit_max_retries: number
@@ -119,29 +127,50 @@ export class ErrorHandler {
         errorReason = 'Account Suspended'
         isPermanent = true
       }
-      const isInvalidBearer =
-        errorReason.includes('bearer token included in the request is invalid') ||
-        errorReason.includes('The bearer token included in the request is invalid')
+      const isInvalidBearer = isAccessTokenError(errorReason)
 
-      if (
-        response.status === 403 &&
-        isInvalidBearer &&
-        !context.bearerRefreshAttempted &&
-        this.forceRefresh
-      ) {
-        const refreshed = await this.forceRefresh(account, showToast)
-        if (refreshed) {
-          showToast('403: Stale token detected. Refreshed and retrying...', 'warning')
-          return {
-            shouldRetry: true,
-            newContext: { ...context, bearerRefreshAttempted: true }
+      if (response.status === 403 && isInvalidBearer && this.forceRefresh) {
+        const forced = context.forcedRefreshAccountIds ?? new Set<string>()
+        const alreadyForced = forced.has(account.id)
+
+        if (!alreadyForced) {
+          const result = await this.forceRefresh(account, showToast)
+          const nextForced = new Set(forced).add(account.id)
+          if (result.ok) {
+            showToast('403: Stale token detected. Refreshed and retrying...', 'warning')
+            return {
+              shouldRetry: true,
+              newContext: { ...context, forcedRefreshAccountIds: nextForced }
+            }
           }
+          if (result.dead) {
+            return this.markDeadAndSwitchOrFail(
+              account,
+              errorReason,
+              response.status,
+              context,
+              nextForced,
+              showToast
+            )
+          }
+          return this.transientForbidden(
+            errorReason,
+            response.status,
+            { ...context, forcedRefreshAccountIds: nextForced },
+            showToast
+          )
         }
+
+        return this.markDeadAndSwitchOrFail(
+          account,
+          errorReason,
+          response.status,
+          context,
+          forced,
+          showToast
+        )
       }
 
-      if (isInvalidBearer) {
-        isPermanent = true
-      }
       if (isPermanent) {
         account.failCount = 10
       }
@@ -158,13 +187,7 @@ export class ErrorHandler {
         !isPermanent &&
         context.retry < this.config.rate_limit_max_retries
       ) {
-        const delay = this.config.rate_limit_retry_delay_ms * Math.pow(2, context.retry)
-        showToast(`403: ${errorReason}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
-        await this.sleep(delay)
-        return {
-          shouldRetry: true,
-          newContext: { ...context, retry: context.retry + 1 }
-        }
+        return this.transientForbidden(errorReason, response.status, context, showToast)
       }
 
       showToast(`${response.status}: ${errorReason}`, 'error')
@@ -174,6 +197,50 @@ export class ErrorHandler {
     const reason = await readBody()
     showToast(`${response.status}: ${reason || response.statusText}`, 'error')
     return { shouldRetry: false }
+  }
+
+  private async markDeadAndSwitchOrFail(
+    account: ManagedAccount,
+    errorReason: string,
+    status: number,
+    context: RequestContext,
+    forced: Set<string>,
+    showToast: ToastFunction
+  ): Promise<{ shouldRetry: boolean; newContext?: RequestContext; switchAccount?: boolean }> {
+    const deadReason = toDeadReason(errorReason)
+    this.accountManager.markUnhealthy(account, deadReason)
+    await this.repository.batchSave(this.accountManager.getAccounts())
+
+    if (this.accountManager.getAccountCount() > 1) {
+      showToast(`${status}: ${errorReason}. Re-login required. Switching account...`, 'warning')
+      return {
+        shouldRetry: true,
+        switchAccount: true,
+        newContext: { ...context, forcedRefreshAccountIds: forced }
+      }
+    }
+
+    showToast(`${status}: ${errorReason}. Re-login required.`, 'error')
+    return { shouldRetry: false }
+  }
+
+  private async transientForbidden(
+    errorReason: string,
+    status: number,
+    context: RequestContext,
+    showToast: ToastFunction
+  ): Promise<{ shouldRetry: boolean; newContext?: RequestContext }> {
+    if (context.retry >= this.config.rate_limit_max_retries) {
+      showToast(`${status}: ${errorReason}`, 'error')
+      return { shouldRetry: false }
+    }
+    const delay = this.config.rate_limit_retry_delay_ms * Math.pow(2, context.retry)
+    showToast(`${status}: ${errorReason}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
+    await this.sleep(delay)
+    return {
+      shouldRetry: true,
+      newContext: { ...context, retry: context.retry + 1 }
+    }
   }
 
   async handleNetworkError(

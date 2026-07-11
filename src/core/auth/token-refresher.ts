@@ -2,6 +2,7 @@ import type { AccountRepository } from '../../infrastructure/database/account-re
 import { accessTokenExpired } from '../../kiro/auth'
 import type { AccountManager } from '../../plugin/accounts'
 import { KiroTokenRefreshError } from '../../plugin/errors'
+import { isRefreshTokenDead, toDeadReason } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
 import { refreshAccessToken } from '../../plugin/token'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
@@ -12,6 +13,42 @@ interface TokenRefresherConfig {
   token_expiry_buffer_ms: number
   auto_sync_kiro_cli: boolean
   account_selection_strategy: 'sticky' | 'round-robin' | 'lowest-usage'
+}
+
+/** Outcome of a forced refresh; `dead` distinguishes refresh-token-dead
+ *  (needs re-login) from a transient failure (network/5xx). */
+export interface ForceRefreshResult {
+  ok: boolean
+  dead: boolean
+}
+
+/**
+ * Decide whether a refresh failure means the refresh token / OIDC client is
+ * dead (permanent, needs re-login) or is merely transient (network/5xx).
+ * A missing/unusable-credential decode error (e.g. a corrupted refresh_token
+ * that never reaches the wire, or an empty response) is treated as dead:
+ * the stored credentials are unusable, so the account needs a re-login.
+ */
+export function isRefreshErrorDead(error: unknown): boolean {
+  if (error instanceof KiroTokenRefreshError) {
+    if (error.code === 'MISSING_CREDENTIALS' || error.code === 'INVALID_RESPONSE') {
+      return true
+    }
+    if (error.code === 'NETWORK_ERROR') {
+      return false
+    }
+    if (error.code && isRefreshTokenDead(error.code)) {
+      return true
+    }
+    return isRefreshTokenDead(error.message)
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  // Unusable stored credentials (missing/short/malformed refresh material that
+  // fails to encode or decode) are dead: the account needs a re-login.
+  if (message.includes('Missing credentials') || message.includes('Missing creds')) {
+    return true
+  }
+  return isRefreshTokenDead(message)
 }
 
 export class TokenRefresher {
@@ -41,21 +78,26 @@ export class TokenRefresher {
     }
   }
 
-  async forceRefresh(account: ManagedAccount, showToast: ToastFunction): Promise<boolean> {
-    const auth = this.accountManager.toAuthDetails(account)
+  async forceRefresh(
+    account: ManagedAccount,
+    showToast: ToastFunction
+  ): Promise<ForceRefreshResult> {
     try {
+      const auth = this.accountManager.toAuthDetails(account)
       const newAuth = await refreshAccessToken(auth)
       this.accountManager.updateFromAuth(account, newAuth)
       await this.repository.batchSave(this.accountManager.getAccounts())
-      return true
+      return { ok: true, dead: false }
     } catch (e: any) {
+      const dead = isRefreshErrorDead(e)
       logger.error('Forced token refresh failed', {
         email: account.email,
         code: e instanceof KiroTokenRefreshError ? e.code : undefined,
-        message: e instanceof Error ? e.message : String(e)
+        message: e instanceof Error ? e.message : String(e),
+        dead
       })
       showToast('403: Token refresh failed after stale-token detection.', 'warning')
-      return false
+      return { ok: false, dead }
     }
   }
 
@@ -88,18 +130,10 @@ export class TokenRefresher {
       return { account: stillAcc, shouldContinue: true }
     }
 
-    if (
-      error instanceof KiroTokenRefreshError &&
-      (error.code === 'ExpiredTokenException' ||
-        error.code === 'InvalidTokenException' ||
-        error.code === 'ExpiredClientException' ||
-        error.code === 'HTTP_401' ||
-        error.code === 'HTTP_403' ||
-        error.message.includes('Invalid refresh token provided') ||
-        error.message.includes('Invalid grant provided') ||
-        error.message.includes('Client is expired'))
-    ) {
-      this.accountManager.markUnhealthy(account, error.message)
+    // Mark unhealthy ONLY when the refresh token itself is dead. A transient
+    // failure (network / 5xx) leaves the account healthy so it can retry.
+    if (isRefreshErrorDead(error)) {
+      this.accountManager.markUnhealthy(account, toDeadReason(error.message))
       await this.repository.batchSave(this.accountManager.getAccounts())
       return { account, shouldContinue: true }
     }

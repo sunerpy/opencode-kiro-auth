@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
-import { isPermanentError } from './health'
+import { isAccessTokenError, isPermanentError } from './health'
 import * as logger from './logger'
 import { kiroDb } from './storage/sqlite'
 import { writeToKiroCli } from './sync/kiro-cli'
@@ -99,6 +99,16 @@ export class AccountManager {
       if (!a.isHealthy) {
         if (isPermanentError(a.unhealthyReason)) {
           return false
+        }
+        // Heal-by-refresh: a legacy access-token-error row (persisted
+        // invalid-bearer, possibly failCount=10) is refreshable, so reset and
+        // reselect it. Refresh-dead rows are already excluded above.
+        if (isAccessTokenError(a.unhealthyReason)) {
+          a.failCount = 0
+          a.isHealthy = true
+          delete a.unhealthyReason
+          delete a.recoveryTime
+          return true
         }
         if (a.failCount < 10 && a.recoveryTime && now >= a.recoveryTime) {
           a.isHealthy = true

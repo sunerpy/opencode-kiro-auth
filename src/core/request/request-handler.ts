@@ -11,7 +11,7 @@ import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../
 import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
 import { TokenRefresher } from '../auth/token-refresher'
-import { ErrorHandler } from './error-handler'
+import { ErrorHandler, type RequestContext } from './error-handler'
 import { ResponseHandler } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 
@@ -89,7 +89,7 @@ export class RequestHandler {
       body.thinkingConfig?.budget_tokens ||
       20000
 
-    let handlerContext: { retry: number; bearerRefreshAttempted?: boolean } = { retry: 0 }
+    let handlerContext: RequestContext = { retry: 0, forcedRefreshAccountIds: new Set<string>() }
     let consecutiveNullAccounts = 0
     const retryContext = this.retryStrategy.createContext()
 
