@@ -28,12 +28,25 @@ export class AccountManager {
   private strategy: AccountSelectionStrategy
   private lastToastTime = 0
   private lastUsageToastTime = 0
-  constructor(accounts: ManagedAccount[], strategy: AccountSelectionStrategy = 'sticky') {
+  private rrCursor = 0
+  private stickyId?: string
+  private quotaAvoidanceEnabled: boolean
+  private quotaReserveThreshold: number
+  constructor(
+    accounts: ManagedAccount[],
+    strategy: AccountSelectionStrategy = 'sticky',
+    opts?: { quotaAvoidanceEnabled?: boolean; quotaReserveThreshold?: number }
+  ) {
     this.accounts = accounts
     this.cursor = 0
     this.strategy = strategy
+    this.quotaAvoidanceEnabled = opts?.quotaAvoidanceEnabled ?? true
+    this.quotaReserveThreshold = opts?.quotaReserveThreshold ?? 0.95
   }
-  static async loadFromDisk(strategy?: AccountSelectionStrategy): Promise<AccountManager> {
+  static async loadFromDisk(
+    strategy?: AccountSelectionStrategy,
+    opts?: { quotaAvoidanceEnabled?: boolean; quotaReserveThreshold?: number }
+  ): Promise<AccountManager> {
     const rows = kiroDb.getAccounts()
     const accounts: ManagedAccount[] = rows.map((r: any) => ({
       id: r.id,
@@ -57,7 +70,7 @@ export class AccountManager {
       usedCount: r.used_count,
       limitCount: r.limit_count
     }))
-    return new AccountManager(accounts, strategy || 'sticky')
+    return new AccountManager(accounts, strategy || 'sticky', opts)
   }
   getAccountCount(): number {
     return this.accounts.length
@@ -97,15 +110,28 @@ export class AccountManager {
       }
       return !(a.rateLimitResetTime && now < a.rateLimitResetTime)
     })
+    let candidatePool = available
+    if (this.accounts.length > 1 && this.quotaAvoidanceEnabled) {
+      const ratio = (a: ManagedAccount) =>
+        a.limitCount && a.limitCount > 0 ? (a.usedCount || 0) / a.limitCount : 0
+      const ample = available.filter((a) => ratio(a) < this.quotaReserveThreshold)
+      // used>=limit stays in nearFull (soft/drainable, NOT hard-excluded): the
+      // real 402 is the authoritative exhaustion signal and already
+      // hard-switches accounts in error-handler.
+      const nearFull = available.filter((a) => ratio(a) >= this.quotaReserveThreshold)
+      candidatePool = ample.length > 0 ? ample : nearFull
+    }
+
     let selected: ManagedAccount | undefined
-    if (available.length > 0) {
+    if (candidatePool.length > 0) {
       if (this.strategy === 'sticky') {
-        selected = available.find((_, i) => i === this.cursor) || available[0]
+        selected = candidatePool.find((a) => a.id === this.stickyId) || candidatePool[0]
+        if (selected) this.stickyId = selected.id
       } else if (this.strategy === 'round-robin') {
-        selected = available[this.cursor % available.length]
-        this.cursor = (this.cursor + 1) % available.length
+        selected = candidatePool[this.rrCursor % candidatePool.length]
+        this.rrCursor++
       } else if (this.strategy === 'lowest-usage') {
-        selected = [...available].sort(
+        selected = [...candidatePool].sort(
           (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
         )[0]
       }
@@ -126,7 +152,6 @@ export class AccountManager {
     if (selected) {
       selected.lastUsed = now
       selected.usedCount = (selected.usedCount || 0) + 1
-      this.cursor = this.accounts.indexOf(selected)
       return selected
     }
     return null

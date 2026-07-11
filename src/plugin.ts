@@ -24,7 +24,10 @@ export const createKiroPlugin =
     const repository = new AccountRepository(cache)
 
     const authHandler = new AuthHandler(config, repository)
-    const accountManager = await AccountManager.loadFromDisk(config.account_selection_strategy)
+    const accountManager = await AccountManager.loadFromDisk(config.account_selection_strategy, {
+      quotaAvoidanceEnabled: config.quota_avoidance_enabled,
+      quotaReserveThreshold: config.quota_reserve_threshold
+    })
     authHandler.setAccountManager(accountManager)
 
     const requestHandler = new RequestHandler(accountManager, config, repository, client)

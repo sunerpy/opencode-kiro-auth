@@ -111,6 +111,16 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
         )
       : config.account_selection_strategy,
 
+    quota_avoidance_enabled: parseBooleanEnv(
+      env.KIRO_QUOTA_AVOIDANCE_ENABLED,
+      config.quota_avoidance_enabled
+    ),
+
+    quota_reserve_threshold: parseNumberEnv(
+      env.KIRO_QUOTA_RESERVE_THRESHOLD,
+      config.quota_reserve_threshold
+    ),
+
     default_region: env.KIRO_DEFAULT_REGION
       ? RegionSchema.catch('us-east-1').parse(env.KIRO_DEFAULT_REGION)
       : config.default_region,
