@@ -162,7 +162,7 @@ export class RequestHandler {
         this.logSdkRequest(sdkPrep, acc, apiTimestamp)
       }
       try {
-        const client = createSdkClient(auth, sdkPrep.region, sdkPrep.effort)
+        const client = this.makeSdkClient(auth, sdkPrep.region, sdkPrep.effort)
         const command = new GenerateAssistantResponseCommand({
           conversationState: sdkPrep.conversationState as any,
           profileArn: sdkPrep.profileArn
@@ -241,6 +241,15 @@ export class RequestHandler {
 
   private extractModel(url: string): string | null {
     return url.match(/models\/([^/:]+)/)?.[1] || null
+  }
+
+  /**
+   * Seam over the module-level SDK client factory so tests can inject a fake
+   * client without a real network call or a leaky module mock. Behavior is
+   * identical to calling createSdkClient directly.
+   */
+  private makeSdkClient(auth: KiroAuthDetails, region: string, effort?: any): any {
+    return createSdkClient(auth, region, effort)
   }
 
   private prepareSdkRequest(
