@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.6.1...v0.6.2) (2026-07-11)
+
+
+### Miscellaneous Chores
+
+* release 0.6.2 ([#30](https://github.com/sunerpy/opencode-kiro-auth/issues/30)) ([5a69506](https://github.com/sunerpy/opencode-kiro-auth/commit/5a695060c6e28356a6c3efc9c6dfc6be242d96fa))
+
 ## [0.6.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.6.0...v0.6.1) (2026-07-11)
 
 
