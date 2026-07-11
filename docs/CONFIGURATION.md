@@ -9,6 +9,8 @@ root [README](../README.md#configuration) for the short version.
 {
   "auto_sync_kiro_cli": true,
   "account_selection_strategy": "lowest-usage",
+  "quota_avoidance_enabled": true,
+  "quota_reserve_threshold": 0.95,
   "default_region": "us-east-1",
   "idc_start_url": "https://your-company.awsapps.com/start",
   "idc_region": "us-east-1",
@@ -29,6 +31,12 @@ root [README](../README.md#configuration) for the short version.
 - `auto_sync_kiro_cli`: Automatically sync sessions from Kiro CLI (default: `true`).
 - `account_selection_strategy`: Account rotation strategy (default: `lowest-usage`).
   See the [strategy table](#account-selection-strategy) below.
+- `quota_avoidance_enabled`: Softly avoid near-exhausted accounts when
+  multiple accounts are registered (default: `true`). See
+  [Quota-aware account avoidance](#quota-aware-account-avoidance) below.
+- `quota_reserve_threshold`: Usage-ratio cutoff (`0`-`1`, default: `0.95`)
+  above which an account is considered near-exhausted and gets soft-avoided.
+  Only meaningful when `quota_avoidance_enabled` is `true`.
 - `default_region`: AWS region (`us-east-1`, `us-west-2`).
 - `idc_start_url`: Default IAM Identity Center Start URL (e.g.
   `https://your-company.awsapps.com/start`). Leave unset/blank to default to AWS Builder
@@ -177,6 +185,45 @@ With this config, add two or more accounts (via `opencode auth login` per
 account, or by switching accounts in `kiro-cli`), and the plugin cycles
 through them on each request instead of always favoring the account with
 the most quota left.
+
+### Quota-aware account avoidance
+
+`quota_avoidance_enabled` and `quota_reserve_threshold` add a soft layer on
+top of `account_selection_strategy`. It only kicks in once you have **two or
+more** accounts registered; with a single account it's bypassed entirely and
+that account is used normally (only the usual health/rate-limit checks
+apply).
+
+With multiple accounts, the plugin splits them into two tiers on each
+request: accounts whose usage ratio (`usedCount / limitCount`) is below
+`quota_reserve_threshold` ("ample" tier) and accounts at or above it
+("near-exhausted" tier). Whatever `account_selection_strategy` you've
+configured (`sticky`, `round-robin`, or `lowest-usage`) then runs within the
+ample tier first, so accounts with room are preferred before ones sitting
+near their limit. Accounts with an unknown quota (`limitCount` of `0`, e.g.
+`FEATURE_NOT_SUPPORTED`) are treated as having a `0` ratio and are never
+avoided.
+
+**Drain fallback:** if every account is at or above the threshold, avoidance
+doesn't block requests. The plugin falls back to using the near-exhausted
+tier and keeps draining remaining quota normally until an account actually
+returns a real `402 Quota` error, at which point the existing hard
+account-switch takes over. There's no starvation.
+
+**This is a soft, proactive layer only.** It does not change any of the
+existing hard behaviors:
+
+- A real `402 Quota` error still hard-switches to the next account.
+- A `429` rate-limit response still triggers the existing rate-limit
+  handling and account switch.
+- The ≥90%-usage warning toast (see [Reading usage](#reading-usage)) still
+  fires the same as before.
+
+`quota_reserve_threshold` just tells the account selector to prefer accounts
+with more headroom *before* any of those hard limits are hit.
+
+Env overrides: `KIRO_QUOTA_AVOIDANCE_ENABLED` (boolean),
+`KIRO_QUOTA_RESERVE_THRESHOLD` (number, `0`-`1`).
 
 ## Removing accounts & the removal tombstone
 
