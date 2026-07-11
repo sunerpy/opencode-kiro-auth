@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.5.0...v0.5.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **streaming:** use 0-based tool-call ordinal for tool_calls index (fixes silent tool-call abort) ([#21](https://github.com/sunerpy/opencode-kiro-auth/issues/21)) ([573d7ac](https://github.com/sunerpy/opencode-kiro-auth/commit/573d7ac3f6ce20da8e4fc4fb1e6b0a2def3ee0df))
+
 ## [0.5.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.4.3...v0.5.0) (2026-07-10)
 
 
