@@ -8,6 +8,7 @@ import { fetchUsageLimits } from '../usage'
 import {
   findClientCredsRecursive,
   getCliDbPath,
+  isPlaceholderEmail,
   makePlaceholderEmail,
   normalizeExpiresAt,
   safeJsonParse
@@ -115,24 +116,81 @@ export async function syncFromKiroCli() {
 
         const all = kiroDb.getAccounts()
         if (!email) {
-          let existing: any | undefined
-          if (profileArn) {
-            existing = all.find((a) => a.auth_method === authMethod && a.profile_arn === profileArn)
-          }
-          if (!existing && authMethod === 'idc' && clientId) {
-            existing = all.find((a) => a.auth_method === 'idc' && a.client_id === clientId)
-          }
-          if (existing && typeof existing.email === 'string' && existing.email) {
-            email = existing.email
+          const sameIdentity = all.filter((a) => {
+            if (profileArn && a.auth_method === authMethod && a.profile_arn === profileArn)
+              return true
+            if (
+              authMethod === 'idc' &&
+              clientId &&
+              a.auth_method === 'idc' &&
+              a.client_id === clientId
+            )
+              return true
+            return false
+          })
+          const realAccount = sameIdentity.find(
+            (a) => typeof a.email === 'string' && a.email && !isPlaceholderEmail(a.email)
+          )
+          if (realAccount) {
+            email = realAccount.email
           } else {
+            const placeholderId = createDeterministicAccountId(
+              makePlaceholderEmail(authMethod, serviceRegion, clientId, profileArn),
+              authMethod,
+              clientId,
+              profileArn
+            )
+            if (await kiroDb.isAccountRemoved(placeholderId)) {
+              await kiroDb.clearRemovedAccount(placeholderId)
+            }
             email = makePlaceholderEmail(authMethod, serviceRegion, clientId, profileArn)
           }
         }
 
         const resolvedEmail =
           email || makePlaceholderEmail(authMethod, serviceRegion, clientId, profileArn)
+        const hasRealEmail = !!resolvedEmail && !isPlaceholderEmail(resolvedEmail)
 
         const id = createDeterministicAccountId(resolvedEmail, authMethod, clientId, profileArn)
+
+        // Cleanup runs BEFORE the fresh-enough early-continue: a lingering
+        // same-identity placeholder must be removed even when the real account
+        // is already up to date and would otherwise skip the rest of the round.
+        if (hasRealEmail) {
+          for (const row of all) {
+            if (row.id === id) continue
+            const sameIdentity =
+              (!!profileArn && row.auth_method === authMethod && row.profile_arn === profileArn) ||
+              (authMethod === 'idc' &&
+                !!clientId &&
+                row.auth_method === 'idc' &&
+                row.client_id === clientId)
+            if (!sameIdentity) continue
+            if (!isPlaceholderEmail(row.email)) continue
+            // Prove the row is a genuine placeholder by self-consistency against
+            // its OWN fields (clientId rotates across device re-registration, so
+            // recomputing with the current token's clientId would miss it). A
+            // real email can never equal its own makePlaceholderEmail recompute,
+            // so this never deletes a real account.
+            const rowPlaceholderEmail = makePlaceholderEmail(
+              row.auth_method,
+              row.region,
+              row.client_id,
+              row.profile_arn
+            )
+            const rowPlaceholderId = createDeterministicAccountId(
+              rowPlaceholderEmail,
+              row.auth_method,
+              row.client_id,
+              row.profile_arn
+            )
+            if (row.email === rowPlaceholderEmail && row.id === rowPlaceholderId) {
+              await kiroDb.deleteAccount(row.id)
+              await kiroDb.addRemovedAccount(row.id)
+            }
+          }
+        }
+
         const existingById = all.find((a) => a.id === id)
         if (
           existingById &&
@@ -141,49 +199,6 @@ export async function syncFromKiroCli() {
           existingById.expires_at > Date.now()
         )
           continue
-
-        if (usageOk) {
-          const placeholderEmail = makePlaceholderEmail(
-            authMethod,
-            serviceRegion,
-            clientId,
-            profileArn
-          )
-          const placeholderId = createDeterministicAccountId(
-            placeholderEmail,
-            authMethod,
-            clientId,
-            profileArn
-          )
-          if (placeholderId !== id) {
-            const placeholderRow = all.find((a) => a.id === placeholderId)
-            if (placeholderRow && (await kiroDb.isAccountRemoved(placeholderId))) {
-              skippedRemoved++
-            } else if (placeholderRow) {
-              await kiroDb.upsertAccount({
-                id: placeholderId,
-                email: placeholderRow.email,
-                authMethod,
-                region: placeholderRow.region || serviceRegion,
-                oidcRegion: placeholderRow.oidc_region || oidcRegion,
-                clientId,
-                clientSecret,
-                profileArn,
-                refreshToken: placeholderRow.refresh_token || refreshToken,
-                accessToken: placeholderRow.access_token || accessToken,
-                expiresAt: placeholderRow.expires_at || cliExpiresAt,
-                rateLimitResetTime: 0,
-                isHealthy: false,
-                failCount: 10,
-                unhealthyReason: 'Replaced by real email',
-                recoveryTime: Date.now() + 31536000000,
-                usedCount: placeholderRow.used_count || 0,
-                limitCount: placeholderRow.limit_count || 0,
-                lastSync: Date.now()
-              })
-            }
-          }
-        }
 
         if (await kiroDb.isAccountRemoved(id)) {
           skippedRemoved++

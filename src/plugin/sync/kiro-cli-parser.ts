@@ -79,3 +79,12 @@ export function makePlaceholderEmail(
   const h = createHash('sha256').update(seed).digest('hex').slice(0, 16)
   return `${authMethod}-placeholder+${h}@awsapps.local`
 }
+
+// Loose pre-filter ONLY. NOT authoritative: before deleting, callers must also
+// require row.email === exact makePlaceholderEmail(...) AND row.id === recomputed
+// placeholderId for the SAME identity, so a real account is never deleted.
+export function isPlaceholderEmail(email: unknown): boolean {
+  return (
+    typeof email === 'string' && email.includes('-placeholder+') && email.endsWith('@awsapps.local')
+  )
+}
