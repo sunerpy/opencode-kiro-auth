@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.5.1...v0.5.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **streaming:** rescue text-dialect tool calls (&lt;invoke&gt;/DSML) + suppress leak into content ([#23](https://github.com/sunerpy/opencode-kiro-auth/issues/23)) ([63baa15](https://github.com/sunerpy/opencode-kiro-auth/commit/63baa15ba7d6a0f07d2ce428ef577a3fd88cc54a))
+
 ## [0.5.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.5.0...v0.5.1) (2026-07-11)
 
 
