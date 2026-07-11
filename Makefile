@@ -53,6 +53,15 @@ fmt-check: ## Verify formatting without writing (CI gate)
 ci: typecheck fmt-check test ## Full local verification (mirrors CI)
 	@echo "All checks passed."
 
+.PHONY: coverage
+coverage: ## Generate coverage report (LCOV + text table)
+	bun test --coverage --coverage-reporter=lcov --coverage-reporter=text
+
+.PHONY: coverage-gate
+coverage-gate: ## Run coverage and verify >= 90% (exits 1 if below)
+	bun test --coverage --coverage-reporter=lcov
+	node scripts/coverage-gate.mjs
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	rm -rf dist
