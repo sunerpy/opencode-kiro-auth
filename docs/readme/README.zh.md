@@ -117,6 +117,17 @@
 会自动切换到下一个健康账号。如果所有账号都被限流，插件会等待最短的重置时间
 后重试。连续 10 次选择失败会触发熔断，避免死循环。
 
+**额度感知的账号避让**（`quota_avoidance_enabled`，默认 `true`）：仅在注册了
+两个及以上账号时生效——单账号场景下会完全跳过避让逻辑，正常使用该账号。多账号
+时，额度使用率（`usedCount / limitCount`）达到或超过 `quota_reserve_threshold`
+（阈值，默认 `0.95`）的账号会被主动避让，优先选用额度还充足的账号；上面的
+`account_selection_strategy` 会在"额度充足"这一档内正常执行。如果所有账号都
+已达到或超过阈值，插件不会卡住，而是继续榨干这些账号的剩余额度，直到某个账号
+真正返回 `402` 才触发已有的硬切换逻辑。这只是一层软性的、提前生效的偏好机制，
+不会改变现有的 `402` 硬切换、`429` 限流切换，也不会影响 ≥90% 用量提醒。
+环境变量覆盖：`KIRO_QUOTA_AVOIDANCE_ENABLED`、`KIRO_QUOTA_RESERVE_THRESHOLD`。
+详见 [docs/CONFIGURATION.md](../CONFIGURATION.md#quota-aware-account-avoidance)。
+
 **移除账号**：执行 `opencode auth login`，选择 `kiro-auth`，选择
 "Remove a Kiro account (N stored)"，然后在下拉列表中选中要移除的账号（或选
 Cancel 取消）。

@@ -61,6 +61,21 @@ export const KiroConfigSchema = z.object({
 
   account_selection_strategy: AccountSelectionStrategySchema.default('lowest-usage'),
 
+  /**
+   * Softly avoid accounts whose usage ratio is at/above
+   * `quota_reserve_threshold` when other accounts still have room. When ALL
+   * healthy accounts are near-full they are drained anyway (the real 402 in
+   * error-handler is the authoritative hard-switch). Only affects
+   * multi-account selection; single-account behavior is unchanged.
+   */
+  quota_avoidance_enabled: z.boolean().default(true),
+
+  /**
+   * Usage ratio (used/limit) at/above which an account is considered
+   * near-full and softly avoided. Default 0.95 (95%).
+   */
+  quota_reserve_threshold: z.number().min(0).max(1).default(0.95),
+
   default_region: RegionSchema.default('us-east-1'),
 
   rate_limit_retry_delay_ms: z.number().min(1000).max(60000).default(5000),
@@ -110,6 +125,8 @@ export type KiroConfig = z.infer<typeof KiroConfigSchema>
 
 export const DEFAULT_CONFIG: KiroConfig = {
   account_selection_strategy: 'lowest-usage',
+  quota_avoidance_enabled: true,
+  quota_reserve_threshold: 0.95,
   default_region: 'us-east-1',
   rate_limit_retry_delay_ms: 5000,
   rate_limit_max_retries: 3,
