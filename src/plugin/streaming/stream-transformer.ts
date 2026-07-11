@@ -234,12 +234,14 @@ export async function* transformKiroStream(
     }
 
     if (toolCalls.length > 0) {
-      const baseIndex = streamState.nextBlockIndex
+      // OpenAI tool_calls[].index must be the tool call's own 0-based ordinal,
+      // NOT the Anthropic content_block global index (offset by reasoning/text
+      // blocks) — a global index misaligns the AI-SDK accumulator and drops the call.
       for (let i = 0; i < toolCalls.length; i++) {
         const tc = toolCalls[i]
         if (!tc) continue
 
-        const blockIndex = baseIndex + i
+        const blockIndex = i
 
         {
           const _c = convertToOpenAI(
