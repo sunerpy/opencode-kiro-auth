@@ -203,16 +203,9 @@ export class AccountManager {
     const removedIndex = this.accounts.findIndex((x) => x.id === a.id)
     if (removedIndex === -1) return
     this.accounts = this.accounts.filter((x) => x.id !== a.id)
-    kiroDb.deleteAccount(a.id).catch((e) =>
+    kiroDb.removeAccountWithTombstone(a.id).catch((e) =>
       logger.warn('DB write failed', {
-        method: 'removeAccount',
-        email: a.email,
-        error: e instanceof Error ? e.message : String(e)
-      })
-    )
-    kiroDb.addRemovedAccount(a.id).catch((e) =>
-      logger.warn('DB write failed', {
-        method: 'removeAccount:tombstone',
+        method: 'removeAccountWithTombstone',
         email: a.email,
         error: e instanceof Error ? e.message : String(e)
       })

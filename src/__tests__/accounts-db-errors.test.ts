@@ -121,11 +121,10 @@ describe('AccountManager mutators swallow rejected DB writes and warn', () => {
     expect(tags).toContain('updateFromAuth')
   })
 
-  test('removeAccount: drops the account, rejected delete AND rejected tombstone both warn', async () => {
+  test('removeAccount: drops the account, rejected atomic removal warns', async () => {
     const warn = spyOn(logger, 'warn').mockImplementation(() => {})
-    const del = spyOn(kiroDb, 'deleteAccount').mockRejectedValue(new Error('del boom'))
-    const tomb = spyOn(kiroDb, 'addRemovedAccount').mockRejectedValue(new Error('tomb boom'))
-    spies.push(warn, del, tomb)
+    const remove = spyOn(kiroDb, 'removeAccountWithTombstone').mockRejectedValue(new Error('boom'))
+    spies.push(warn, remove)
 
     const a = makeAccount({ id: 'A' })
     const b = makeAccount({ id: 'B' })
@@ -135,7 +134,6 @@ describe('AccountManager mutators swallow rejected DB writes and warn', () => {
 
     await drainMicrotasks()
     const tags = warnTags(warn)
-    expect(tags).toContain('removeAccount')
-    expect(tags).toContain('removeAccount:tombstone')
+    expect(tags).toContain('removeAccountWithTombstone')
   })
 })

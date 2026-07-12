@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, promises as fs } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import lockfile from 'proper-lockfile'
 import { isPermanentError } from '../health'
 import type { ManagedAccount } from '../types'
@@ -13,6 +15,45 @@ const LOCK_OPTIONS = {
     factor: 2
   },
   realpath: false
+}
+
+const REFRESH_LOCK_OPTIONS = {
+  stale: 15000,
+  retries: {
+    retries: 10,
+    minTimeout: 100,
+    maxTimeout: 1000,
+    factor: 2
+  },
+  realpath: false
+}
+
+const KEEP_ALIVE_LOCK_OPTIONS = {
+  stale: 120000,
+  retries: 0,
+  realpath: false
+}
+
+type LockRelease = () => Promise<void>
+
+function getBaseDir(): string {
+  // Keep this local instead of importing DB_PATH from sqlite.ts: sqlite.ts imports
+  // this module and also constructs `kiroDb` at module load, so importing it here
+  // would create a cycle and trigger database construction just to compute a lock path.
+  const p = process.platform
+  if (p === 'win32') {
+    return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
+  }
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
+}
+
+export function getRefreshLockPath(accountId: string): string {
+  const safeAccountId = accountId.replace(/[^A-Za-z0-9_-]/g, '')
+  return join(getBaseDir(), `.kiro-refresh-${safeAccountId}.lock`)
+}
+
+export function getKeepAliveLockPath(): string {
+  return join(getBaseDir(), '.kiro-keepalive.lock')
 }
 
 export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
@@ -35,6 +76,61 @@ export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>):
       } catch (e) {
         console.warn('Failed to release lock:', e)
       }
+    }
+  }
+}
+
+export async function withRefreshLock<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
+  const lockPath = getRefreshLockPath(accountId)
+
+  if (!existsSync(lockPath)) {
+    await fs.mkdir(dirname(lockPath), { recursive: true })
+    await fs.writeFile(lockPath, '')
+  }
+
+  let release: (() => Promise<void>) | null = null
+  try {
+    release = await lockfile.lock(lockPath, REFRESH_LOCK_OPTIONS)
+    return await fn()
+  } finally {
+    if (release) {
+      try {
+        await release()
+      } catch (e) {
+        console.warn('Failed to release refresh lock:', e)
+      }
+    }
+  }
+}
+
+export async function tryAcquireKeepAliveLock(): Promise<LockRelease | null> {
+  const lockPath = getKeepAliveLockPath()
+
+  if (!existsSync(lockPath)) {
+    await fs.mkdir(dirname(lockPath), { recursive: true })
+    await fs.writeFile(lockPath, '')
+  }
+
+  try {
+    return await lockfile.lock(lockPath, KEEP_ALIVE_LOCK_OPTIONS)
+  } catch {
+    return null
+  }
+}
+
+export async function withKeepAliveLock<T>(fn: () => Promise<T>): Promise<T | null> {
+  const release = await tryAcquireKeepAliveLock()
+  if (!release) {
+    return null
+  }
+
+  try {
+    return await fn()
+  } finally {
+    try {
+      await release()
+    } catch (e) {
+      console.warn('Failed to release keep-alive lock:', e)
     }
   }
 }
@@ -67,10 +163,17 @@ export function mergeAccounts(
       const hasPermanentError =
         isPermanentError(existingAcc.unhealthyReason) || incomingHasPermanentError
       const incomingRecovered = acc.isHealthy && !incomingHasPermanentError
+      // AWS SSO-OIDC rotates refresh tokens and invalidates the old token; a stale
+      // in-memory token triple from another process must not clobber a newer
+      // persisted token triple during this cross-process merge.
+      const tokenWinner = (acc.expiresAt || 0) >= (existingAcc.expiresAt || 0) ? acc : existingAcc
 
       accountMap.set(acc.id, {
         ...existingAcc,
         ...acc,
+        refreshToken: tokenWinner.refreshToken,
+        accessToken: tokenWinner.accessToken,
+        expiresAt: tokenWinner.expiresAt,
         lastUsed: Math.max(existingAcc.lastUsed || 0, acc.lastUsed || 0),
         usedCount: Math.max(existingAcc.usedCount || 0, acc.usedCount || 0),
         limitCount: Math.max(existingAcc.limitCount || 0, acc.limitCount || 0),

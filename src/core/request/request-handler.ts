@@ -47,6 +47,10 @@ export class RequestHandler {
     this.retryStrategy = new RetryStrategy(config)
   }
 
+  get sharedTokenRefresher(): TokenRefresher {
+    return this.tokenRefresher
+  }
+
   async handle(input: any, init: any, showToast: ToastFunction): Promise<Response> {
     const url = typeof input === 'string' ? input : input.url
 

@@ -4,10 +4,18 @@ import type { AccountManager } from '../../plugin/accounts'
 import { KiroTokenRefreshError } from '../../plugin/errors'
 import { isRefreshTokenDead, toDeadReason } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
+import { withRefreshLock } from '../../plugin/storage/locked-operations'
 import { refreshAccessToken } from '../../plugin/token'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
+
+const DEAD_TOAST_DEBOUNCE_MS = 60000
+
+type LatestAuthRead = {
+  readonly latestAccount: ManagedAccount | null
+  readonly latestAuth: KiroAuthDetails | null
+}
 
 interface TokenRefresherConfig {
   token_expiry_buffer_ms: number
@@ -52,6 +60,9 @@ export function isRefreshErrorDead(error: unknown): boolean {
 }
 
 export class TokenRefresher {
+  private readonly inFlight = new Map<string, Promise<void>>()
+  private readonly lastDeadToastAt = new Map<string, number>()
+
   constructor(
     private config: TokenRefresherConfig,
     private accountManager: AccountManager,
@@ -69,11 +80,9 @@ export class TokenRefresher {
     }
 
     try {
-      const newAuth = await refreshAccessToken(auth)
-      this.accountManager.updateFromAuth(account, newAuth)
-      await this.repository.batchSave(this.accountManager.getAccounts())
+      await this.startOrJoinRefresh(account, () => auth)
       return { account, shouldContinue: false }
-    } catch (e: any) {
+    } catch (e) {
       return await this.handleRefreshError(e, account, showToast)
     }
   }
@@ -83,12 +92,9 @@ export class TokenRefresher {
     showToast: ToastFunction
   ): Promise<ForceRefreshResult> {
     try {
-      const auth = this.accountManager.toAuthDetails(account)
-      const newAuth = await refreshAccessToken(auth)
-      this.accountManager.updateFromAuth(account, newAuth)
-      await this.repository.batchSave(this.accountManager.getAccounts())
+      await this.startOrJoinRefresh(account, () => this.accountManager.toAuthDetails(account))
       return { ok: true, dead: false }
-    } catch (e: any) {
+    } catch (e) {
       const dead = isRefreshErrorDead(e)
       logger.error('Forced token refresh failed', {
         email: account.email,
@@ -101,15 +107,97 @@ export class TokenRefresher {
     }
   }
 
+  private startOrJoinRefresh(
+    account: ManagedAccount,
+    getAuthFallback: () => KiroAuthDetails
+  ): Promise<void> {
+    const existing = this.inFlight.get(account.id)
+    if (existing) {
+      return existing
+    }
+
+    // The first in-process caller supplies the fallback auth for this shared
+    // refresh. A2 re-reads the latest DB row inside the lock, so the fallback is
+    // only used when that row is missing; joiners keep their own try/catch and
+    // preserve their method-specific error handling.
+    const refresh = this.runLockedRefresh(account, getAuthFallback).finally(() => {
+      if (this.inFlight.get(account.id) === refresh) {
+        this.inFlight.delete(account.id)
+      }
+    })
+    this.inFlight.set(account.id, refresh)
+    return refresh
+  }
+
+  private async runLockedRefresh(
+    account: ManagedAccount,
+    getAuthFallback: () => KiroAuthDetails
+  ): Promise<void> {
+    await withRefreshLock(account.id, async () => {
+      const { latestAuth } = await this.readLatestAuth(account)
+      if (latestAuth && !accessTokenExpired(latestAuth, this.config.token_expiry_buffer_ms)) {
+        this.accountManager.updateFromAuth(account, latestAuth)
+        return
+      }
+
+      const newAuth = await refreshAccessToken(latestAuth ?? getAuthFallback())
+      this.accountManager.updateFromAuth(account, newAuth)
+      await this.repository.batchSave(this.accountManager.getAccounts())
+    })
+  }
+
+  private async readLatestAuth(account: ManagedAccount): Promise<LatestAuthRead> {
+    this.repository.invalidateCache()
+    const accounts: ManagedAccount[] = await this.repository.findAll()
+    const latestAccount = accounts.find((a) => a.id === account.id) ?? null
+
+    if (!latestAccount) {
+      return { latestAccount: null, latestAuth: null }
+    }
+
+    account.email = latestAccount.email
+    account.authMethod = latestAccount.authMethod
+    account.region = latestAccount.region
+    if (latestAccount.oidcRegion !== undefined) {
+      account.oidcRegion = latestAccount.oidcRegion
+    } else {
+      delete account.oidcRegion
+    }
+    if (latestAccount.clientId !== undefined) {
+      account.clientId = latestAccount.clientId
+    } else {
+      delete account.clientId
+    }
+    if (latestAccount.clientSecret !== undefined) {
+      account.clientSecret = latestAccount.clientSecret
+    } else {
+      delete account.clientSecret
+    }
+    if (latestAccount.profileArn !== undefined) {
+      account.profileArn = latestAccount.profileArn
+    } else {
+      delete account.profileArn
+    }
+    account.refreshToken = latestAccount.refreshToken
+    account.accessToken = latestAccount.accessToken
+    account.expiresAt = latestAccount.expiresAt
+
+    return {
+      latestAccount,
+      latestAuth: this.accountManager.toAuthDetails(account)
+    }
+  }
+
   private async handleRefreshError(
-    error: any,
+    error: unknown,
     account: ManagedAccount,
     showToast: ToastFunction
   ): Promise<{ account: ManagedAccount; shouldContinue: boolean }> {
+    const message = error instanceof Error ? error.message : String(error)
     logger.error('Token refresh failed', {
       email: account.email,
       code: error instanceof KiroTokenRefreshError ? error.code : undefined,
-      message: error instanceof Error ? error.message : String(error)
+      message
     })
     if (this.config.auto_sync_kiro_cli) {
       await this.syncFromKiroCli()
@@ -133,15 +221,24 @@ export class TokenRefresher {
     // Mark unhealthy ONLY when the refresh token itself is dead. A transient
     // failure (network / 5xx) leaves the account healthy so it can retry.
     if (isRefreshErrorDead(error)) {
-      this.accountManager.markUnhealthy(account, toDeadReason(error.message))
+      this.accountManager.markUnhealthy(account, toDeadReason(message))
       await this.repository.batchSave(this.accountManager.getAccounts())
+      const now = Date.now()
+      const lastToastAt = this.lastDeadToastAt.get(account.id) ?? 0
+      if (now - lastToastAt >= DEAD_TOAST_DEBOUNCE_MS) {
+        showToast(
+          `Kiro account ${account.email} sign-in expired — run "opencode auth login" and select kiro-auth to re-authenticate.`,
+          'warning'
+        )
+        this.lastDeadToastAt.set(account.id, now)
+      }
       return { account, shouldContinue: true }
     }
 
     logger.error('Token refresh unrecoverable', {
       email: account.email,
       code: error instanceof KiroTokenRefreshError ? error.code : undefined,
-      message: error instanceof Error ? error.message : String(error)
+      message
     })
     throw error
   }

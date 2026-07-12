@@ -88,6 +88,18 @@ export const KiroConfigSchema = z.object({
 
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
 
+  /**
+   * Opt-in leader-elected keep-alive that proactively rotates idle-account
+   * tokens near expiry. Disabled by default until proven in real sessions.
+   */
+  token_keepalive_enabled: z.boolean().default(false),
+
+  /**
+   * Interval for the leader-elected keep-alive scan that keeps idle-account
+   * refresh tokens rotating. Default 10 minutes; bounded to 1 minute-1 hour.
+   */
+  token_keepalive_interval_ms: z.number().min(60000).max(3600000).default(600000),
+
   usage_sync_max_retries: z.number().min(0).max(5).default(3),
 
   auth_server_port_start: z.number().min(1024).max(65535).default(19847),
@@ -95,7 +107,7 @@ export const KiroConfigSchema = z.object({
   auth_server_port_range: z.number().min(1).max(100).default(10),
 
   usage_tracking_enabled: z.boolean().default(true),
-  auto_sync_kiro_cli: z.boolean().default(true),
+  auto_sync_kiro_cli: z.boolean().default(false),
   enable_log_api_request: z.boolean().default(false),
 
   /**
@@ -133,11 +145,13 @@ export const DEFAULT_CONFIG: KiroConfig = {
   max_request_iterations: 20,
   request_timeout_ms: 120000,
   token_expiry_buffer_ms: 300000,
+  token_keepalive_enabled: false,
+  token_keepalive_interval_ms: 600000,
   usage_sync_max_retries: 3,
   auth_server_port_start: 19847,
   auth_server_port_range: 10,
   usage_tracking_enabled: true,
-  auto_sync_kiro_cli: true,
+  auto_sync_kiro_cli: false,
   enable_log_api_request: false,
   enable_log_effort_debug: false,
   auto_effort_mapping: true

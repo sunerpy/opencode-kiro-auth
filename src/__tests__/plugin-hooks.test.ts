@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { createKiroPlugin } from '../plugin.js'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { __getActiveKeepAliveControllerForTest, createKiroPlugin } from '../plugin.js'
 
 const PROVIDER_ID = 'kiro-auth'
 
@@ -17,6 +17,10 @@ function makeFakeClient() {
     }
   }
 }
+
+afterEach(() => {
+  __getActiveKeepAliveControllerForTest()?.dispose()
+})
 
 async function initPlugin() {
   const { client } = makeFakeClient()
@@ -131,5 +135,30 @@ describe('provider hook', () => {
   test('provider hook id matches the plugin id', async () => {
     const plugin = await initPlugin()
     expect(plugin.provider.id).toBe(PROVIDER_ID)
+  })
+})
+
+describe('keep-alive singleton guard', () => {
+  test('disposes the previous controller when the plugin is initialized twice', async () => {
+    await initPlugin()
+    const firstController = __getActiveKeepAliveControllerForTest()
+    expect(firstController).not.toBeNull()
+    if (!firstController) {
+      throw new Error('Expected first keep-alive controller to be installed')
+    }
+    expect(firstController['disposed']).toBe(false)
+
+    await initPlugin()
+    const secondController = __getActiveKeepAliveControllerForTest()
+    expect(secondController).not.toBeNull()
+    if (!secondController) {
+      throw new Error('Expected second keep-alive controller to be installed')
+    }
+
+    expect(secondController).not.toBe(firstController)
+    expect(firstController['disposed']).toBe(true)
+    expect(firstController['initialDelayTimer']).toBeNull()
+    expect(firstController['intervalTimer']).toBeNull()
+    expect(secondController['disposed']).toBe(false)
   })
 })
