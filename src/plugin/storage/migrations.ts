@@ -102,7 +102,7 @@ function migrateRealEmailColumn(db: Database): void {
       db.exec('DROP TABLE accounts')
       db.exec('ALTER TABLE accounts_new RENAME TO accounts')
       db.exec('COMMIT')
-    } catch (e) {
+    } catch {
       db.exec('ROLLBACK')
     }
   } else {

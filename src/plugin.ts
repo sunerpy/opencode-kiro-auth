@@ -1,5 +1,6 @@
 import { KIRO_CONSTANTS } from './constants.js'
 import { AuthHandler } from './core/auth/auth-handler.js'
+import { KeepAliveController } from './core/auth/token-keepalive.js'
 import { RequestHandler } from './core/request/request-handler.js'
 import { AccountCache } from './infrastructure/database/account-cache.js'
 import { AccountRepository } from './infrastructure/database/account-repository.js'
@@ -10,6 +11,37 @@ import { loadConfig } from './plugin/config/index.js'
 type ToastFunction = (message: string, variant: string) => void
 
 const KIRO_PROVIDER_ID = 'kiro-auth'
+
+let activeKeepAliveController: KeepAliveController | null = null
+let keepAliveTeardownRegistered = false
+
+function disposeActiveKeepAliveController(): void {
+  activeKeepAliveController?.dispose()
+  activeKeepAliveController = null
+}
+
+function registerKeepAliveTeardown(): void {
+  if (keepAliveTeardownRegistered) {
+    return
+  }
+
+  keepAliveTeardownRegistered = true
+  process.once('beforeExit', disposeActiveKeepAliveController)
+  process.once('SIGTERM', disposeActiveKeepAliveController)
+}
+
+function installKeepAliveController(controller: KeepAliveController, enabled: boolean): void {
+  disposeActiveKeepAliveController()
+  activeKeepAliveController = controller
+  if (enabled) {
+    registerKeepAliveTeardown()
+  }
+  controller.start()
+}
+
+export function __getActiveKeepAliveControllerForTest(): KeepAliveController | null {
+  return activeKeepAliveController
+}
 
 export const createKiroPlugin =
   (id: string) =>
@@ -31,6 +63,15 @@ export const createKiroPlugin =
     authHandler.setAccountManager(accountManager)
 
     const requestHandler = new RequestHandler(accountManager, config, repository, client)
+    installKeepAliveController(
+      new KeepAliveController(
+        config,
+        accountManager,
+        requestHandler.sharedTokenRefresher,
+        repository
+      ),
+      config.token_keepalive_enabled
+    )
 
     // Compute the base URL once so both the config hook and auth loader use the same value
     const baseURL = KIRO_CONSTANTS.BASE_URL.replace('/generateAssistantResponse', '').replace(
@@ -267,7 +308,7 @@ export const createKiroPlugin =
             normalized[modelID] = {
               ...modelInfo,
               api: {
-                ...(modelInfo.api || {}),
+                ...modelInfo.api,
                 npm: '@ai-sdk/openai-compatible',
                 // Ensure url is always set. modelInfo.api.url should already be
                 // populated from the config hook's provider.api field, but we

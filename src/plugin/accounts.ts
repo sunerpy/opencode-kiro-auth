@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
-import { isPermanentError } from './health'
+import { isAccessTokenError, isPermanentError } from './health'
 import * as logger from './logger'
 import { kiroDb } from './storage/sqlite'
 import { writeToKiroCli } from './sync/kiro-cli'
@@ -100,6 +100,16 @@ export class AccountManager {
         if (isPermanentError(a.unhealthyReason)) {
           return false
         }
+        // Heal-by-refresh: a legacy access-token-error row (persisted
+        // invalid-bearer, possibly failCount=10) is refreshable, so reset and
+        // reselect it. Refresh-dead rows are already excluded above.
+        if (isAccessTokenError(a.unhealthyReason)) {
+          a.failCount = 0
+          a.isHealthy = true
+          delete a.unhealthyReason
+          delete a.recoveryTime
+          return true
+        }
         if (a.failCount < 10 && a.recoveryTime && now >= a.recoveryTime) {
           a.isHealthy = true
           delete a.unhealthyReason
@@ -193,16 +203,9 @@ export class AccountManager {
     const removedIndex = this.accounts.findIndex((x) => x.id === a.id)
     if (removedIndex === -1) return
     this.accounts = this.accounts.filter((x) => x.id !== a.id)
-    kiroDb.deleteAccount(a.id).catch((e) =>
+    kiroDb.removeAccountWithTombstone(a.id).catch((e) =>
       logger.warn('DB write failed', {
-        method: 'removeAccount',
-        email: a.email,
-        error: e instanceof Error ? e.message : String(e)
-      })
-    )
-    kiroDb.addRemovedAccount(a.id).catch((e) =>
-      logger.warn('DB write failed', {
-        method: 'removeAccount:tombstone',
+        method: 'removeAccountWithTombstone',
         email: a.email,
         error: e instanceof Error ? e.message : String(e)
       })

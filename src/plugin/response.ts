@@ -76,7 +76,7 @@ function parseEventStreamChunk(rawText: string, model?: string): ParsedResponse 
     if (typeof tc.input === 'string' && tc.input.trim()) {
       try {
         parsedInput = JSON.parse(tc.input)
-      } catch (e) {
+      } catch {
         parsedInput = tc.input
       }
     }

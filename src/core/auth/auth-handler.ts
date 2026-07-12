@@ -1,6 +1,7 @@
 import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
+import { isRefreshTokenDead } from '../../plugin/health.js'
 import * as logger from '../../plugin/logger.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
 import { isInteractiveTty, ttyConfirm, ttySelect } from './tty-menu.js'
@@ -70,11 +71,12 @@ export class AuthHandler {
       const email = acc.email || 'unknown'
       const used = acc.usedCount ?? 0
       const limit = acc.limitCount ?? 0
+      const marker = isRefreshTokenDead(acc.unhealthyReason) ? ' (needs re-login)' : ''
       if (limit > 0) {
         const pct = Math.round((used / limit) * 100)
-        return `${email} ${used}/${limit} (${pct}%)`
+        return `${email} ${used}/${limit} (${pct}%)${marker}`
       }
-      return `${email} ${used} used`
+      return `${email} ${used} used${marker}`
     })
 
     const remaining = accounts.length - Math.min(accounts.length, CAP)

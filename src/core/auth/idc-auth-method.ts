@@ -6,7 +6,7 @@ import { authorizeKiroIDC, pollKiroIDCToken } from '../../kiro/oauth-idc.js'
 import { createDeterministicAccountId } from '../../plugin/accounts.js'
 import * as logger from '../../plugin/logger.js'
 import { kiroDb } from '../../plugin/storage/sqlite.js'
-import { makePlaceholderEmail } from '../../plugin/sync/kiro-cli-parser.js'
+import { isPlaceholderEmail, makePlaceholderEmail } from '../../plugin/sync/kiro-cli-parser.js'
 import { readActiveProfileArnFromKiroCli } from '../../plugin/sync/kiro-cli-profile.js'
 import type { KiroRegion, ManagedAccount } from '../../plugin/types.js'
 import { fetchUsageLimits } from '../../plugin/usage.js'
@@ -177,11 +177,31 @@ export class IdcAuthMethod {
             limitCount: usage.limitCount
           }
 
+          // clear tombstone ONLY on deliberate user login; never in auto-sync (would revive removed accounts).
+          // This must precede save/addAccount so tombstone-filtered upserts do not block re-login.
+          await kiroDb.clearRemovedAccount(id)
+
           await this.repository.save(acc)
           this.accountManager?.addAccount?.(acc)
 
-          // clear tombstone ONLY on deliberate user login; never in auto-sync (would revive removed accounts)
-          await kiroDb.clearRemovedAccount(id)
+          if (!isPlaceholderEmail(acc.email)) {
+            try {
+              await kiroDb.cleanupSupersededIdentities(
+                acc.id,
+                acc.email,
+                acc.authMethod,
+                acc.profileArn
+              )
+            } catch (cleanupError) {
+              logger.warn(
+                'IDC auth cleanup: failed to tombstone superseded same-identity accounts',
+                {
+                  keepId: acc.id,
+                  error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                }
+              )
+            }
+          }
 
           return { type: 'success', key: token.accessToken }
         } catch (e: any) {

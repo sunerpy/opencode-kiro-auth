@@ -265,7 +265,7 @@ export async function* transformKiroStream(
         try {
           const parsed = JSON.parse(tc.input)
           inputJson = JSON.stringify(parsed)
-        } catch (e) {
+        } catch {
           inputJson = tc.input
         }
 

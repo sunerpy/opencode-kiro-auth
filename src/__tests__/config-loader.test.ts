@@ -82,7 +82,7 @@ describe('loadConfig defaults', () => {
     expect(cfg.request_timeout_ms).toBe(120000)
     expect(cfg.token_expiry_buffer_ms).toBe(300000)
     expect(cfg.usage_tracking_enabled).toBe(true)
-    expect(cfg.auto_sync_kiro_cli).toBe(true)
+    expect(cfg.auto_sync_kiro_cli).toBe(false)
     expect(cfg.enable_log_api_request).toBe(false)
   })
 })

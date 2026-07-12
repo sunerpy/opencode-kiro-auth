@@ -39,7 +39,7 @@ const writeToFile = (level: string, message: string, ...args: unknown[]) => {
       })
       .join(' ')}\n`
     appendFileSync(path, content)
-  } catch (e) {}
+  } catch {}
 }
 
 const writeApiLog = (
@@ -56,7 +56,7 @@ const writeApiLog = (
     const path = join(dir, filename)
     const content = JSON.stringify(data, binaryToBase64Replacer, 2)
     writeFileSync(path, content)
-  } catch (e) {}
+  } catch {}
 }
 
 export function log(message: string, ...args: unknown[]): void {

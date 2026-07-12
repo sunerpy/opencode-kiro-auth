@@ -121,7 +121,7 @@ export function parseAwsEventStreamBuffer(buffer: string): ParsedEvent[] {
 export function parseEventLine(line: string): any | null {
   try {
     return JSON.parse(line)
-  } catch (e) {
+  } catch {
     return null
   }
 }

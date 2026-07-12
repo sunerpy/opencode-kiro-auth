@@ -45,7 +45,17 @@ export class KiroDatabase {
   }
 
   getAccounts(): any[] {
-    return this.db.prepare('SELECT * FROM accounts').all()
+    return this.db
+      .prepare(
+        `
+          SELECT accounts.*
+          FROM accounts
+          WHERE NOT EXISTS (
+            SELECT 1 FROM removed_accounts WHERE removed_accounts.id = accounts.id
+          )
+        `
+      )
+      .all()
   }
 
   private upsertAccountInternal(acc: any) {
@@ -94,15 +104,25 @@ export class KiroDatabase {
       )
   }
 
+  private isRemovedSync(id: string): boolean {
+    return !!this.db.prepare('SELECT id FROM removed_accounts WHERE id = ?').get(id)
+  }
+
+  private purgeRemovedAccountsSync(): void {
+    this.db.prepare('DELETE FROM accounts WHERE id IN (SELECT id FROM removed_accounts)').run()
+  }
+
   async upsertAccount(acc: ManagedAccount): Promise<void> {
     await withDatabaseLock(this.path, async () => {
       const existing = this.getAccounts().map(this.rowToAccount)
       const merged = mergeAccounts(existing, [acc])
       const deduplicated = deduplicateAccounts(merged)
+      const writable = deduplicated.filter((a) => !this.isRemovedSync(a.id))
 
       this.db.exec('BEGIN TRANSACTION')
       try {
-        for (const account of deduplicated) {
+        this.purgeRemovedAccountsSync()
+        for (const account of writable) {
           this.upsertAccountInternal(account)
         }
         this.db.exec('COMMIT')
@@ -118,10 +138,12 @@ export class KiroDatabase {
       const existing = this.getAccounts().map(this.rowToAccount)
       const merged = mergeAccounts(existing, accounts)
       const deduplicated = deduplicateAccounts(merged)
+      const writable = deduplicated.filter((a) => !this.isRemovedSync(a.id))
 
       this.db.exec('BEGIN TRANSACTION')
       try {
-        for (const account of deduplicated) {
+        this.purgeRemovedAccountsSync()
+        for (const account of writable) {
           this.upsertAccountInternal(account)
         }
         this.db.exec('COMMIT')
@@ -136,6 +158,65 @@ export class KiroDatabase {
     await withDatabaseLock(this.path, async () => {
       this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
     })
+  }
+
+  async removeAccountWithTombstone(id: string): Promise<void> {
+    await withDatabaseLock(this.path, async () => {
+      this.db.exec('BEGIN TRANSACTION')
+      try {
+        this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
+        this.db
+          .prepare('INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)')
+          .run(id, Date.now())
+        this.db.exec('COMMIT')
+      } catch (e) {
+        this.db.exec('ROLLBACK')
+        throw e
+      }
+    })
+  }
+
+  async cleanupSupersededIdentities(
+    keepId: string,
+    email: string,
+    authMethod: string,
+    profileArn: string | undefined
+  ): Promise<string[]> {
+    const supersededIds: string[] = []
+
+    await withDatabaseLock(this.path, async () => {
+      this.db.exec('BEGIN TRANSACTION')
+      try {
+        const rows = this.db
+          .prepare(
+            'SELECT id FROM accounts WHERE email = ? AND auth_method = ? AND profile_arn IS ? AND id != ?'
+          )
+          .all(email, authMethod, profileArn ?? null, keepId)
+
+        for (const row of rows) {
+          if (typeof row === 'object' && row !== null && 'id' in row && typeof row.id === 'string')
+            supersededIds.push(row.id)
+        }
+
+        const deleteStmt = this.db.prepare('DELETE FROM accounts WHERE id = ?')
+        const tombstoneStmt = this.db.prepare(
+          'INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)'
+        )
+        const removedAt = Date.now()
+
+        for (const id of supersededIds) {
+          deleteStmt.run(id)
+          tombstoneStmt.run(id, removedAt)
+        }
+
+        this.db.exec('COMMIT')
+      } catch (e) {
+        this.db.exec('ROLLBACK')
+        throw e
+      }
+    })
+
+    return supersededIds
   }
 
   async addRemovedAccount(id: string): Promise<void> {

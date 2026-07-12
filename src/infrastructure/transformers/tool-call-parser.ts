@@ -18,7 +18,7 @@ export function parseBracketToolCalls(text: string): ToolCall[] {
         name: funcName,
         input: args
       })
-    } catch (e) {
+    } catch {
       continue
     }
   }

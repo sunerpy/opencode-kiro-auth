@@ -11,7 +11,7 @@ import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../
 import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
 import { TokenRefresher } from '../auth/token-refresher'
-import { ErrorHandler } from './error-handler'
+import { ErrorHandler, type RequestContext } from './error-handler'
 import { ResponseHandler } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 
@@ -45,6 +45,10 @@ export class RequestHandler {
     this.responseHandler = new ResponseHandler()
     this.usageTracker = new UsageTracker(config, accountManager, repository)
     this.retryStrategy = new RetryStrategy(config)
+  }
+
+  get sharedTokenRefresher(): TokenRefresher {
+    return this.tokenRefresher
   }
 
   async handle(input: any, init: any, showToast: ToastFunction): Promise<Response> {
@@ -89,7 +93,7 @@ export class RequestHandler {
       body.thinkingConfig?.budget_tokens ||
       20000
 
-    let handlerContext: { retry: number; bearerRefreshAttempted?: boolean } = { retry: 0 }
+    let handlerContext: RequestContext = { retry: 0, forcedRefreshAccountIds: new Set<string>() }
     let consecutiveNullAccounts = 0
     const retryContext = this.retryStrategy.createContext()
 
@@ -154,7 +158,7 @@ export class RequestHandler {
               providerOptionsThinkingConfig: body.providerOptions?.thinkingConfig
             }
           })
-        } catch (e) {}
+        } catch {}
       }
 
       const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null

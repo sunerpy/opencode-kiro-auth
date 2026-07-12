@@ -338,6 +338,6 @@ describe('AccountManager.getCurrentOrNext force-recover fallback', () => {
     const before = Date.now()
     const sel = mgr.getCurrentOrNext()
     expect(sel?.usedCount).toBe(6)
-    expect(sel?.lastUsed!).toBeGreaterThanOrEqual(before)
+    expect(sel?.lastUsed ?? 0).toBeGreaterThanOrEqual(before)
   })
 })

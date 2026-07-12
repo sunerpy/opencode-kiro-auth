@@ -1,14 +1,35 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   createDeterministicId,
   deduplicateAccounts,
+  getRefreshLockPath,
   mergeAccounts,
-  withDatabaseLock
+  withDatabaseLock,
+  withRefreshLock
 } from '../plugin/storage/locked-operations.js'
+import { createDatabase } from '../plugin/storage/sqlite.js'
 import type { ManagedAccount } from '../plugin/types.js'
+
+type AccountRow = {
+  id: string
+  refresh_token: string
+  access_token: string
+  expires_at: number
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolvePromise: (() => void) | null = null
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve
+  })
+  if (!resolvePromise) {
+    throw new Error('Deferred resolver was not initialized')
+  }
+  return { promise, resolve: resolvePromise }
+}
 
 function account(overrides: Partial<ManagedAccount> = {}): ManagedAccount {
   return {
@@ -28,6 +49,41 @@ function account(overrides: Partial<ManagedAccount> = {}): ManagedAccount {
 
 function tempDbPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'kiro-lock-')), 'kiro.db')
+}
+
+function tempDbFixture(): { dir: string; path: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'kiro-lock-'))
+  return { dir, path: join(dir, 'kiro.db') }
+}
+
+function removeRefreshLock(accountId: string): void {
+  rmSync(getRefreshLockPath(accountId), { force: true })
+}
+
+function onlyMergedAccount(accounts: ManagedAccount[]): ManagedAccount {
+  const merged = accounts[0]
+  if (!merged) {
+    throw new Error('Expected one merged account')
+  }
+  return merged
+}
+
+function tokenTripleMatches(candidate: ManagedAccount, source: ManagedAccount): boolean {
+  return (
+    candidate.refreshToken === source.refreshToken &&
+    candidate.accessToken === source.accessToken &&
+    candidate.expiresAt === source.expiresAt
+  )
+}
+
+function expectWholeTokenTripleFromOneInput(
+  merged: ManagedAccount,
+  existing: ManagedAccount,
+  incoming: ManagedAccount
+): void {
+  const matchesExisting = tokenTripleMatches(merged, existing)
+  const matchesIncoming = tokenTripleMatches(merged, incoming)
+  expect(matchesExisting !== matchesIncoming).toBe(true)
 }
 
 describe('withDatabaseLock', () => {
@@ -97,6 +153,111 @@ describe('withDatabaseLock', () => {
   })
 })
 
+describe('withRefreshLock', () => {
+  test('runs the callback, returns its value, and releases for a second acquisition', async () => {
+    const accountId = 'refresh-return-value'
+    removeRefreshLock(accountId)
+
+    try {
+      const first = await withRefreshLock(accountId, async () => 'first-value')
+      const second = await withRefreshLock(accountId, async () => 'second-value')
+
+      expect(first).toBe('first-value')
+      expect(second).toBe('second-value')
+    } finally {
+      removeRefreshLock(accountId)
+    }
+  })
+
+  test('allows different account ids to hold separate critical sections concurrently', async () => {
+    const firstId = 'refresh-overlap-A'
+    const secondId = 'refresh-overlap-B'
+    removeRefreshLock(firstId)
+    removeRefreshLock(secondId)
+
+    const releaseBoth = deferred()
+    const firstEntered = deferred()
+    const secondEntered = deferred()
+    let active = 0
+    let maxConcurrent = 0
+
+    try {
+      const first = withRefreshLock(firstId, async () => {
+        active++
+        maxConcurrent = Math.max(maxConcurrent, active)
+        firstEntered.resolve()
+        await releaseBoth.promise
+        active--
+      })
+
+      await firstEntered.promise
+
+      const second = withRefreshLock(secondId, async () => {
+        active++
+        maxConcurrent = Math.max(maxConcurrent, active)
+        secondEntered.resolve()
+        await releaseBoth.promise
+        active--
+      })
+
+      await secondEntered.promise
+      expect(maxConcurrent).toBe(2)
+
+      releaseBoth.resolve()
+      await Promise.all([first, second])
+    } finally {
+      releaseBoth.resolve()
+      removeRefreshLock(firstId)
+      removeRefreshLock(secondId)
+    }
+  })
+
+  test('serializes concurrent critical sections for the same account id', async () => {
+    const accountId = 'refresh-serialized-A'
+    removeRefreshLock(accountId)
+
+    const firstEntered = deferred()
+    const releaseFirst = deferred()
+    let active = 0
+    let maxConcurrent = 0
+    const order: string[] = []
+
+    try {
+      const first = withRefreshLock(accountId, async () => {
+        active++
+        maxConcurrent = Math.max(maxConcurrent, active)
+        order.push('first-enter')
+        firstEntered.resolve()
+        await releaseFirst.promise
+        order.push('first-exit')
+        active--
+      })
+
+      await firstEntered.promise
+
+      const second = withRefreshLock(accountId, async () => {
+        active++
+        maxConcurrent = Math.max(maxConcurrent, active)
+        order.push('second-enter')
+        active--
+      })
+
+      await Promise.resolve()
+      expect(maxConcurrent).toBe(1)
+      expect(order).toEqual(['first-enter'])
+
+      releaseFirst.resolve()
+      await Promise.all([first, second])
+
+      expect(maxConcurrent).toBe(1)
+      expect(order).toEqual(['first-enter', 'first-exit', 'second-enter'])
+    } finally {
+      releaseFirst.resolve()
+      removeRefreshLock(accountId)
+    }
+  })
+})
+
 describe('createDeterministicId', () => {
   test('is a 64-char hex sha256 and stable for the same inputs', () => {
     const a = createDeterministicId('e@x.com', 'idc', 'cid', 'arn')
@@ -131,7 +292,7 @@ describe('mergeAccounts', () => {
   test('counters are merged to the max across existing and incoming', () => {
     const existing = account({ usedCount: 5, limitCount: 100, lastUsed: 10, lastSync: 1 })
     const incoming = account({ usedCount: 8, limitCount: 90, lastUsed: 5, lastSync: 20 })
-    const merged = mergeAccounts([existing], [incoming])[0]!
+    const merged = onlyMergedAccount(mergeAccounts([existing], [incoming]))
     expect(merged.usedCount).toBe(8)
     expect(merged.limitCount).toBe(100)
     expect(merged.lastUsed).toBe(10)
@@ -141,7 +302,7 @@ describe('mergeAccounts', () => {
   test('a permanent error on incoming forces the merged account unhealthy', () => {
     const existing = account({ isHealthy: true })
     const incoming = account({ isHealthy: false, unhealthyReason: 'HTTP_403' })
-    const merged = mergeAccounts([existing], [incoming])[0]!
+    const merged = onlyMergedAccount(mergeAccounts([existing], [incoming]))
     expect(merged.isHealthy).toBe(false)
   })
 
@@ -149,7 +310,7 @@ describe('mergeAccounts', () => {
     const existing = account({ isHealthy: false, unhealthyReason: 'invalid_grant' })
     // incoming is unhealthy too (not a recovery), so the permanent flag wins.
     const incoming = account({ isHealthy: false, unhealthyReason: undefined })
-    const merged = mergeAccounts([existing], [incoming])[0]!
+    const merged = onlyMergedAccount(mergeAccounts([existing], [incoming]))
     expect(merged.isHealthy).toBe(false)
   })
 
@@ -161,11 +322,123 @@ describe('mergeAccounts', () => {
       recoveryTime: Date.now() + 1000
     })
     const incoming = account({ isHealthy: true, failCount: 0 })
-    const merged = mergeAccounts([existing], [incoming])[0]!
+    const merged = onlyMergedAccount(mergeAccounts([existing], [incoming]))
     expect(merged.isHealthy).toBe(true)
     expect(merged.unhealthyReason).toBeUndefined()
     expect(merged.recoveryTime).toBeUndefined()
     expect(merged.failCount).toBe(0)
+  })
+
+  test('keeps the existing token triple when existing has a newer expiry', () => {
+    const existing = account({ refreshToken: 'RE', accessToken: 'AE', expiresAt: 200 })
+    const incoming = account({ refreshToken: 'RI', accessToken: 'AI', expiresAt: 100 })
+
+    const merged = mergeAccounts([existing], [incoming])[0]!
+
+    expect(merged.refreshToken).toBe('RE')
+    expect(merged.accessToken).toBe('AE')
+    expect(merged.expiresAt).toBe(200)
+  })
+
+  test('takes the incoming token triple when incoming has a newer expiry', () => {
+    const existing = account({ refreshToken: 'RE', accessToken: 'AE', expiresAt: 100 })
+    const incoming = account({ refreshToken: 'RI', accessToken: 'AI', expiresAt: 200 })
+
+    const merged = mergeAccounts([existing], [incoming])[0]!
+
+    expect(merged.refreshToken).toBe('RI')
+    expect(merged.accessToken).toBe('AI')
+    expect(merged.expiresAt).toBe(200)
+  })
+
+  test('never splits refresh, access, and expiresAt across different freshness winners', () => {
+    const existing = account({ refreshToken: 'RE', accessToken: 'AE', expiresAt: 200 })
+    const incoming = account({ refreshToken: 'RI', accessToken: 'AI', expiresAt: 100 })
+
+    const merged = onlyMergedAccount(mergeAccounts([existing], [incoming]))
+
+    expect(merged.refreshToken).toBe('RE')
+    expect(merged.accessToken).toBe('AE')
+    expect(merged.expiresAt).toBe(200)
+    expectWholeTokenTripleFromOneInput(merged, existing, incoming)
+
+    const reverseExisting = account({ refreshToken: 'RE2', accessToken: 'AE2', expiresAt: 100 })
+    const reverseIncoming = account({ refreshToken: 'RI2', accessToken: 'AI2', expiresAt: 200 })
+
+    const reverseMerged = onlyMergedAccount(mergeAccounts([reverseExisting], [reverseIncoming]))
+
+    expect(reverseMerged.refreshToken).toBe('RI2')
+    expect(reverseMerged.accessToken).toBe('AI2')
+    expect(reverseMerged.expiresAt).toBe(200)
+    expectWholeTokenTripleFromOneInput(reverseMerged, reverseExisting, reverseIncoming)
+  })
+
+  test('merges usage and health recovery independently from the selected token triple', () => {
+    const existing = account({
+      refreshToken: 'RE',
+      accessToken: 'AE',
+      expiresAt: 200,
+      isHealthy: false,
+      unhealthyReason: 'Rate limited',
+      recoveryTime: Date.now() + 1000,
+      failCount: 6,
+      usedCount: 3
+    })
+    const incoming = account({
+      refreshToken: 'RI',
+      accessToken: 'AI',
+      expiresAt: 100,
+      isHealthy: true,
+      failCount: 0,
+      usedCount: 11
+    })
+
+    const merged = mergeAccounts([existing], [incoming])[0]!
+
+    expect(merged.refreshToken).toBe('RE')
+    expect(merged.accessToken).toBe('AE')
+    expect(merged.expiresAt).toBe(200)
+    expect(merged.usedCount).toBe(11)
+    expect(merged.isHealthy).toBe(true)
+    expect(merged.unhealthyReason).toBeUndefined()
+    expect(merged.recoveryTime).toBeUndefined()
+    expect(merged.failCount).toBe(0)
+  })
+
+  test('prevents a stale process batch save from overwriting a newer persisted token triple', async () => {
+    const fixture = tempDbFixture()
+    const firstProcess = createDatabase(fixture.path)
+    const secondProcess = createDatabase(fixture.path)
+
+    try {
+      const staleCopy = account({
+        id: 'A3',
+        refreshToken: 'R0',
+        accessToken: 'A0',
+        expiresAt: 1000
+      })
+      await firstProcess.batchUpsertAccounts([staleCopy])
+
+      await firstProcess.batchUpsertAccounts([
+        account({ id: 'A3', refreshToken: 'R1', accessToken: 'A1', expiresAt: 2000 })
+      ])
+
+      await secondProcess.batchUpsertAccounts([staleCopy])
+
+      const rows: AccountRow[] = firstProcess.getAccounts()
+      const persisted = rows.find((row) => row.id === 'A3')
+      expect(persisted).toBeDefined()
+      if (!persisted) {
+        throw new Error('Expected A3 to be persisted')
+      }
+      expect(persisted.refresh_token).toBe('R1')
+      expect(persisted.access_token).toBe('A1')
+      expect(persisted.expires_at).toBe(2000)
+    } finally {
+      firstProcess.close()
+      secondProcess.close()
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
   })
 })
 
