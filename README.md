@@ -101,6 +101,13 @@ mapping) lives in `~/.config/opencode/kiro.json`. See
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full example and every
 option.
 
+New default keys are backfilled into an existing `kiro.json` automatically when
+the plugin loads (additive only — your existing values are never changed). For
+multi-account or long-idle setups, enable
+[token keep-alive](docs/CONFIGURATION.md#token-keep-alive)
+(`token_keepalive_enabled: true`) to keep idle accounts' tokens fresh while
+OpenCode is running.
+
 ## Multiple accounts & rotation
 
 You can register more than one Kiro account and let the plugin spread
@@ -113,10 +120,11 @@ requests across them for combined quota and automatic failover.
    AWS identity is stored separately in `kiro.db`. Re-running login for the
    same identity updates it in place; logging in with a different identity
    adds a new account.
-2. Auto-sync from Kiro CLI: with `auto_sync_kiro_cli: true` (the default),
-   the plugin imports credentials from your local `kiro-cli` database.
-   Switching or adding accounts via `kiro-cli login` flows into the plugin
-   automatically, no extra step needed.
+2. Auto-sync from Kiro CLI: with `auto_sync_kiro_cli: true` (opt-in, default
+   `false`), the plugin imports credentials from your local `kiro-cli`
+   database. Note `kiro-cli` stores only one token per auth method, so it
+   cannot represent multiple accounts — manual `opencode auth login` per
+   account (option 1) is the supported multi-account path.
 
 **Rotation strategy** — set `account_selection_strategy` in
 `~/.config/opencode/kiro.json`:
