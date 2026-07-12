@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.7.0...v0.8.0) (2026-07-12)
+
+
+### Features
+
+* **config:** 启动时自动补齐新增默认配置字段 ([#34](https://github.com/sunerpy/opencode-kiro-auth/issues/34)) ([f24e9ea](https://github.com/sunerpy/opencode-kiro-auth/commit/f24e9eaa21df08482114f835801ffd826b877069))
+
 ## [0.7.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.6.2...v0.7.0) (2026-07-12)
 
 
