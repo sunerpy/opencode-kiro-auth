@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import * as logger from '../logger'
@@ -38,6 +38,54 @@ function ensureUserConfigTemplate(): void {
 
 export function getProjectConfigPath(directory: string): string {
   return join(directory, '.opencode', 'kiro.json')
+}
+
+// Additively write any DEFAULT_CONFIG key missing from an existing user
+// kiro.json so new-version keys become visible/toggleable. Additive-only,
+// parse-safe, atomic, idempotent, user-config-only. See plan config-backfill.md.
+function backfillUserConfig(path: string): void {
+  if (!existsSync(path)) {
+    return
+  }
+
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf-8'))
+  } catch {
+    return
+  }
+
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return
+  }
+
+  const obj = raw as Record<string, unknown>
+  const defaultKeys = Object.keys(DEFAULT_CONFIG) as (keyof KiroConfig)[]
+  const missing = defaultKeys.filter((key) => !(key in obj))
+  if (missing.length === 0) {
+    return
+  }
+
+  const next: Record<string, unknown> = { ...obj }
+  for (const key of missing) {
+    next[key] = DEFAULT_CONFIG[key]
+  }
+
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`
+  try {
+    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf-8')
+    try {
+      renameSync(tmp, path)
+    } catch (renameError) {
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp)
+      } catch {}
+      throw renameError
+    }
+    logger.log(`Backfilled ${missing.length} new config key(s) into ${path}: ${missing.join(', ')}`)
+  } catch (error) {
+    logger.warn(`Config backfill failed for ${path}: ${String(error)}`)
+  }
 }
 
 function loadConfigFile(path: string): Partial<KiroConfig> | null {
@@ -176,6 +224,7 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
 
 export function loadConfig(directory: string): KiroConfig {
   ensureUserConfigTemplate()
+  backfillUserConfig(getUserConfigPath())
   let config: KiroConfig = { ...DEFAULT_CONFIG }
 
   const userConfigPath = getUserConfigPath()

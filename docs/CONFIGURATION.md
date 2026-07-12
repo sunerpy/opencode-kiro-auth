@@ -7,7 +7,7 @@ root [README](../README.md#configuration) for the short version.
 
 ```json
 {
-  "auto_sync_kiro_cli": true,
+  "auto_sync_kiro_cli": false,
   "account_selection_strategy": "lowest-usage",
   "quota_avoidance_enabled": true,
   "quota_reserve_threshold": 0.95,
@@ -18,7 +18,9 @@ root [README](../README.md#configuration) for the short version.
   "rate_limit_max_retries": 3,
   "max_request_iterations": 20,
   "request_timeout_ms": 120000,
-  "token_expiry_buffer_ms": 120000,
+  "token_expiry_buffer_ms": 300000,
+  "token_keepalive_enabled": false,
+  "token_keepalive_interval_ms": 600000,
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
   "auto_effort_mapping": true,
@@ -26,9 +28,20 @@ root [README](../README.md#configuration) for the short version.
 }
 ```
 
+> New default keys are backfilled into an existing `kiro.json` automatically on
+> load: when the plugin adds an option in a new version, it is appended to your
+> file with its default value the next time the plugin loads. Backfill is
+> additive only — it never changes, reorders, or removes keys you already set,
+> never rewrites a file that is already complete, and leaves an unparseable file
+> untouched.
+
 ## Options
 
-- `auto_sync_kiro_cli`: Automatically sync sessions from Kiro CLI (default: `true`).
+- `auto_sync_kiro_cli`: Automatically sync sessions from Kiro CLI (default:
+  `false`). `kiro-cli` stores only one token per auth method, so its auto-sync
+  cannot represent multiple accounts and can overwrite a freshly-rotated plugin
+  token with a stale one. Manual `opencode auth login` per account is the
+  supported multi-account path; enable this only if you rely on `kiro-cli`.
 - `account_selection_strategy`: Account rotation strategy (default: `lowest-usage`).
   See the [strategy table](#account-selection-strategy) below.
 - `quota_avoidance_enabled`: Softly avoid near-exhausted accounts when
@@ -47,7 +60,20 @@ root [README](../README.md#configuration) for the short version.
 - `rate_limit_max_retries`: Maximum retry attempts for rate limits (0-10).
 - `max_request_iterations`: Maximum loop iterations to prevent hangs (10-1000).
 - `request_timeout_ms`: Request timeout in milliseconds (60000-600000ms).
-- `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms).
+- `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms, default:
+  `300000`). An access token within this window of expiry is treated as expired
+  and refreshed on next use.
+- `token_keepalive_enabled`: Opt-in background keep-alive that proactively
+  rotates idle accounts' tokens before they expire (default: `false`).
+  **Recommended for multi-account setups or accounts left idle for long
+  stretches**, so a rarely-used account's token stays fresh instead of only
+  refreshing on its next request. It only runs while OpenCode is running (it is
+  an in-process timer, not an OS daemon) and cannot extend past the AWS IAM
+  Identity Center session ceiling — an expired IdC session still requires a full
+  `opencode auth login`. See [Token keep-alive](#token-keep-alive) below.
+- `token_keepalive_interval_ms`: How often the keep-alive scan runs
+  (60000-3600000ms, default: `600000` = 10 minutes). Only meaningful when
+  `token_keepalive_enabled` is `true`.
 - `usage_sync_max_retries`: Retry attempts for usage sync (0-5, default: `3`).
 - `auth_server_port_start`: Legacy/ignored (no local auth server).
 - `auth_server_port_range`: Legacy/ignored (no local auth server).
@@ -60,6 +86,38 @@ root [README](../README.md#configuration) for the short version.
   levels for supported models (default: `true`). See [docs/MODELS.md](MODELS.md)
   for the budget-to-effort table.
 - `enable_log_api_request`: Enable detailed API request logging.
+- `enable_log_effort_debug`: Log each request's inbound body shape (top-level
+  keys and reasoning-related fields only, no message content) and the resolved
+  Kiro effort (default: `false`). Independent from `enable_log_api_request`.
+
+## Token keep-alive
+
+Kiro access tokens last ~1 hour and are normally refreshed on demand — the next
+request that needs an expired token triggers a refresh (the same model Kiro's own
+CLI uses). For a single active account that is enough. But with **multiple
+accounts** the rotation strategy may leave some accounts idle for long stretches,
+so an idle account's token only gets refreshed the next time it happens to be
+picked — which can be much later.
+
+Set `token_keepalive_enabled: true` to run a lightweight background scan every
+`token_keepalive_interval_ms` (default 10 minutes) that proactively refreshes any
+healthy account whose token is within `token_expiry_buffer_ms` of expiry. This
+keeps idle-account tokens rotating so they are ready when selected.
+
+Important properties:
+
+- **In-process only.** The scan runs while OpenCode is running. There is no
+  OS-level daemon; nothing refreshes while OpenCode is closed. This matches how
+  `kiro-cli` and the Kiro IDE behave (on-demand / while-open, no background
+  daemon).
+- **Leader-elected.** If several OpenCode processes are open, a file lock ensures
+  only one runs the scan, so accounts are not double-refreshed.
+- **Bounded by the IdC session.** AWS IAM Identity Center caps the session
+  (commonly 8 hours, up to 90 days for Kiro). Once that ceiling is hit even a
+  valid refresh token fails and you must run `opencode auth login` again — no
+  keep-alive can extend past it.
+- **Default off.** Enable it explicitly; recommended for multi-account or
+  long-idle setups.
 
 ## Reasoning effort
 
@@ -174,17 +232,18 @@ after 10 consecutive selection failures.
 ```json
 {
   "account_selection_strategy": "round-robin",
-  "auto_sync_kiro_cli": true,
+  "token_keepalive_enabled": true,
   "usage_tracking_enabled": true,
   "usage_sync_max_retries": 3,
   "default_region": "us-east-1"
 }
 ```
 
-With this config, add two or more accounts (via `opencode auth login` per
-account, or by switching accounts in `kiro-cli`), and the plugin cycles
-through them on each request instead of always favoring the account with
-the most quota left.
+With this config, add two or more accounts via `opencode auth login` per
+account, and the plugin cycles through them on each request instead of always
+favoring the account with the most quota left. `token_keepalive_enabled` is
+included here because round-robin can leave individual accounts idle between
+turns; see [Token keep-alive](#token-keep-alive).
 
 ### Quota-aware account avoidance
 
