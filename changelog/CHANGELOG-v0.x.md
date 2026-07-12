@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.6.2...v0.7.0) (2026-07-12)
+
+
+### Features
+
+* **auth:** fix account resurrection + token race, add keep-alive and reauth toast ([#32](https://github.com/sunerpy/opencode-kiro-auth/issues/32)) ([f0a722a](https://github.com/sunerpy/opencode-kiro-auth/commit/f0a722ab81e58a30a8465f9db801d5439dcb15c3))
+
 ## [0.6.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.6.1...v0.6.2) (2026-07-11)
 
 
