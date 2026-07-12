@@ -455,7 +455,6 @@ describe('RequestHandler.handle — API request logging', () => {
 
 describe('RequestHandler.handle — circuit breaker', () => {
   test('exceeding max_request_iterations throws the retry-strategy error', async () => {
-    const acc = makeAccount({ id: 'A' })
     globalThis.setTimeout = ((fn: any) => {
       fn()
       return 0 as any

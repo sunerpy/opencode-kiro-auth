@@ -78,7 +78,7 @@ function buildCodeWhispererRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
+  _showToast?: ToastFunction
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req

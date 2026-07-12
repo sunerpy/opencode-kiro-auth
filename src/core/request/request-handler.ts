@@ -158,7 +158,7 @@ export class RequestHandler {
               providerOptionsThinkingConfig: body.providerOptions?.thinkingConfig
             }
           })
-        } catch (e) {}
+        } catch {}
       }
 
       const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null

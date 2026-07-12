@@ -84,7 +84,6 @@ export async function syncFromKiroCli() {
         let usedCount = 0
         let limitCount = 0
         let email: string | undefined
-        let usageOk = false
 
         try {
           const authForUsage: any = {
@@ -103,7 +102,6 @@ export async function syncFromKiroCli() {
           limitCount = u.limitCount || 0
           if (typeof u.email === 'string' && u.email) {
             email = u.email
-            usageOk = true
           }
         } catch (e) {
           logger.warn('Kiro CLI sync: failed to fetch usage/email; falling back', {

@@ -308,7 +308,7 @@ export const createKiroPlugin =
             normalized[modelID] = {
               ...modelInfo,
               api: {
-                ...(modelInfo.api || {}),
+                ...modelInfo.api,
                 npm: '@ai-sdk/openai-compatible',
                 // Ensure url is always set. modelInfo.api.url should already be
                 // populated from the config hook's provider.api field, but we

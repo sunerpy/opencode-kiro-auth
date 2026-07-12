@@ -75,7 +75,7 @@ export class ErrorHandler {
         } else if (errorData.Message) {
           errorMessage = errorData.Message
         }
-      } catch (e) {}
+      } catch {}
 
       if (account.failCount < 5) {
         const delay = 1000 * Math.pow(2, account.failCount - 1)

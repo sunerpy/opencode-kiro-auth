@@ -33,86 +33,82 @@ export async function authorizeKiroIDC(
   const ssoOIDCEndpoint = buildUrl(KIRO_AUTH_SERVICE.SSO_OIDC_ENDPOINT, effectiveRegion)
   const effectiveStartUrl = startUrl || KIRO_AUTH_SERVICE.BUILDER_ID_START_URL
 
-  try {
-    const registerResponse = await fetch(`${ssoOIDCEndpoint}/client/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': KIRO_CONSTANTS.USER_AGENT
-      },
-      body: JSON.stringify({
-        clientName: 'Kiro IDE',
-        clientType: 'public',
-        scopes: KIRO_AUTH_SERVICE.SCOPES,
-        grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
-      })
+  const registerResponse = await fetch(`${ssoOIDCEndpoint}/client/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': KIRO_CONSTANTS.USER_AGENT
+    },
+    body: JSON.stringify({
+      clientName: 'Kiro IDE',
+      clientType: 'public',
+      scopes: KIRO_AUTH_SERVICE.SCOPES,
+      grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
     })
+  })
 
-    if (!registerResponse.ok) {
-      const errorText = await registerResponse.text().catch(() => '')
-      const error = new Error(`Client registration failed: ${registerResponse.status} ${errorText}`)
-      throw error
-    }
+  if (!registerResponse.ok) {
+    const errorText = await registerResponse.text().catch(() => '')
+    const error = new Error(`Client registration failed: ${registerResponse.status} ${errorText}`)
+    throw error
+  }
 
-    const registerData = await registerResponse.json()
-    const { clientId, clientSecret } = registerData
+  const registerData = await registerResponse.json()
+  const { clientId, clientSecret } = registerData
 
-    if (!clientId || !clientSecret) {
-      const error = new Error('Client registration response missing clientId or clientSecret')
-      throw error
-    }
+  if (!clientId || !clientSecret) {
+    const error = new Error('Client registration response missing clientId or clientSecret')
+    throw error
+  }
 
-    const deviceAuthResponse = await fetch(`${ssoOIDCEndpoint}/device_authorization`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': KIRO_CONSTANTS.USER_AGENT
-      },
-      body: JSON.stringify({
-        clientId,
-        clientSecret,
-        startUrl: effectiveStartUrl
-      })
-    })
-
-    if (!deviceAuthResponse.ok) {
-      const errorText = await deviceAuthResponse.text().catch(() => '')
-      const error = new Error(
-        `Device authorization failed: ${deviceAuthResponse.status} ${errorText}`
-      )
-      throw error
-    }
-
-    const deviceAuthData = await deviceAuthResponse.json()
-
-    const {
-      verificationUri,
-      verificationUriComplete,
-      userCode,
-      deviceCode,
-      interval = 5,
-      expiresIn = 600
-    } = deviceAuthData
-
-    if (!deviceCode || !userCode || !verificationUri || !verificationUriComplete) {
-      const error = new Error('Device authorization response missing required fields')
-      throw error
-    }
-
-    return {
-      verificationUrl: verificationUri,
-      verificationUriComplete,
-      userCode,
-      deviceCode,
+  const deviceAuthResponse = await fetch(`${ssoOIDCEndpoint}/device_authorization`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': KIRO_CONSTANTS.USER_AGENT
+    },
+    body: JSON.stringify({
       clientId,
       clientSecret,
-      interval,
-      expiresIn,
-      region: effectiveRegion,
       startUrl: effectiveStartUrl
-    }
-  } catch (error) {
+    })
+  })
+
+  if (!deviceAuthResponse.ok) {
+    const errorText = await deviceAuthResponse.text().catch(() => '')
+    const error = new Error(
+      `Device authorization failed: ${deviceAuthResponse.status} ${errorText}`
+    )
     throw error
+  }
+
+  const deviceAuthData = await deviceAuthResponse.json()
+
+  const {
+    verificationUri,
+    verificationUriComplete,
+    userCode,
+    deviceCode,
+    interval = 5,
+    expiresIn = 600
+  } = deviceAuthData
+
+  if (!deviceCode || !userCode || !verificationUri || !verificationUriComplete) {
+    const error = new Error('Device authorization response missing required fields')
+    throw error
+  }
+
+  return {
+    verificationUrl: verificationUri,
+    verificationUriComplete,
+    userCode,
+    deviceCode,
+    clientId,
+    clientSecret,
+    interval,
+    expiresIn,
+    region: effectiveRegion,
+    startUrl: effectiveStartUrl
   }
 }
 
@@ -161,7 +157,7 @@ export async function pollKiroIDCToken(
       if (responseText) {
         try {
           tokenData = JSON.parse(responseText)
-        } catch (parseError: any) {
+        } catch {
           throw new Error(
             `Token polling failed: invalid JSON response (HTTP ${tokenResponse.status}): ${responseText.slice(0, 300)}`
           )
