@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.8.0...v0.9.0) (2026-07-13)
+
+
+### Features
+
+* **account:** 账号进入付费超额时默认停用并支持开关 ([#36](https://github.com/sunerpy/opencode-kiro-auth/issues/36)) ([fc38b8f](https://github.com/sunerpy/opencode-kiro-auth/commit/fc38b8fe7c04302427714858136bc2691b717f77))
+
 ## [0.8.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.7.0...v0.8.0) (2026-07-12)
 
 
