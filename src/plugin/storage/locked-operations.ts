@@ -165,6 +165,7 @@ export function mergeAccounts(
       // in-memory token triple from another process must not clobber a newer
       // persisted token triple during this cross-process merge.
       const tokenWinner = (acc.expiresAt || 0) >= (existingAcc.expiresAt || 0) ? acc : existingAcc
+      const usageWinner = (acc.lastSync || 0) >= (existingAcc.lastSync || 0) ? acc : existingAcc
 
       accountMap.set(acc.id, {
         ...existingAcc,
@@ -173,8 +174,9 @@ export function mergeAccounts(
         accessToken: tokenWinner.accessToken,
         expiresAt: tokenWinner.expiresAt,
         lastUsed: Math.max(existingAcc.lastUsed || 0, acc.lastUsed || 0),
-        usedCount: Math.max(existingAcc.usedCount || 0, acc.usedCount || 0),
-        limitCount: Math.max(existingAcc.limitCount || 0, acc.limitCount || 0),
+        usedCount: usageWinner.usedCount ?? 0,
+        limitCount: usageWinner.limitCount ?? 0,
+        overageCount: usageWinner.overageCount ?? 0,
         rateLimitResetTime: Math.max(
           existingAcc.rateLimitResetTime || 0,
           acc.rateLimitResetTime || 0

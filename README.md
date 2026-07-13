@@ -108,6 +108,10 @@ multi-account or long-idle setups, enable
 (`token_keepalive_enabled: true`) to keep idle accounts' tokens fresh while
 OpenCode is running.
 
+Paid-overage protection is on by default; see
+[Overage protection](docs/CONFIGURATION.md#overage-protection) before disabling
+`stop_on_overage`.
+
 ## Multiple accounts & rotation
 
 You can register more than one Kiro account and let the plugin spread

@@ -32,20 +32,34 @@ export class AccountManager {
   private stickyId?: string
   private quotaAvoidanceEnabled: boolean
   private quotaReserveThreshold: number
+  private stopOnOverage: boolean
+  private overageThreshold: number
   constructor(
     accounts: ManagedAccount[],
     strategy: AccountSelectionStrategy = 'sticky',
-    opts?: { quotaAvoidanceEnabled?: boolean; quotaReserveThreshold?: number }
+    opts?: {
+      quotaAvoidanceEnabled?: boolean
+      quotaReserveThreshold?: number
+      stopOnOverage?: boolean
+      overageThreshold?: number
+    }
   ) {
     this.accounts = accounts
     this.cursor = 0
     this.strategy = strategy
     this.quotaAvoidanceEnabled = opts?.quotaAvoidanceEnabled ?? true
     this.quotaReserveThreshold = opts?.quotaReserveThreshold ?? 0.95
+    this.stopOnOverage = opts?.stopOnOverage ?? true
+    this.overageThreshold = opts?.overageThreshold ?? 0
   }
   static async loadFromDisk(
     strategy?: AccountSelectionStrategy,
-    opts?: { quotaAvoidanceEnabled?: boolean; quotaReserveThreshold?: number }
+    opts?: {
+      quotaAvoidanceEnabled?: boolean
+      quotaReserveThreshold?: number
+      stopOnOverage?: boolean
+      overageThreshold?: number
+    }
   ): Promise<AccountManager> {
     const rows = kiroDb.getAccounts()
     const accounts: ManagedAccount[] = rows.map((r: any) => ({
@@ -68,7 +82,9 @@ export class AccountManager {
       failCount: r.fail_count || 0,
       lastUsed: r.last_used,
       usedCount: r.used_count,
-      limitCount: r.limit_count
+      limitCount: r.limit_count,
+      overageCount: r.overage_count || 0,
+      lastSync: r.last_sync
     }))
     return new AccountManager(accounts, strategy || 'sticky', opts)
   }
@@ -93,9 +109,35 @@ export class AccountManager {
     const waits = this.accounts.map((a) => (a.rateLimitResetTime || 0) - now).filter((t) => t > 0)
     return waits.length > 0 ? Math.min(...waits) : 0
   }
+  allSelectableBlockedByOverage(): boolean {
+    if (!this.stopOnOverage) return false
+
+    const now = Date.now()
+    const healthEligible = (a: ManagedAccount) => {
+      if (isPermanentError(a.unhealthyReason)) return false
+      if (a.isHealthy) return true
+      if (isAccessTokenError(a.unhealthyReason)) return true
+      return a.failCount < 10
+    }
+    const rateLimited = (a: ManagedAccount) =>
+      !!(a.rateLimitResetTime && now < a.rateLimitResetTime)
+    const hasOverageBlockedEligible = this.accounts.some(
+      (a) => healthEligible(a) && this.isOverageBlocked(a)
+    )
+    const hasCleanRateLimited = this.accounts.some(
+      (a) => healthEligible(a) && rateLimited(a) && !this.isOverageBlocked(a)
+    )
+    const hasHealthySelectable = this.accounts.some(
+      (a) => a.isHealthy && !rateLimited(a) && !this.isOverageBlocked(a)
+    )
+
+    return hasOverageBlockedEligible && !hasCleanRateLimited && !hasHealthySelectable
+  }
   getCurrentOrNext(): ManagedAccount | null {
     const now = Date.now()
+    const overageBlocked = (a: ManagedAccount) => this.isOverageBlocked(a)
     const available = this.accounts.filter((a) => {
+      if (overageBlocked(a)) return false
       if (!a.isHealthy) {
         if (isPermanentError(a.unhealthyReason)) {
           return false
@@ -148,7 +190,13 @@ export class AccountManager {
     }
     if (!selected) {
       const fallback = this.accounts
-        .filter((a) => !a.isHealthy && a.failCount < 10 && !isPermanentError(a.unhealthyReason))
+        .filter(
+          (a) =>
+            !a.isHealthy &&
+            a.failCount < 10 &&
+            !isPermanentError(a.unhealthyReason) &&
+            !overageBlocked(a)
+        )
         .sort(
           (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
         )[0]
@@ -160,17 +208,29 @@ export class AccountManager {
       }
     }
     if (selected) {
+      if (overageBlocked(selected)) return null
       selected.lastUsed = now
       selected.usedCount = (selected.usedCount || 0) + 1
       return selected
     }
     return null
   }
-  updateUsage(id: string, meta: { usedCount: number; limitCount: number; email?: string }): void {
+  updateUsage(
+    id: string,
+    meta: {
+      usedCount: number
+      limitCount: number
+      overageCount?: number
+      email?: string
+      lastSync?: number
+    }
+  ): void {
     const a = this.accounts.find((x) => x.id === id)
     if (a) {
       a.usedCount = meta.usedCount
       a.limitCount = meta.limitCount
+      a.overageCount = meta.overageCount ?? 0
+      a.lastSync = meta.lastSync ?? a.lastSync
       if (meta.email) a.email = meta.email
       if (!isPermanentError(a.unhealthyReason)) {
         a.failCount = 0
@@ -315,5 +375,9 @@ export class AccountManager {
       clientSecret: a.clientSecret,
       email: a.email
     }
+  }
+
+  private isOverageBlocked(a: ManagedAccount): boolean {
+    return this.stopOnOverage && (a.overageCount ?? 0) > this.overageThreshold
   }
 }

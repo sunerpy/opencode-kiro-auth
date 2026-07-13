@@ -99,7 +99,12 @@ describe('fetchUsageLimits (network mocked)', () => {
     const result = await fetchUsageLimits(auth())
 
     // 100 + (29 + 800) = 929 ; 1000 + (0 + 9000) = 10000
-    expect(result).toEqual({ usedCount: 929, limitCount: 10000, email: 'user@example.com' })
+    expect(result).toEqual({
+      usedCount: 929,
+      limitCount: 10000,
+      overageCount: 0,
+      email: 'user@example.com'
+    })
 
     // Only one attempt needed on success
     expect(calls).toHaveLength(1)
@@ -147,7 +152,12 @@ describe('fetchUsageLimits (network mocked)', () => {
     globalThis.fetch = fn
 
     const result = await fetchUsageLimits(auth())
-    expect(result).toEqual({ usedCount: 5, limitCount: 50, email: 'fallback@example.com' })
+    expect(result).toEqual({
+      usedCount: 5,
+      limitCount: 50,
+      overageCount: 0,
+      email: 'fallback@example.com'
+    })
     // Fell through attempt 0 -> succeeded on attempt 1
     expect(calls).toHaveLength(2)
     // attempt 1 has origin but no resourceType
@@ -188,6 +198,47 @@ describe('fetchUsageLimits (network mocked)', () => {
     expect(err).toBeInstanceOf(Error)
     expect(err.message).toContain('connection reset')
   })
+
+  test('200: sums currentOverages from paid-overage usage segments', async () => {
+    const payload = {
+      usageBreakdownList: [
+        {
+          currentUsage: 10977,
+          usageLimit: 10000,
+          currentOverages: 977,
+          overageCap: 10000,
+          overageRate: 0.04,
+          overageCharges: 39.09,
+          freeTrialInfo: null,
+          resourceType: 'CREDIT'
+        },
+        {
+          currentUsage: 11,
+          usageLimit: 100,
+          currentOverages: 3,
+          freeTrialInfo: { currentUsage: 2, usageLimit: 50 }
+        }
+      ],
+      userInfo: { email: 'overage@example.com' }
+    }
+    const { fn } = captureFetch(
+      () =>
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+    )
+    globalThis.fetch = fn
+
+    const result = await fetchUsageLimits(auth())
+
+    expect(result).toEqual({
+      usedCount: 10990,
+      limitCount: 10150,
+      overageCount: 980,
+      email: 'overage@example.com'
+    })
+  })
 })
 
 describe('updateAccountQuota (pure)', () => {
@@ -195,20 +246,25 @@ describe('updateAccountQuota (pure)', () => {
     const account = makeAccount()
     const updateUsage = mock((_id: string, _meta: any) => {})
     const accountManager = { updateUsage }
+    const before = Date.now()
 
     updateAccountQuota(
       account,
-      { usedCount: 42, limitCount: 500, email: 'new@example.com' },
+      { usedCount: 42, limitCount: 500, overageCount: 9, email: 'new@example.com' },
       accountManager
     )
 
     expect(account.usedCount).toBe(42)
     expect(account.limitCount).toBe(500)
+    expect(account.overageCount).toBe(9)
+    expect(account.lastSync ?? 0).toBeGreaterThanOrEqual(before)
     expect(account.email).toBe('new@example.com')
     expect(updateUsage).toHaveBeenCalledTimes(1)
     expect(updateUsage).toHaveBeenCalledWith('acc-1', {
       usedCount: 42,
       limitCount: 500,
+      overageCount: 9,
+      lastSync: account.lastSync,
       email: 'new@example.com'
     })
   })
@@ -219,6 +275,8 @@ describe('updateAccountQuota (pure)', () => {
 
     expect(account.usedCount).toBe(0)
     expect(account.limitCount).toBe(0)
+    expect(account.overageCount).toBe(0)
+    expect(account.lastSync).toBeDefined()
     // email untouched
     expect(account.email).toBe('old@example.com')
   })

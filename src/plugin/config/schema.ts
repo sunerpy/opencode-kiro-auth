@@ -76,6 +76,17 @@ export const KiroConfigSchema = z.object({
    */
   quota_reserve_threshold: z.number().min(0).max(1).default(0.95),
 
+  /**
+   * Exclude accounts that have entered AWS paid overage from selection.
+   */
+  stop_on_overage: z.boolean().default(true),
+
+  /**
+   * Paid-overage invocations tolerated before stopping an account. 0 means
+   * stop on any overage.
+   */
+  overage_threshold: z.number().min(0).default(0),
+
   default_region: RegionSchema.default('us-east-1'),
 
   rate_limit_retry_delay_ms: z.number().min(1000).max(60000).default(5000),
@@ -139,6 +150,8 @@ export const DEFAULT_CONFIG: KiroConfig = {
   account_selection_strategy: 'lowest-usage',
   quota_avoidance_enabled: true,
   quota_reserve_threshold: 0.95,
+  stop_on_overage: true,
+  overage_threshold: 0,
   default_region: 'us-east-1',
   rate_limit_retry_delay_ms: 5000,
   rate_limit_max_retries: 3,

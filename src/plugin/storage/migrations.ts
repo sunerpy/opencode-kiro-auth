@@ -10,6 +10,7 @@ export function runMigrations(db: Database): void {
   migrateOidcRegionColumn(db)
   migrateDropRefreshTokenUniqueIndex(db)
   migrateRemovedAccountsTable(db)
+  migrateOverageColumn(db)
 }
 
 function migrateToUniqueRefreshToken(db: Database): void {
@@ -191,4 +192,12 @@ function migrateRemovedAccountsTable(db: Database): void {
   db.exec(
     'CREATE TABLE IF NOT EXISTS removed_accounts (id TEXT PRIMARY KEY, removed_at INTEGER NOT NULL)'
   )
+}
+
+function migrateOverageColumn(db: Database): void {
+  const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
+  const names = new Set(columns.map((c) => c.name))
+  if (!names.has('overage_count')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN overage_count INTEGER DEFAULT 0')
+  }
 }

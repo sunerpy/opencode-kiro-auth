@@ -11,6 +11,8 @@ root [README](../README.md#configuration) for the short version.
   "account_selection_strategy": "lowest-usage",
   "quota_avoidance_enabled": true,
   "quota_reserve_threshold": 0.95,
+  "stop_on_overage": true,
+  "overage_threshold": 0,
   "default_region": "us-east-1",
   "idc_start_url": "https://your-company.awsapps.com/start",
   "idc_region": "us-east-1",
@@ -50,6 +52,12 @@ root [README](../README.md#configuration) for the short version.
 - `quota_reserve_threshold`: Usage-ratio cutoff (`0`-`1`, default: `0.95`)
   above which an account is considered near-exhausted and gets soft-avoided.
   Only meaningful when `quota_avoidance_enabled` is `true`.
+- `stop_on_overage`: Stop selecting accounts that have entered AWS paid
+  overage (default: `true`). See [Overage protection](#overage-protection)
+  below.
+- `overage_threshold`: Paid-overage invocations tolerated before stopping an
+  account (default: `0`, meaning stop on any overage). Only meaningful when
+  `stop_on_overage` is `true`.
 - `default_region`: AWS region (`us-east-1`, `us-west-2`).
 - `idc_start_url`: Default IAM Identity Center Start URL (e.g.
   `https://your-company.awsapps.com/start`). Leave unset/blank to default to AWS Builder
@@ -283,6 +291,31 @@ with more headroom *before* any of those hard limits are hit.
 
 Env overrides: `KIRO_QUOTA_AVOIDANCE_ENABLED` (boolean),
 `KIRO_QUOTA_RESERVE_THRESHOLD` (number, `0`-`1`).
+
+## Overage protection
+
+AWS Kiro allows paid overage after the free quota is exhausted: the usage API
+can return HTTP 200 with `currentOverages > 0`, and AWS bills those extra
+invocations at `$0.04` per invocation. By default this plugin treats that
+signal as a hard selection stop so it does not keep spending money silently.
+
+With `stop_on_overage: true` and `overage_threshold: 0`, any account whose
+latest usage sync reports paid overage is excluded from selection. If every
+otherwise-usable account is blocked by overage, the plugin throws a hard-stop
+error instead of sleeping or retrying. A clean account that is merely
+rate-limited still takes precedence and follows the normal wait path.
+
+To intentionally continue with paid overage, set:
+
+```json
+{
+  "stop_on_overage": false
+}
+```
+
+Recovery is automatic after AWS resets the monthly quota: the next successful
+usage sync records `currentOverages: 0`, and the account becomes selectable
+again.
 
 ## Removing accounts & the removal tombstone
 
