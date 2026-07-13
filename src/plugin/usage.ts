@@ -1,6 +1,47 @@
-import { KiroAuthDetails, ManagedAccount } from './types'
+import { z } from 'zod'
+import type { KiroAuthDetails, ManagedAccount } from './types'
 
-export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
+const UsageLimitsResponseSchema = z
+  .object({
+    usageBreakdownList: z
+      .array(
+        z
+          .object({
+            currentUsage: z.number().optional(),
+            usageLimit: z.number().optional(),
+            currentOverages: z.number().optional(),
+            freeTrialInfo: z
+              .object({
+                currentUsage: z.number().optional(),
+                usageLimit: z.number().optional()
+              })
+              .passthrough()
+              .nullable()
+              .optional()
+          })
+          .passthrough()
+      )
+      .optional(),
+    userInfo: z.object({ email: z.string().optional() }).passthrough().optional()
+  })
+  .passthrough()
+
+interface UsageSnapshot {
+  usedCount: number
+  limitCount: number
+  overageCount: number
+  email?: string
+}
+
+interface UsageUpdateMeta extends UsageSnapshot {
+  lastSync: number
+}
+
+interface AccountUsageManager {
+  updateUsage(id: string, meta: UsageUpdateMeta): void
+}
+
+export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<UsageSnapshot> {
   // Try different parameter combinations
   const attempts: Array<{ resourceType?: string; origin?: string }> = [
     { resourceType: 'AGENTIC_REQUEST', origin: 'AI_EDITOR' },
@@ -55,9 +96,10 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
         continue
       }
 
-      const data: any = await res.json()
+      const data = UsageLimitsResponseSchema.parse(await res.json())
       let usedCount = 0,
-        limitCount = 0
+        limitCount = 0,
+        overageCount = 0
       if (Array.isArray(data.usageBreakdownList)) {
         for (const s of data.usageBreakdownList) {
           if (s.freeTrialInfo) {
@@ -66,9 +108,10 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
           }
           usedCount += s.currentUsage || 0
           limitCount += s.usageLimit || 0
+          overageCount += s.currentOverages || 0
         }
       }
-      return { usedCount, limitCount, email: data.userInfo?.email }
+      return { usedCount, limitCount, overageCount, email: data.userInfo?.email }
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e))
       if (index < attempts.length - 1) continue
@@ -80,16 +123,20 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
 
 export function updateAccountQuota(
   account: ManagedAccount,
-  usage: any,
-  accountManager?: any
+  usage: Partial<UsageSnapshot>,
+  accountManager?: AccountUsageManager
 ): void {
   const meta = {
     usedCount: usage.usedCount || 0,
     limitCount: usage.limitCount || 0,
+    overageCount: usage.overageCount || 0,
+    lastSync: Date.now(),
     email: usage.email
   }
   account.usedCount = meta.usedCount
   account.limitCount = meta.limitCount
+  account.overageCount = meta.overageCount
+  account.lastSync = meta.lastSync
   if (usage.email) account.email = usage.email
   if (accountManager) accountManager.updateUsage(account.id, meta)
 }

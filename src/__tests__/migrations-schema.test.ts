@@ -82,9 +82,33 @@ describe('runMigrations on modern schema', () => {
     expect(tableExists(db, 'removed_accounts')).toBe(true)
 
     const cols = columnNames(db)
-    for (const c of ['oidc_region', 'start_url', 'used_count', 'limit_count', 'last_sync']) {
+    for (const c of [
+      'oidc_region',
+      'start_url',
+      'used_count',
+      'limit_count',
+      'last_sync',
+      'overage_count'
+    ]) {
       expect(cols.has(c)).toBe(true)
     }
+    db.close()
+  })
+
+  test('adds overage_count to existing rows with default 0 and remains idempotent', () => {
+    const db = tempDb()
+    createModernSchema(db)
+    insertModernAccount(db, { id: 'overage-migration' })
+
+    runMigrations(db)
+    runMigrations(db)
+
+    const cols = columnNames(db)
+    expect(cols.has('overage_count')).toBe(true)
+    const row = db
+      .prepare('SELECT overage_count FROM accounts WHERE id = ?')
+      .get('overage-migration') as { overage_count: number }
+    expect(row.overage_count).toBe(0)
     db.close()
   })
 
@@ -190,6 +214,7 @@ describe('migrateRealEmailColumn table-rebuild branch', () => {
     expect(cols.has('used_count')).toBe(true)
     expect(cols.has('start_url')).toBe(true)
     expect(cols.has('oidc_region')).toBe(true)
+    expect(cols.has('overage_count')).toBe(true)
 
     const promoted = db.prepare('SELECT email FROM accounts WHERE id = ?').get('la') as any
     expect(promoted.email).toBe('real-person@example.com')

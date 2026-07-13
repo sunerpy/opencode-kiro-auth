@@ -20,6 +20,14 @@ type AccountRow = {
   expires_at: number
 }
 
+type UsageRow = {
+  id: string
+  used_count: number
+  limit_count: number
+  overage_count: number
+  last_sync: number
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolvePromise: (() => void) | null = null
   const promise = new Promise<void>((resolve) => {
@@ -289,14 +297,107 @@ describe('mergeAccounts', () => {
     expect(merged[0]!.id).toBe('new')
   })
 
-  test('counters are merged to the max across existing and incoming', () => {
-    const existing = account({ usedCount: 5, limitCount: 100, lastUsed: 10, lastSync: 1 })
-    const incoming = account({ usedCount: 8, limitCount: 90, lastUsed: 5, lastSync: 20 })
+  test('usage snapshot (used/limit/overage) follows the newer lastSync, not independent max', () => {
+    const existing = account({
+      usedCount: 5,
+      limitCount: 100,
+      overageCount: 2,
+      lastUsed: 10,
+      lastSync: 1
+    })
+    const incoming = account({
+      usedCount: 8,
+      limitCount: 90,
+      overageCount: 7,
+      lastUsed: 5,
+      lastSync: 20
+    })
     const merged = onlyMergedAccount(mergeAccounts([existing], [incoming]))
+
+    // AWS getUsageLimits returns one atomic usage snapshot. Independent Math.max
+    // can pair fresh usedCount with stale limitCount and can keep a post-reset
+    // account stuck at old high usage forever. The newer lastSync snapshot wins.
     expect(merged.usedCount).toBe(8)
-    expect(merged.limitCount).toBe(100)
+    expect(merged.limitCount).toBe(90)
+    expect(merged.overageCount).toBe(7)
     expect(merged.lastUsed).toBe(10)
     expect(merged.lastSync).toBe(20)
+  })
+
+  test('fresh persisted zero overage survives stale single-account upsert', async () => {
+    const fixture = tempDbFixture()
+    const database = createDatabase(fixture.path)
+
+    try {
+      await database.upsertAccount(
+        account({
+          id: 'usage-reset-single',
+          usedCount: 0,
+          limitCount: 10000,
+          overageCount: 0,
+          lastSync: 20
+        })
+      )
+
+      await database.upsertAccount(
+        account({
+          id: 'usage-reset-single',
+          usedCount: 10977,
+          limitCount: 10000,
+          overageCount: 977,
+          lastSync: 10
+        })
+      )
+
+      const rows = database.getAccounts() as UsageRow[]
+      const persisted = rows.find((row) => row.id === 'usage-reset-single')
+      expect(persisted).toBeDefined()
+      expect(persisted?.used_count).toBe(0)
+      expect(persisted?.limit_count).toBe(10000)
+      expect(persisted?.overage_count).toBe(0)
+      expect(persisted?.last_sync).toBe(20)
+    } finally {
+      database.close()
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
+  })
+
+  test('fresh incoming zero overage wins stale persisted overage in batch upsert', async () => {
+    const fixture = tempDbFixture()
+    const database = createDatabase(fixture.path)
+
+    try {
+      await database.batchUpsertAccounts([
+        account({
+          id: 'usage-reset-batch',
+          usedCount: 10977,
+          limitCount: 10000,
+          overageCount: 977,
+          lastSync: 10
+        })
+      ])
+
+      await database.batchUpsertAccounts([
+        account({
+          id: 'usage-reset-batch',
+          usedCount: 0,
+          limitCount: 10000,
+          overageCount: 0,
+          lastSync: 20
+        })
+      ])
+
+      const rows = database.getAccounts() as UsageRow[]
+      const persisted = rows.find((row) => row.id === 'usage-reset-batch')
+      expect(persisted).toBeDefined()
+      expect(persisted?.used_count).toBe(0)
+      expect(persisted?.limit_count).toBe(10000)
+      expect(persisted?.overage_count).toBe(0)
+      expect(persisted?.last_sync).toBe(20)
+    } finally {
+      database.close()
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
   })
 
   test('a permanent error on incoming forces the merged account unhealthy', () => {

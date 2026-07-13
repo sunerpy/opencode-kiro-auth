@@ -46,6 +46,7 @@ export interface ManagedAccount {
   failCount: number
   usedCount?: number
   limitCount?: number
+  overageCount?: number
   lastSync?: number
   lastUsed?: number
 }
