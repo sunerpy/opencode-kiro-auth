@@ -42,7 +42,7 @@ export class AccountSelector {
       this.circuitBreakerTrips++
       if (this.accountManager.allSelectableBlockedByOverage()) {
         throw new Error(
-          'All accounts have exceeded their free quota and entered paid overage. Set "stop_on_overage": false in ~/.config/opencode/kiro.json to continue with paid overage, or wait for the quota to reset.'
+          'All accounts have exceeded their free quota and entered paid overage. Set "stop_on_overage": false in ~/.config/opencode/kiro-auth-plugin/kiro.json to continue with paid overage, or wait for the quota to reset.'
         )
       }
       const wait = this.accountManager.getMinWaitTime()

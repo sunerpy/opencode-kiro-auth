@@ -123,7 +123,7 @@ export class IdcAuthMethod {
             })
             if (startUrl && !profileArn) {
               throw new Error(
-                `Missing profile ARN for IAM Identity Center. Set "idc_profile_arn" in ~/.config/opencode/kiro.json, or run "kiro-cli profile" once so it can be auto-detected. Original error: ${
+                `Missing profile ARN for IAM Identity Center. Set "idc_profile_arn" in ~/.config/opencode/kiro-auth-plugin/kiro.json, or run "kiro-cli profile" once so it can be auto-detected. Original error: ${
                   e instanceof Error ? e.message : String(e)
                 }`
               )
@@ -208,7 +208,7 @@ export class IdcAuthMethod {
           const err = e instanceof Error ? e : new Error(String(e))
           logger.error('IDC auth callback failed', err)
           throw new Error(
-            `IDC authorization failed: ${err.message}. Check ~/.config/opencode/kiro-logs/plugin.log for details. If this is an Identity Center account, ensure you have selected an AWS Q Developer/CodeWhisperer profile (try: kiro-cli profile).`
+            `IDC authorization failed: ${err.message}. Check ~/.config/opencode/kiro-auth-plugin/logs/plugin.log for details. If this is an Identity Center account, ensure you have selected an AWS Q Developer/CodeWhisperer profile (try: kiro-cli profile).`
           )
         }
       }

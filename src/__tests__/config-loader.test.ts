@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../plugin/config/loader.js'
 import { DEFAULT_CONFIG } from '../plugin/config/schema.js'
+import { getUserConfigPath } from '../plugin/paths.js'
 
 // loadConfig reads:
-//   - user config:   $XDG_CONFIG_HOME/opencode/kiro.json  (getConfigDir())
+//   - user config:   $XDG_CONFIG_HOME/opencode/kiro-auth-plugin/kiro.json
 //   - project config: <directory>/.opencode/kiro.json
 // then applies KIRO_* env overrides. We isolate BOTH by pointing
 // XDG_CONFIG_HOME at a throwaway temp dir per test (getConfigDir reads the env
@@ -35,6 +36,12 @@ const savedXdg = process.env.XDG_CONFIG_HOME
 const savedEnv: Record<string, string | undefined> = {}
 
 function writeUserConfig(obj: unknown): void {
+  const dir = join(configHome, 'opencode', 'kiro-auth-plugin')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'kiro.json'), JSON.stringify(obj), 'utf-8')
+}
+
+function writeLegacyUserConfig(obj: unknown): void {
   const dir = join(configHome, 'opencode')
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'kiro.json'), JSON.stringify(obj), 'utf-8')
@@ -148,6 +155,16 @@ describe('loadConfig file merge', () => {
     expect(cfg.default_region).toBe('us-east-1')
   })
 
+  test('legacy flat kiro.json is used when the new config path is absent', () => {
+    writeLegacyUserConfig({ account_selection_strategy: 'sticky', rate_limit_max_retries: 8 })
+
+    const cfg = loadConfig(projectDir)
+
+    expect(cfg.account_selection_strategy).toBe('sticky')
+    expect(cfg.rate_limit_max_retries).toBe(8)
+    expect(existsSync(getUserConfigPath())).toBe(false)
+  })
+
   test('project kiro.json overrides user kiro.json', () => {
     writeUserConfig({ account_selection_strategy: 'sticky', default_region: 'us-west-2' })
     writeProjectConfig({ account_selection_strategy: 'round-robin' })
@@ -166,7 +183,7 @@ describe('loadConfig file merge', () => {
   })
 
   test('invalid JSON in user config is ignored, defaults preserved', () => {
-    const dir = join(configHome, 'opencode')
+    const dir = join(configHome, 'opencode', 'kiro-auth-plugin')
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'kiro.json'), '{ not valid json', 'utf-8')
     const cfg = loadConfig(projectDir)

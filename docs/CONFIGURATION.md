@@ -1,6 +1,6 @@
 # Configuration reference
 
-Full `~/.config/opencode/kiro.json` example and every supported option. See the
+Full `~/.config/opencode/kiro-auth-plugin/kiro.json` example and every supported option. See the
 root [README](../README.md#configuration) for the short version.
 
 ## Example `kiro.json`
@@ -36,6 +36,14 @@ root [README](../README.md#configuration) for the short version.
 > additive only — it never changes, reorders, or removes keys you already set,
 > never rewrites a file that is already complete, and leaves an unparseable file
 > untouched.
+
+## Storage layout
+
+The plugin config, logs, and refresh/keep-alive locks live under
+`~/.config/opencode/kiro-auth-plugin/` (`%APPDATA%\opencode\kiro-auth-plugin\`
+on Windows). Existing safe files are migrated automatically once, so no manual
+action is needed. The SQLite database remains at `~/.config/opencode/kiro.db`
+because moving a live database during an upgrade is unsafe.
 
 ## Options
 
@@ -172,7 +180,7 @@ through the same budget table (default `medium` when no budget is set). See
 Set `enable_log_effort_debug` (default `false`) to log each request's
 inbound body shape (top-level keys and reasoning-related fields only, never
 message content) plus the effort level the plugin resolved, to
-`~/.config/opencode/kiro-logs/plugin.log`. This is independent from
+`~/.config/opencode/kiro-auth-plugin/logs/plugin.log`. This is independent from
 `enable_log_api_request`.
 
 ### Limitation: per-agent thinking level isn't honored
@@ -196,7 +204,7 @@ In practice:
   explicit budget in `provider.kiro-auth.models`, to control effort.
 - Genuinely per-agent effort would need to be implemented at the
   OpenCode/omo orchestration layer, for example by mapping each agent to a
-  distinct model id (model choice *is* forwarded), not inside this plugin.
+  distinct model id (model choice _is_ forwarded), not inside this plugin.
 
 ## Reasoning display
 
@@ -224,11 +232,11 @@ account handles the next request. It only matters once you have more than
 one account registered (see the root [README](../README.md#multiple-accounts--rotation)
 for how accounts are added).
 
-| Value          | Behavior                                                                | Default |
-| -------------- | ------------------------------------------------------------------------ | ------- |
-| `lowest-usage` | Picks the healthy account with the lowest used quota on every request. Maximizes combined quota across accounts and keeps usage balanced. | ✅ |
-| `round-robin`  | Cycles through healthy accounts in order, one request each.              |         |
-| `sticky`       | Always uses the first account; only switches away when that account becomes unhealthy (rate-limited/403). |         |
+| Value          | Behavior                                                                                                                                  | Default |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `lowest-usage` | Picks the healthy account with the lowest used quota on every request. Maximizes combined quota across accounts and keeps usage balanced. | ✅      |
+| `round-robin`  | Cycles through healthy accounts in order, one request each.                                                                               |         |
+| `sticky`       | Always uses the first account; only switches away when that account becomes unhealthy (rate-limited/403).                                 |         |
 
 Regardless of strategy, failover is automatic: an unhealthy account is
 skipped in favor of the next healthy one. If all accounts are rate-limited,
@@ -287,7 +295,7 @@ existing hard behaviors:
   fires the same as before.
 
 `quota_reserve_threshold` just tells the account selector to prefer accounts
-with more headroom *before* any of those hard limits are hit.
+with more headroom _before_ any of those hard limits are hit.
 
 Env overrides: `KIRO_QUOTA_AVOIDANCE_ENABLED` (boolean),
 `KIRO_QUOTA_RESERVE_THRESHOLD` (number, `0`-`1`).

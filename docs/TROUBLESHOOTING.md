@@ -21,7 +21,7 @@ Fix:
 This happens when the plugin has no records in `~/.config/opencode/kiro.db`.
 
 1. Ensure `kiro-cli login` succeeds.
-2. Ensure `auto_sync_kiro_cli` is `true` in `~/.config/opencode/kiro.json`.
+2. Ensure `auto_sync_kiro_cli` is `true` in `~/.config/opencode/kiro-auth-plugin/kiro.json`.
 3. Retry the request; the plugin will attempt a Kiro CLI sync when it detects zero
    accounts.
 
@@ -50,7 +50,7 @@ If bootstrap is skipped because `auth.json` is malformed, fix the JSON first. Th
 will not overwrite malformed auth files because they may contain other provider
 credentials.
 
-**Important:** Ensure `auto_sync_kiro_cli` is `true` in `~/.config/opencode/kiro.json`
+**Important:** Ensure `auto_sync_kiro_cli` is `true` in `~/.config/opencode/kiro-auth-plugin/kiro.json`
 and that `kiro-cli login` succeeds.
 
 See [docs/CONFIGURATION.md](CONFIGURATION.md) for the full option reference.

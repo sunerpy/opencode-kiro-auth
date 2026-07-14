@@ -22,7 +22,7 @@ const savedXdg = process.env.XDG_CONFIG_HOME
 const savedDebug = process.env.DEBUG
 
 function logDir(): string {
-  return join(logHome, 'opencode', 'kiro-logs')
+  return join(logHome, 'opencode', 'kiro-auth-plugin', 'logs')
 }
 
 function readPluginLog(): string {

@@ -1,25 +1,16 @@
 import { Buffer } from 'node:buffer'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { getLogsDir } from './paths.js'
 
 const binaryToBase64Replacer = (_key: string, value: unknown): unknown => {
   if (value instanceof Uint8Array) return Buffer.from(value).toString('base64')
   return value
 }
 
-const getLogDir = () => {
-  const platform = process.platform
-  const base =
-    platform === 'win32'
-      ? join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
-      : join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
-  return join(base, 'kiro-logs')
-}
-
 const writeToFile = (level: string, message: string, ...args: unknown[]) => {
   try {
-    const dir = getLogDir()
+    const dir = getLogsDir()
     mkdirSync(dir, { recursive: true })
     const path = join(dir, 'plugin.log')
     const timestamp = new Date().toISOString()
@@ -49,7 +40,7 @@ const writeApiLog = (
   isError = false
 ) => {
   try {
-    const dir = getLogDir()
+    const dir = getLogsDir()
     mkdirSync(dir, { recursive: true })
     const prefix = isError ? 'error_' : ''
     const filename = `${prefix}${timestamp}_${type}.json`

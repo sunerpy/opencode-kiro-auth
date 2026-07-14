@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto'
 import { existsSync, promises as fs } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import lockfile from 'proper-lockfile'
 import { isPermanentError } from '../health'
+import { getKeepAliveLockPath, getRefreshLockPath } from '../paths.js'
 import type { ManagedAccount } from '../types'
+
+export { getKeepAliveLockPath, getRefreshLockPath } from '../paths.js'
 
 const LOCK_OPTIONS = {
   stale: 10000,
@@ -35,26 +37,6 @@ const KEEP_ALIVE_LOCK_OPTIONS = {
 }
 
 type LockRelease = () => Promise<void>
-
-function getBaseDir(): string {
-  // Keep this local instead of importing DB_PATH from sqlite.ts: sqlite.ts imports
-  // this module and also constructs `kiroDb` at module load, so importing it here
-  // would create a cycle and trigger database construction just to compute a lock path.
-  const p = process.platform
-  if (p === 'win32') {
-    return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
-  }
-  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
-}
-
-export function getRefreshLockPath(accountId: string): string {
-  const safeAccountId = accountId.replace(/[^A-Za-z0-9_-]/g, '')
-  return join(getBaseDir(), `.kiro-refresh-${safeAccountId}.lock`)
-}
-
-export function getKeepAliveLockPath(): string {
-  return join(getBaseDir(), '.kiro-keepalive.lock')
-}
 
 export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
   if (!existsSync(dbPath)) {

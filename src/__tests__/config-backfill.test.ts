@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { loadConfig } from '../plugin/config/loader.js'
 import { DEFAULT_CONFIG } from '../plugin/config/schema.js'
 
-// Backfill mutates the REAL user kiro.json ($XDG_CONFIG_HOME/opencode/kiro.json).
+// Backfill mutates the REAL user kiro.json under the kiro-auth-plugin directory.
 // setup.ts already points XDG_CONFIG_HOME at a temp dir, but each test overrides
 // it with its own throwaway dir so writes are fully isolated and asserted.
 
@@ -22,11 +22,11 @@ let projectDir: string
 const savedXdg = process.env.XDG_CONFIG_HOME
 
 function userConfigPath(): string {
-  return join(configHome, 'opencode', 'kiro.json')
+  return join(configHome, 'opencode', 'kiro-auth-plugin', 'kiro.json')
 }
 
 function writeUserConfigRaw(text: string): void {
-  const dir = join(configHome, 'opencode')
+  const dir = join(configHome, 'opencode', 'kiro-auth-plugin')
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'kiro.json'), text, 'utf-8')
 }
@@ -209,6 +209,6 @@ describe('config backfill: scope and creation', () => {
 })
 
 function readdirTmp(): string[] {
-  const dir = join(configHome, 'opencode')
+  const dir = join(configHome, 'opencode', 'kiro-auth-plugin')
   return readdirSync(dir).filter((f: string) => f.startsWith('kiro.json.tmp-'))
 }

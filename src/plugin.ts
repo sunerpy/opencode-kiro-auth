@@ -7,6 +7,7 @@ import { AccountRepository } from './infrastructure/database/account-repository.
 import { AccountManager } from './plugin/accounts.js'
 import { bootstrapAuthIfNeeded } from './plugin/auth-bootstrap.js'
 import { loadConfig } from './plugin/config/index.js'
+import { migrateSafeFilesIfNeeded } from './plugin/storage/migrate-layout.js'
 
 type ToastFunction = (message: string, variant: string) => void
 
@@ -46,6 +47,15 @@ export function __getActiveKeepAliveControllerForTest(): KeepAliveController | n
 export const createKiroPlugin =
   (id: string) =>
   async ({ client, directory }: any) => {
+    try {
+      migrateSafeFilesIfNeeded()
+    } catch (error) {
+      console.warn(
+        'Kiro storage layout migration failed non-fatally:',
+        error instanceof Error ? error.message : String(error)
+      )
+    }
+
     const config = loadConfig(directory)
 
     const showToast: ToastFunction = (message: string, variant: string) => {
