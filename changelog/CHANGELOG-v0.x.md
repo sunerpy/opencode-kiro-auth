@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.9.0...v0.10.0) (2026-07-14)
+
+
+### Features
+
+* **storage:** 将配置日志与锁整理到 kiro-auth-plugin 子目录 ([#38](https://github.com/sunerpy/opencode-kiro-auth/issues/38)) ([88003de](https://github.com/sunerpy/opencode-kiro-auth/commit/88003de27da5a80d4cb0ad8d1801ab430a0b5502))
+
 ## [0.9.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.8.0...v0.9.0) (2026-07-13)
 
 
