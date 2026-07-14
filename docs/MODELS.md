@@ -247,7 +247,7 @@ Configure Kiro effort per model in your OpenCode provider model definitions by
 setting `thinkingConfig.thinkingBudget` on each model variant. The plugin
 automatically maps those budgets to Kiro's native `effort` field for supported
 Claude models, so you don't need to hardcode a global `effort` value in
-`~/.config/opencode/kiro.json`.
+`~/.config/opencode/kiro-auth-plugin/kiro.json`.
 
 ```json
 {
@@ -274,13 +274,13 @@ Claude models, so you don't need to hardcode a global `effort` value in
 Budget mapping:
 
 | OpenCode budget | Kiro effort |
-| ---------------- | ----------- |
-| `<= 10000`        | `low`       |
-| `<= 20000`        | `medium`    |
-| `<= 28000`        | `high`      |
-| `> 28000`         | `max`       |
+| --------------- | ----------- |
+| `<= 10000`      | `low`       |
+| `<= 20000`      | `medium`    |
+| `<= 28000`      | `high`      |
+| `> 28000`       | `max`       |
 
-Use `~/.config/opencode/kiro.json` for plugin-wide behavior such as auth sync,
+Use `~/.config/opencode/kiro-auth-plugin/kiro.json` for plugin-wide behavior such as auth sync,
 account selection, retry limits, and `auto_effort_mapping`. A top-level `effort`
 setting is a global override for all supported models, not a per-model setting.
 See [docs/CONFIGURATION.md](CONFIGURATION.md) for the full option reference.

@@ -85,7 +85,7 @@ customize which models are exposed (including thinking variants), see
    - Note: the TUI `/connect` flow does **not** currently run plugin OAuth
      prompts (Start URL / region), so Identity Center logins may fall back to
      Builder ID unless you use `opencode auth login` (or preconfigure
-     defaults in `~/.config/opencode/kiro.json`).
+     defaults in `~/.config/opencode/kiro-auth-plugin/kiro.json`).
    - For **IAM Identity Center**, you may also need a **profile ARN**
      (`profileArn`) — auto-detected from `kiro-cli profile` if available, or
      set `idc_profile_arn` manually.
@@ -97,7 +97,7 @@ customize which models are exposed (including thinking variants), see
 ## Configuration
 
 Plugin-wide behavior (auth sync, account selection, retry limits, effort
-mapping) lives in `~/.config/opencode/kiro.json`. See
+mapping) lives in `~/.config/opencode/kiro-auth-plugin/kiro.json`. See
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full example and every
 option.
 
@@ -131,13 +131,13 @@ requests across them for combined quota and automatic failover.
    account (option 1) is the supported multi-account path.
 
 **Rotation strategy** — set `account_selection_strategy` in
-`~/.config/opencode/kiro.json`:
+`~/.config/opencode/kiro-auth-plugin/kiro.json`:
 
-| Strategy       | Behavior                                                            | Default |
-| -------------- | -------------------------------------------------------------------- | ------- |
-| `lowest-usage` | Each request picks the healthy account with the lowest used quota    | ✅      |
-| `round-robin`  | Cycles through accounts in order                                     |         |
-| `sticky`       | Always uses the first account; switches only when it becomes unhealthy |       |
+| Strategy       | Behavior                                                               | Default |
+| -------------- | ---------------------------------------------------------------------- | ------- |
+| `lowest-usage` | Each request picks the healthy account with the lowest used quota      | ✅      |
+| `round-robin`  | Cycles through accounts in order                                       |         |
+| `sticky`       | Always uses the first account; switches only when it becomes unhealthy |         |
 
 **Automatic failover** requires no configuration: a rate-limited or 403
 account is marked unhealthy and the next healthy account takes over. If every
@@ -165,7 +165,7 @@ per account, e.g. `929/10000`) and surfaces it in three places:
 
 1. **Auth menu label** — running `opencode auth login` and selecting
    `kiro-auth` shows `[current: <email> <used>/<limit> (<pct>%)]` on the
-   first login method; with multiple accounts they're joined with ` · `,
+   first login method; with multiple accounts they're joined with `·`,
    capped at 3 with a `+N more` suffix.
 2. **Startup toast** — once per plugin init, a toast shows
    `Kiro usage (<email>): <used>/<limit> (<pct>%)` a few seconds after
@@ -191,11 +191,11 @@ your `provider.kiro-auth.models` block.
 Thinking budgets map to Kiro's native `effort` field automatically:
 
 | OpenCode budget | Kiro effort |
-| ---------------- | ----------- |
-| `<= 10000`        | `low`       |
-| `<= 20000`        | `medium`    |
-| `<= 28000`        | `high`      |
-| `> 28000`         | `max`       |
+| --------------- | ----------- |
+| `<= 10000`      | `low`       |
+| `<= 20000`      | `medium`    |
+| `<= 28000`      | `high`      |
+| `> 28000`       | `max`       |
 
 Details and the full JSON example: [docs/MODELS.md](docs/MODELS.md).
 
@@ -283,12 +283,21 @@ Releases are automated with
 **Linux/macOS:**
 
 - SQLite database: `~/.config/opencode/kiro.db`
-- Plugin config: `~/.config/opencode/kiro.json`
+- Plugin config: `~/.config/opencode/kiro-auth-plugin/kiro.json`
+- Logs: `~/.config/opencode/kiro-auth-plugin/logs/`
+- Refresh and keep-alive locks: `~/.config/opencode/kiro-auth-plugin/`
 
 **Windows:**
 
 - SQLite database: `%APPDATA%\opencode\kiro.db`
-- Plugin config: `%APPDATA%\opencode\kiro.json`
+- Plugin config: `%APPDATA%\opencode\kiro-auth-plugin\kiro.json`
+- Logs: `%APPDATA%\opencode\kiro-auth-plugin\logs\`
+- Refresh and keep-alive locks: `%APPDATA%\opencode\kiro-auth-plugin\`
+
+Existing config, logs, and stale flat lock files are migrated automatically on
+first startup; no action is needed. The SQLite database deliberately remains at
+the flat `opencode/kiro.db` path because moving a live database during an upgrade
+is unsafe.
 
 ## Acknowledgements
 

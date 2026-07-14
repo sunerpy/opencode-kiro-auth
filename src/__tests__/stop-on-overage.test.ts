@@ -140,7 +140,7 @@ describe('AccountSelector all-overage hard stop', () => {
     )
 
     await expect(selector.selectHealthyAccount(collectingToast().fn)).rejects.toThrow(
-      'Set "stop_on_overage": false in ~/.config/opencode/kiro.json'
+      'Set "stop_on_overage": false in ~/.config/opencode/kiro-auth-plugin/kiro.json'
     )
   })
 

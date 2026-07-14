@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import * as logger from '../logger'
+import { getLegacyUserConfigPath, getLogsDir, getUserConfigPath } from '../paths.js'
 import {
   AccountSelectionStrategySchema,
   DEFAULT_CONFIG,
@@ -10,18 +10,7 @@ import {
   type KiroConfig
 } from './schema'
 
-function getConfigDir(): string {
-  const platform = process.platform
-  if (platform === 'win32') {
-    return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
-  }
-  const xdgConfig = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')
-  return join(xdgConfig, 'opencode')
-}
-
-export function getUserConfigPath(): string {
-  return join(getConfigDir(), 'kiro.json')
-}
+export { getUserConfigPath } from '../paths.js'
 
 function ensureUserConfigTemplate(): void {
   const path = getUserConfigPath()
@@ -223,12 +212,18 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
 }
 
 export function loadConfig(directory: string): KiroConfig {
-  ensureUserConfigTemplate()
-  backfillUserConfig(getUserConfigPath())
+  const userConfigPath = getUserConfigPath()
+  const legacyUserConfigPath = getLegacyUserConfigPath()
+  const configSourcePath =
+    !existsSync(userConfigPath) && existsSync(legacyUserConfigPath)
+      ? legacyUserConfigPath
+      : userConfigPath
+
+  if (configSourcePath === userConfigPath) ensureUserConfigTemplate()
+  backfillUserConfig(configSourcePath)
   let config: KiroConfig = { ...DEFAULT_CONFIG }
 
-  const userConfigPath = getUserConfigPath()
-  const userConfig = loadConfigFile(userConfigPath)
+  const userConfig = loadConfigFile(configSourcePath)
   if (userConfig) {
     config = mergeConfigs(config, userConfig)
   }
@@ -249,5 +244,5 @@ export function configExists(path: string): boolean {
 }
 
 export function getDefaultLogsDir(): string {
-  return join(getConfigDir(), 'kiro-logs')
+  return getLogsDir()
 }

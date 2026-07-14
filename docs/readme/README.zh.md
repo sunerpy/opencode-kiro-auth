@@ -73,7 +73,7 @@
      Center（SSO）**。
    - 注意：目前 TUI 的 `/connect` 流程**不会**触发插件的 OAuth 提示
      （Start URL / region），因此 Identity Center 登录可能会回退到 Builder
-     ID，除非使用 `opencode auth login`（或在 `~/.config/opencode/kiro.json`
+     ID，除非使用 `opencode auth login`（或在 `~/.config/opencode/kiro-auth-plugin/kiro.json`
      中预先配置默认值）。
    - 使用 **IAM Identity Center** 时，你可能还需要一个 **profile ARN**
      （`profileArn`）——如果本地装有 `kiro-cli` 并已选择过 profile
@@ -86,7 +86,7 @@
 ## 插件配置
 
 插件级行为（认证同步、账号选择策略、重试限制、effort 映射）位于
-`~/.config/opencode/kiro.json`。完整示例和全部选项见
+`~/.config/opencode/kiro-auth-plugin/kiro.json`。完整示例和全部选项见
 [docs/CONFIGURATION.md](../CONFIGURATION.md)。
 
 ## 多账号与轮换
@@ -104,14 +104,14 @@
    从本地 `kiro-cli` 数据库导入凭据。通过 `kiro-cli login` 在 `kiro-cli`
    中切换或新增账号后会自动流入插件，无需额外操作。
 
-**轮换策略** —— 在 `~/.config/opencode/kiro.json` 中设置
+**轮换策略** —— 在 `~/.config/opencode/kiro-auth-plugin/kiro.json` 中设置
 `account_selection_strategy`：
 
-| 策略           | 行为                                                       | 默认值 |
-| -------------- | ------------------------------------------------------------ | ------ |
-| `lowest-usage` | 每次请求都选择剩余额度最低的健康账号                        | ✅     |
-| `round-robin`  | 按顺序依次轮流使用各账号                                     |        |
-| `sticky`       | 始终使用第一个账号；仅当该账号变为不健康时才切换             |        |
+| 策略           | 行为                                             | 默认值 |
+| -------------- | ------------------------------------------------ | ------ |
+| `lowest-usage` | 每次请求都选择剩余额度最低的健康账号             | ✅     |
+| `round-robin`  | 按顺序依次轮流使用各账号                         |        |
+| `sticky`       | 始终使用第一个账号；仅当该账号变为不健康时才切换 |        |
 
 **自动故障切换**无需任何配置：被限流或返回 403 的账号会被标记为不健康，插件
 会自动切换到下一个健康账号。如果所有账号都被限流，插件会等待最短的重置时间
@@ -148,7 +148,7 @@ Cancel 取消）。
 
 1. **认证菜单标签**——执行 `opencode auth login` 并选择 `kiro-auth` 时，第
    一个登录方式会显示 `[current: <email> <used>/<limit> (<pct>%)]`；有多个
-   账号时用 ` · ` 连接，最多显示 3 个，超出部分显示为 `+N more`。
+   账号时用 `·` 连接，最多显示 3 个，超出部分显示为 `+N more`。
 2. **启动 Toast**——每次插件初始化后，OpenCode 启动几秒后会弹出一条 Toast：
    `Kiro usage (<email>): <used>/<limit> (<pct>%)`，用量 ≥90% 时变为黄色
    （`warning`）。
@@ -172,11 +172,11 @@ python3 -c "import sqlite3;r=sqlite3.connect('$HOME/.config/opencode/kiro.db').e
 Thinking budget 会自动映射到 Kiro 原生的 `effort` 字段：
 
 | OpenCode budget | Kiro effort |
-| ---------------- | ----------- |
-| `<= 10000`        | `low`       |
-| `<= 20000`        | `medium`    |
-| `<= 28000`        | `high`      |
-| `> 28000`         | `max`       |
+| --------------- | ----------- |
+| `<= 10000`      | `low`       |
+| `<= 20000`      | `medium`    |
+| `<= 28000`      | `high`      |
+| `> 28000`       | `max`       |
 
 详情与完整 JSON 示例见 [docs/MODELS.md](../MODELS.md)。
 
@@ -262,12 +262,17 @@ Agent 贡献者请参阅 [AGENTS.md](../../AGENTS.md)，其中包含代码库架
 **Linux/macOS：**
 
 - SQLite 数据库：`~/.config/opencode/kiro.db`
-- 插件配置：`~/.config/opencode/kiro.json`
+- 插件配置：`~/.config/opencode/kiro-auth-plugin/kiro.json`
+- 日志与锁文件：`~/.config/opencode/kiro-auth-plugin/`
 
 **Windows：**
 
 - SQLite 数据库：`%APPDATA%\opencode\kiro.db`
-- 插件配置：`%APPDATA%\opencode\kiro.json`
+- 插件配置：`%APPDATA%\opencode\kiro-auth-plugin\kiro.json`
+- 日志与锁文件：`%APPDATA%\opencode\kiro-auth-plugin\`
+
+旧版配置、日志和根目录锁文件会在首次启动时自动迁移，无需手动操作。
+为避免升级时移动正在使用的数据库，`kiro.db` 保持在原有根目录路径。
 
 ## 致谢
 
