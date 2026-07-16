@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.11.0...v0.12.0) (2026-07-16)
+
+
+### Features
+
+* **models:** add OpenAI GPT 5.6 Sol/Terra/Luna ([#42](https://github.com/sunerpy/opencode-kiro-auth/issues/42)) ([c0a3982](https://github.com/sunerpy/opencode-kiro-auth/commit/c0a3982d3baff08fc1738743f0011f80e5636945))
+
 ## [0.11.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.10.0...v0.11.0) (2026-07-16)
 
 
