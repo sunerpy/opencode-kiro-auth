@@ -8,8 +8,9 @@
 [![license](https://img.shields.io/npm/l/@sunerpy/opencode-kiro-auth)](https://www.npmjs.com/package/@sunerpy/opencode-kiro-auth)
 
 > OpenCode plugin that lets OpenCode use AWS Kiro (CodeWhisperer) as a model
-> provider — Claude Sonnet, Opus, and Haiku, plus the open-weight models Kiro
-> proxies (DeepSeek, GLM, MiniMax, Qwen3) — with substantial trial quotas.
+> provider — Claude Sonnet, Opus, and Haiku, plus the other models Kiro proxies
+> (OpenAI GPT 5.6, DeepSeek, GLM, MiniMax, Qwen3) — with substantial trial
+> quotas.
 
 ## Table of Contents
 

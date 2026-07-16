@@ -11,6 +11,24 @@ describe('resolveKiroModel', () => {
     expect(resolveKiroModel('qwen3-coder-next')).toBe('qwen3-coder-next')
   })
 
+  test('resolves probe-confirmed GPT 5.6 slugs to their identity wire ids', () => {
+    expect(resolveKiroModel('gpt-5.6-sol')).toBe('gpt-5.6-sol')
+    expect(resolveKiroModel('gpt-5.6-terra')).toBe('gpt-5.6-terra')
+    expect(resolveKiroModel('gpt-5.6-luna')).toBe('gpt-5.6-luna')
+  })
+
+  test('rejects the probe-rejected GPT 5.6 naming variants (400 "Invalid model")', () => {
+    expect(() => resolveKiroModel('gpt-5.6')).toThrow('Unsupported model')
+    expect(() => resolveKiroModel('gpt-5-6-sol')).toThrow('Unsupported model')
+    expect(() => resolveKiroModel('openai-gpt-5.6-sol')).toThrow('Unsupported model')
+    expect(() => resolveKiroModel('OPENAI_GPT_5_6_SOL')).toThrow('Unsupported model')
+  })
+
+  test('GPT 5.6 slugs are not effort variants (no -thinking/-max resolution)', () => {
+    expect(() => resolveKiroModel('gpt-5.6-sol-thinking')).toThrow('Unsupported model')
+    expect(() => resolveKiroModel('gpt-5.6-sol-max')).toThrow('Unsupported model')
+  })
+
   test('keeps existing supported Claude slugs intact', () => {
     expect(resolveKiroModel('claude-sonnet-4-5')).toBe('claude-sonnet-4.5')
     expect(resolveKiroModel('claude-sonnet-4')).toBe('claude-sonnet-4')

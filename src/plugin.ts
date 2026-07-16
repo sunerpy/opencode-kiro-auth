@@ -290,6 +290,21 @@ export const createKiroPlugin =
               name: 'Qwen3 Coder Next (0.05x)',
               limit: { context: 256000, output: 64000 },
               modalities: { input: ['text'], output: ['text'] }
+            },
+            'gpt-5.6-sol': {
+              name: 'GPT 5.6 Sol (2.4x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text'], output: ['text'] }
+            },
+            'gpt-5.6-terra': {
+              name: 'GPT 5.6 Terra (1.2x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text'], output: ['text'] }
+            },
+            'gpt-5.6-luna': {
+              name: 'GPT 5.6 Luna',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text'], output: ['text'] }
             }
           }
         }
