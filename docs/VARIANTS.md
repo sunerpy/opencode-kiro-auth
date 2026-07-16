@@ -22,17 +22,32 @@ Only these four base models have variant ids. Every level below is
 probe-confirmed against the live Kiro API — no variant outside this table
 exists.
 
-| Base model | `low` | `medium` | `high` | `xhigh` | `max` |
-| --- | --- | --- | --- | --- | --- |
-| `claude-opus-4-8` | `claude-opus-4-8-low` | `claude-opus-4-8-medium` | `claude-opus-4-8-high` | `claude-opus-4-8-xhigh` | `claude-opus-4-8-max` |
-| `claude-opus-4-7` | `claude-opus-4-7-low` | `claude-opus-4-7-medium` | `claude-opus-4-7-high` | `claude-opus-4-7-xhigh` | `claude-opus-4-7-max` |
-| `claude-sonnet-5` | `claude-sonnet-5-low` | `claude-sonnet-5-medium` | `claude-sonnet-5-high` | `claude-sonnet-5-xhigh` | `claude-sonnet-5-max` |
-| `claude-sonnet-4-6` | `claude-sonnet-4-6-low` | `claude-sonnet-4-6-medium` | `claude-sonnet-4-6-high` | — | `claude-sonnet-4-6-max` |
+| Base model          | `low`                   | `medium`                   | `high`                   | `xhigh`                 | `max`                   |
+| ------------------- | ----------------------- | -------------------------- | ------------------------ | ----------------------- | ----------------------- |
+| `claude-opus-4-8`   | `claude-opus-4-8-low`   | `claude-opus-4-8-medium`   | `claude-opus-4-8-high`   | `claude-opus-4-8-xhigh` | `claude-opus-4-8-max`   |
+| `claude-opus-4-7`   | `claude-opus-4-7-low`   | `claude-opus-4-7-medium`   | `claude-opus-4-7-high`   | `claude-opus-4-7-xhigh` | `claude-opus-4-7-max`   |
+| `claude-sonnet-5`   | `claude-sonnet-5-low`   | `claude-sonnet-5-medium`   | `claude-sonnet-5-high`   | `claude-sonnet-5-xhigh` | `claude-sonnet-5-max`   |
+| `claude-sonnet-4-6` | `claude-sonnet-4-6-low` | `claude-sonnet-4-6-medium` | `claude-sonnet-4-6-high` | —                       | `claude-sonnet-4-6-max` |
+| `gpt-5.6-sol`       | `gpt-5.6-sol-low`       | `gpt-5.6-sol-medium`       | `gpt-5.6-sol-high`       | `gpt-5.6-sol-xhigh`     | `gpt-5.6-sol-max`       |
+| `gpt-5.6-terra`     | `gpt-5.6-terra-low`     | `gpt-5.6-terra-medium`     | `gpt-5.6-terra-high`     | `gpt-5.6-terra-xhigh`   | `gpt-5.6-terra-max`     |
+| `gpt-5.6-luna`      | `gpt-5.6-luna-low`      | `gpt-5.6-luna-medium`      | `gpt-5.6-luna-high`      | `gpt-5.6-luna-xhigh`    | `gpt-5.6-luna-max`      |
 
 **`claude-sonnet-4-6` has no `xhigh` variant.** The Kiro API rejects an
 `xhigh`-effort request on this model outright, so that variant id was
 deliberately left out of the catalog. If you need `xhigh`-level reasoning on
 Sonnet, use `claude-sonnet-5-xhigh` or one of the Opus variants instead.
+
+**GPT 5.6 (Sol / Terra / Luna) use a different wire field for effort.** These
+are OpenAI models Kiro proxies via Mantle. All five levels are probe-confirmed:
+credit consumption scales monotonically `low < medium < high < xhigh < max` on
+the same prompt, so the effort genuinely controls reasoning depth. Two GPT
+specifics differ from the Claude variants:
+
+- The effort is sent as `reasoning.effort` (not the `output_config.effort` field
+  Claude uses); the plugin dispatches the correct field per model automatically.
+- GPT hides its chain-of-thought, so — unlike the Claude models — a GPT variant
+  does **not** stream a visible reasoning ("Thought") block in OpenCode. The
+  effort still applies (deeper reasoning, more credits), it just isn't shown.
 
 ## How to use them
 
@@ -67,8 +82,8 @@ Both stay available side by side; picking one doesn't remove the other.
   global effort setting (or the default) is good enough across every model
   and agent.
 
-In short: reach for a variant id when you need a *specific* level *right
-now*; leave a model as its base (non-variant) id when the global default is
+In short: reach for a variant id when you need a _specific_ level _right
+now_; leave a model as its base (non-variant) id when the global default is
 fine.
 
 ## Why variants exist
@@ -90,7 +105,7 @@ plugin can fix from the plugin side. It's tracked in these upstream issues:
 - [anomalyco/opencode#25026](https://github.com/anomalyco/opencode/issues/25026)
 - [anomalyco/opencode#5674](https://github.com/anomalyco/opencode/issues/5674)
 
-What *does* reach the plugin is `body.model` — the model id itself is
+What _does_ reach the plugin is `body.model` — the model id itself is
 forwarded intact on every request. So instead of relying on the broken
 `reasoningEffort` passthrough, effort-level variants encode the desired
 effort directly in the model id and let the plugin read it back out on the

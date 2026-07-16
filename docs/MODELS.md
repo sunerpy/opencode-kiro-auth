@@ -238,17 +238,17 @@ Haiku variants plus the open-weight models Kiro proxies):
         "gpt-5.6-sol": {
           "name": "GPT 5.6 Sol (2.4x)",
           "limit": { "context": 272000, "output": 64000 },
-          "modalities": { "input": ["text"], "output": ["text"] }
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
         },
         "gpt-5.6-terra": {
           "name": "GPT 5.6 Terra (1.2x)",
           "limit": { "context": 272000, "output": 64000 },
-          "modalities": { "input": ["text"], "output": ["text"] }
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
         },
         "gpt-5.6-luna": {
           "name": "GPT 5.6 Luna",
           "limit": { "context": 272000, "output": 64000 },
-          "modalities": { "input": ["text"], "output": ["text"] }
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
         }
       }
     }
@@ -256,11 +256,17 @@ Haiku variants plus the open-weight models Kiro proxies):
 }
 ```
 
-> **GPT 5.6 (Sol / Terra / Luna)** are OpenAI models Kiro proxies, each with a
-> 272k context window. Their wire ids (`gpt-5.6-sol`, `gpt-5.6-terra`,
-> `gpt-5.6-luna`) were confirmed against the live `generateAssistantResponse`
-> endpoint (HTTP 200, `us-east-1`). They are text-only and have no thinking /
-> effort variant.
+> **GPT 5.6 (Sol / Terra / Luna)** are OpenAI models Kiro proxies via Mantle,
+> each with a 272k context window and **text + image** input. Their wire ids
+> (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) were confirmed against the
+> live `generateAssistantResponse` endpoint (HTTP 200, `us-east-1`).
+>
+> Each supports reasoning effort via the `-low` / `-medium` / `-high` /
+> `-xhigh` / `-max` variant ids (see [docs/VARIANTS.md](VARIANTS.md)) — sent as
+> the `reasoning.effort` wire field, distinct from the `output_config.effort`
+> field Claude uses. GPT hides its chain-of-thought, so effort variants change
+> reasoning depth and credit cost but do **not** stream a visible "Thought"
+> block in OpenCode.
 
 ## Thinking effort configuration
 
