@@ -4,7 +4,12 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ManagedAccount } from '../types'
-import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-operations'
+import {
+  deduplicateAccounts,
+  mergeAccounts,
+  withDatabaseLock,
+  withDatabaseLockSync
+} from './locked-operations'
 import { runMigrations } from './migrations'
 
 function getBaseDir(): string {
@@ -26,7 +31,7 @@ export class KiroDatabase {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     this.db = new Database(path)
     this.db.pragma('busy_timeout = 5000')
-    this.init()
+    withDatabaseLockSync(this.path, () => this.init())
   }
   private init() {
     this.db.pragma('journal_mode = WAL')
@@ -242,6 +247,17 @@ export class KiroDatabase {
 
   async listRemovedAccounts(): Promise<string[]> {
     return (this.db.prepare('SELECT id FROM removed_accounts').all() as any[]).map((r) => r.id)
+  }
+
+  async nextAssignmentIndex(): Promise<number> {
+    return withDatabaseLock(this.path, async () => {
+      const row = this.db
+        .prepare(
+          "INSERT INTO plugin_meta(key,value) VALUES('assignment_cursor',0) ON CONFLICT(key) DO UPDATE SET value=value+1 RETURNING value"
+        )
+        .get() as { value?: number } | undefined
+      return row?.value ?? 0
+    })
   }
 
   async markAccountsUnhealthy(ids: string[], reason: string): Promise<void> {

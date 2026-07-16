@@ -11,19 +11,27 @@ export function runMigrations(db: Database): void {
   migrateDropRefreshTokenUniqueIndex(db)
   migrateRemovedAccountsTable(db)
   migrateOverageColumn(db)
+  migratePluginMetaTable(db)
 }
 
 function migrateToUniqueRefreshToken(db: Database): void {
-  const hasIndex = db
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_refresh_token_unique'"
-    )
-    .get()
+  const indexProbe = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_refresh_token_unique'"
+  )
 
-  if (hasIndex) return
+  if (indexProbe.get()) return
 
-  db.exec('BEGIN TRANSACTION')
+  // BEGIN IMMEDIATE (not deferred BEGIN): a deferred read-then-write txn raises unrecoverable
+  // SQLITE_BUSY_SNAPSHOT (busy_timeout cannot retry it) if another connection writes after the
+  // read snapshot. Taking the write lock at BEGIN makes concurrent processes serialize via
+  // busy_timeout instead of racing into a snapshot conflict.
+  db.exec('BEGIN IMMEDIATE')
   try {
+    if (indexProbe.get()) {
+      db.exec('COMMIT')
+      return
+    }
+
     const duplicates = db
       .prepare(
         `
@@ -200,4 +208,8 @@ function migrateOverageColumn(db: Database): void {
   if (!names.has('overage_count')) {
     db.exec('ALTER TABLE accounts ADD COLUMN overage_count INTEGER DEFAULT 0')
   }
+}
+
+function migratePluginMetaTable(db: Database): void {
+  db.exec('CREATE TABLE IF NOT EXISTS plugin_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)')
 }

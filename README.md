@@ -112,6 +112,11 @@ Paid-overage protection is on by default; see
 [Overage protection](docs/CONFIGURATION.md#overage-protection) before disabling
 `stop_on_overage`.
 
+Running multiple OpenCode processes at once? `distribute_across_processes`
+(default `true`) and `per_request_spread` (default `false`) control how load
+spreads across accounts — see
+[Account distribution across processes](docs/CONFIGURATION.md#account-distribution-across-processes).
+
 ## Multiple accounts & rotation
 
 You can register more than one Kiro account and let the plugin spread

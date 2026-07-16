@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, promises as fs } from 'node:fs'
+import { existsSync, promises as fs, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import lockfile from 'proper-lockfile'
 import { isPermanentError } from '../health'
@@ -37,6 +37,49 @@ const KEEP_ALIVE_LOCK_OPTIONS = {
 }
 
 type LockRelease = () => Promise<void>
+
+const SYNC_LOCK_OPTIONS = { stale: 10000, retries: 0, realpath: false }
+const SYNC_LOCK_DEADLINE_MS = 10000
+
+function blockingBackoff(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function isLockContention(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && 'code' in e && e.code === 'ELOCKED'
+}
+
+export function withDatabaseLockSync<T>(dbPath: string, fn: () => T): T {
+  if (!existsSync(dbPath)) {
+    mkdirSync(dirname(dbPath), { recursive: true })
+    writeFileSync(dbPath, '')
+  }
+
+  // proper-lockfile's sync API rejects a retries object, so bounded lock-acquisition backoff is
+  // done here to serialize the synchronous constructor/init (schema + migrations) across processes.
+  const deadline = Date.now() + SYNC_LOCK_DEADLINE_MS
+  let release: (() => void) | null = null
+  let attempt = 0
+  for (;;) {
+    try {
+      release = lockfile.lockSync(dbPath, SYNC_LOCK_OPTIONS)
+      break
+    } catch (e) {
+      if (!isLockContention(e) || Date.now() >= deadline) throw e
+      blockingBackoff(Math.min(100 * 2 ** attempt++, 500))
+    }
+  }
+
+  try {
+    return fn()
+  } finally {
+    try {
+      release()
+    } catch (e) {
+      console.warn('Failed to release lock:', e)
+    }
+  }
+}
 
 export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
   if (!existsSync(dbPath)) {

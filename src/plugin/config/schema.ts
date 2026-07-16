@@ -62,6 +62,18 @@ export const KiroConfigSchema = z.object({
   account_selection_strategy: AccountSelectionStrategySchema.default('lowest-usage'),
 
   /**
+   * Give each process a distinct start index so simultaneous starts spread
+   * across accounts.
+   */
+  distribute_across_processes: z.boolean().default(true),
+
+  /**
+   * Re-pick the lowest-usage account for every request instead of pinning one.
+   * Overrides sticky selection.
+   */
+  per_request_spread: z.boolean().default(false),
+
+  /**
    * Softly avoid accounts whose usage ratio is at/above
    * `quota_reserve_threshold` when other accounts still have room. When ALL
    * healthy accounts are near-full they are drained anyway (the real 402 in
@@ -148,6 +160,8 @@ export type KiroConfig = z.infer<typeof KiroConfigSchema>
 
 export const DEFAULT_CONFIG: KiroConfig = {
   account_selection_strategy: 'lowest-usage',
+  distribute_across_processes: true,
+  per_request_spread: false,
   quota_avoidance_enabled: true,
   quota_reserve_threshold: 0.95,
   stop_on_overage: true,
