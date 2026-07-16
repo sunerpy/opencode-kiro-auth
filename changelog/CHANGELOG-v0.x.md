@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.10.0...v0.11.0) (2026-07-16)
+
+
+### Features
+
+* **account:** cross-process account distribution + per-request spread ([#40](https://github.com/sunerpy/opencode-kiro-auth/issues/40)) ([59e3cf4](https://github.com/sunerpy/opencode-kiro-auth/commit/59e3cf44e1448aded78121a73f2beacdbc900b50))
+
 ## [0.10.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.9.0...v0.10.0) (2026-07-14)
 
 
