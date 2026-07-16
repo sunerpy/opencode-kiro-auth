@@ -24,9 +24,9 @@ describe('resolveKiroModel', () => {
     expect(() => resolveKiroModel('OPENAI_GPT_5_6_SOL')).toThrow('Unsupported model')
   })
 
-  test('GPT 5.6 slugs are not effort variants (no -thinking/-max resolution)', () => {
-    expect(() => resolveKiroModel('gpt-5.6-sol-thinking')).toThrow('Unsupported model')
+  test('raw resolveKiroModel does not expand GPT effort variants (that is resolveModelVariant job)', () => {
     expect(() => resolveKiroModel('gpt-5.6-sol-max')).toThrow('Unsupported model')
+    expect(() => resolveKiroModel('gpt-5.6-sol-thinking')).toThrow('Unsupported model')
   })
 
   test('keeps existing supported Claude slugs intact', () => {

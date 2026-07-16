@@ -6,10 +6,23 @@ import type { Effort } from './config/schema'
 export const EFFORT_LEVELS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
+ * OpenAI GPT models (Kiro proxies these via Mantle). They accept the effort enum
+ * through a DIFFERENT wire field than Claude — see buildEffortRequestFields.
+ * All five levels (incl. xhigh/max) are probe-confirmed: credit usage scales
+ * monotonically low<medium<high<xhigh<max (.omo/evidence/task-gpt56-effort-probe.txt).
+ */
+const GPT_REASONING_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])
+
+/**
  * Models that support the 5-value effort enum (including xhigh).
  * These models support up to 128k thinking tokens with max effort.
  */
-const XHIGH_CAPABLE_MODELS = new Set(['claude-opus-4.7', 'claude-opus-4.8', 'claude-sonnet-5'])
+const XHIGH_CAPABLE_MODELS = new Set([
+  'claude-opus-4.7',
+  'claude-opus-4.8',
+  'claude-sonnet-5',
+  ...GPT_REASONING_MODELS
+])
 
 /**
  * Models that support the 4-value effort enum (no xhigh).
@@ -38,6 +51,24 @@ export function supportsEffort(kiroModel: string): boolean {
  */
 export function supportsXHighEffort(kiroModel: string): boolean {
   return XHIGH_CAPABLE_MODELS.has(kiroModel)
+}
+
+/**
+ * Build the additionalModelRequestFields payload carrying the effort level.
+ *
+ * GPT and Claude take effort through different, mutually-exclusive wire fields
+ * (each rejects the other's with HTTP 400, probe-confirmed):
+ * - GPT (Mantle):  `reasoning.effort`
+ * - Claude:        `output_config.effort`
+ */
+export function buildEffortRequestFields(
+  kiroModel: string,
+  effort: Effort
+): Record<string, unknown> {
+  if (GPT_REASONING_MODELS.has(kiroModel)) {
+    return { reasoning: { effort } }
+  }
+  return { output_config: { effort } }
 }
 
 /**

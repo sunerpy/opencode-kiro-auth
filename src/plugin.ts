@@ -294,17 +294,92 @@ export const createKiroPlugin =
             'gpt-5.6-sol': {
               name: 'GPT 5.6 Sol (2.4x)',
               limit: { context: 272000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-sol-low': {
+              name: 'GPT 5.6 Sol (low) (2.4x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-sol-medium': {
+              name: 'GPT 5.6 Sol (medium) (2.4x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-sol-high': {
+              name: 'GPT 5.6 Sol (high) (2.4x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-sol-xhigh': {
+              name: 'GPT 5.6 Sol (xhigh) (2.4x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-sol-max': {
+              name: 'GPT 5.6 Sol (max) (2.4x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
             },
             'gpt-5.6-terra': {
               name: 'GPT 5.6 Terra (1.2x)',
               limit: { context: 272000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-terra-low': {
+              name: 'GPT 5.6 Terra (low) (1.2x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-terra-medium': {
+              name: 'GPT 5.6 Terra (medium) (1.2x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-terra-high': {
+              name: 'GPT 5.6 Terra (high) (1.2x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-terra-xhigh': {
+              name: 'GPT 5.6 Terra (xhigh) (1.2x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-terra-max': {
+              name: 'GPT 5.6 Terra (max) (1.2x)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
             },
             'gpt-5.6-luna': {
               name: 'GPT 5.6 Luna',
               limit: { context: 272000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-luna-low': {
+              name: 'GPT 5.6 Luna (low)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-luna-medium': {
+              name: 'GPT 5.6 Luna (medium)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-luna-high': {
+              name: 'GPT 5.6 Luna (high)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-luna-xhigh': {
+              name: 'GPT 5.6 Luna (xhigh)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
+            },
+            'gpt-5.6-luna-max': {
+              name: 'GPT 5.6 Luna (max)',
+              limit: { context: 272000, output: 64000 },
+              modalities: { input: ['text', 'image'], output: ['text'] }
             }
           }
         }

@@ -85,7 +85,8 @@ export const MODEL_MAPPING: Record<string, string> = {
   'minimax-m2.5': 'minimax-m2.5',
   'minimax-m2.1': 'minimax-m2.1',
   'qwen3-coder-next': 'qwen3-coder-next',
-  // OpenAI GPT 5.6 — probe-confirmed (200, us-east-1); other naming guesses 400. No effort variant.
+  // OpenAI GPT 5.6 — probe-confirmed (200, us-east-1); other naming guesses 400.
+  // Effort variants (-low..-max) are parsed by resolveModelVariant, not mapped here.
   'gpt-5.6-sol': 'gpt-5.6-sol',
   'gpt-5.6-terra': 'gpt-5.6-terra',
   'gpt-5.6-luna': 'gpt-5.6-luna',

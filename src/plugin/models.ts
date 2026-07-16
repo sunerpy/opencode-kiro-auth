@@ -13,7 +13,10 @@ const VARIANT_BASE_ALLOWLIST = new Set<string>([
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-sonnet-5',
-  'claude-sonnet-4-6'
+  'claude-sonnet-4-6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna'
 ])
 
 const EFFORT_SUFFIXES: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'] as const

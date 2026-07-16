@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { resolveEffort, supportsEffort, supportsXHighEffort } from '../plugin/effort.js'
+import {
+  buildEffortRequestFields,
+  resolveEffort,
+  supportsEffort,
+  supportsXHighEffort
+} from '../plugin/effort.js'
 import { resolveModelVariant } from '../plugin/models.js'
 import { transformToSdkRequest } from '../plugin/request.js'
 import type { KiroAuthDetails } from '../plugin/types'
@@ -50,6 +55,21 @@ describe('resolveModelVariant', () => {
         effort: 'medium'
       })
     })
+
+    test('gpt-5.6-sol-high -> {wireId: gpt-5.6-sol, effort: high} (identity wire id)', () => {
+      expect(resolveModelVariant('gpt-5.6-sol-high')).toEqual({
+        wireId: 'gpt-5.6-sol',
+        effort: 'high'
+      })
+    })
+
+    test('all gpt-5.6 bases parse every effort suffix to their identity wire id', () => {
+      for (const base of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+        for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+          expect(resolveModelVariant(`${base}-${effort}`)).toEqual({ wireId: base, effort })
+        }
+      }
+    })
   })
 
   describe('parse — NON-variants (no misparse, effort stays undefined)', () => {
@@ -93,6 +113,15 @@ describe('effort capability', () => {
     expect(supportsEffort('claude-sonnet-5')).toBe(true)
     expect(supportsXHighEffort('claude-sonnet-5')).toBe(true)
     expect(resolveEffort('claude-sonnet-5', 'xhigh')).toBe('xhigh')
+  })
+
+  test('gpt-5.6 models support effort and xhigh (probe-confirmed, credits scale)', () => {
+    for (const wire of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+      expect(supportsEffort(wire)).toBe(true)
+      expect(supportsXHighEffort(wire)).toBe(true)
+      expect(resolveEffort(wire, 'xhigh')).toBe('xhigh')
+      expect(resolveEffort(wire, 'max')).toBe('max')
+    }
   })
 
   test('claude-sonnet-4.6 supports effort but NOT xhigh (clamped to max)', () => {
@@ -164,5 +193,38 @@ describe('transformToSdkRequest — end-to-end effort selection', () => {
     )
     expect(req.effort).toBe('high')
     expect(req.effectiveModel).toBe('claude-opus-4.8')
+  })
+
+  test('gpt variant gpt-5.6-sol-high -> effort high, wire id gpt-5.6-sol', () => {
+    const req = transformToSdkRequest(minimalBody, 'gpt-5.6-sol-high', fakeAuth)
+    expect(req.effort).toBe('high')
+    expect(req.effectiveModel).toBe('gpt-5.6-sol')
+    expect(req.conversationState.currentMessage.userInputMessage?.modelId).toBe('gpt-5.6-sol')
+  })
+
+  test('gpt variant gpt-5.6-terra-xhigh keeps xhigh (not clamped)', () => {
+    const req = transformToSdkRequest(minimalBody, 'gpt-5.6-terra-xhigh', fakeAuth)
+    expect(req.effort).toBe('xhigh')
+    expect(req.effectiveModel).toBe('gpt-5.6-terra')
+  })
+})
+
+describe('buildEffortRequestFields — per-model wire shape dispatch', () => {
+  test('GPT models use reasoning.effort', () => {
+    for (const wire of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+      expect(buildEffortRequestFields(wire, 'high')).toEqual({ reasoning: { effort: 'high' } })
+    }
+  })
+
+  test('Claude models use output_config.effort', () => {
+    for (const wire of ['claude-opus-4.8', 'claude-sonnet-5', 'claude-sonnet-4.6']) {
+      expect(buildEffortRequestFields(wire, 'high')).toEqual({ output_config: { effort: 'high' } })
+    }
+  })
+
+  test('unknown/non-GPT model defaults to Claude output_config shape', () => {
+    expect(buildEffortRequestFields('some-future-model', 'low')).toEqual({
+      output_config: { effort: 'low' }
+    })
   })
 })

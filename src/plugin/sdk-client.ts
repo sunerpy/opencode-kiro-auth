@@ -1,5 +1,6 @@
 import { CodeWhispererStreamingClient } from '@aws/codewhisperer-streaming-client'
 import { KIRO_CONSTANTS } from '../constants.js'
+import { buildEffortRequestFields } from './effort.js'
 import type { Effort, KiroAuthDetails } from './types'
 
 /**
@@ -46,20 +47,16 @@ export function createSdkClient(
     { step: 'build', name: 'addKiroHeaders' }
   )
 
-  // Inject additionalModelRequestFields for effort-based thinking control
+  // Effort wire shape differs per family (GPT: reasoning.effort, Claude:
+  // output_config.effort; each 400s the other), so derive it from the body's modelId.
   if (effort) {
     client.middlewareStack.add(
       (next: any) => async (args: any) => {
-        // The SDK serializes input to args.input, we need to modify the body
-        // before it's sent. The body is in args.request.body as a string.
         if (args.request?.body) {
           try {
             const body = JSON.parse(args.request.body)
-            body.additionalModelRequestFields = {
-              output_config: {
-                effort
-              }
-            }
+            const wireModel = body?.conversationState?.currentMessage?.userInputMessage?.modelId
+            body.additionalModelRequestFields = buildEffortRequestFields(wireModel, effort)
             args.request.body = JSON.stringify(body)
           } catch {
             // If body parsing fails, continue without modification
