@@ -28,8 +28,10 @@ export class AccountManager {
   private strategy: AccountSelectionStrategy
   private lastToastTime = 0
   private lastUsageToastTime = 0
-  private rrCursor = 0
+  private rrCursor: number
   private stickyId?: string
+  private startIndex: number
+  private perRequestSpread: boolean
   private quotaAvoidanceEnabled: boolean
   private quotaReserveThreshold: number
   private stopOnOverage: boolean
@@ -42,6 +44,8 @@ export class AccountManager {
       quotaReserveThreshold?: number
       stopOnOverage?: boolean
       overageThreshold?: number
+      startIndex?: number
+      perRequestSpread?: boolean
     }
   ) {
     this.accounts = accounts
@@ -51,6 +55,9 @@ export class AccountManager {
     this.quotaReserveThreshold = opts?.quotaReserveThreshold ?? 0.95
     this.stopOnOverage = opts?.stopOnOverage ?? true
     this.overageThreshold = opts?.overageThreshold ?? 0
+    this.startIndex = opts?.startIndex ?? 0
+    this.perRequestSpread = opts?.perRequestSpread ?? false
+    this.rrCursor = this.startIndex
   }
   static async loadFromDisk(
     strategy?: AccountSelectionStrategy,
@@ -59,6 +66,8 @@ export class AccountManager {
       quotaReserveThreshold?: number
       stopOnOverage?: boolean
       overageThreshold?: number
+      distributeAcrossProcesses?: boolean
+      perRequestSpread?: boolean
     }
   ): Promise<AccountManager> {
     const rows = kiroDb.getAccounts()
@@ -86,7 +95,22 @@ export class AccountManager {
       overageCount: r.overage_count || 0,
       lastSync: r.last_sync
     }))
-    return new AccountManager(accounts, strategy || 'sticky', opts)
+    let startIndex = 0
+    if (opts?.distributeAcrossProcesses !== false) {
+      try {
+        startIndex = await kiroDb.nextAssignmentIndex()
+      } catch (error) {
+        logger.warn('assignment index failed, using 0', {
+          error: error instanceof Error ? error.message : String(error)
+        })
+        startIndex = 0
+      }
+    }
+    return new AccountManager(accounts, strategy || 'sticky', {
+      ...opts,
+      startIndex,
+      perRequestSpread: opts?.perRequestSpread
+    })
   }
   getAccountCount(): number {
     return this.accounts.length
@@ -174,18 +198,46 @@ export class AccountManager {
       candidatePool = ample.length > 0 ? ample : nearFull
     }
 
+    const sorted = [...this.accounts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    const N = sorted.length
     let selected: ManagedAccount | undefined
     if (candidatePool.length > 0) {
-      if (this.strategy === 'sticky') {
-        selected = candidatePool.find((a) => a.id === this.stickyId) || candidatePool[0]
+      if (this.perRequestSpread) {
+        selected = [...candidatePool].sort(
+          (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
+        )[0]
+      } else if (this.strategy === 'sticky') {
+        if (this.stickyId) {
+          selected = candidatePool.find((a) => a.id === this.stickyId)
+        }
+        if (!selected) {
+          for (let k = 0; k < N; k++) {
+            const candidate = sorted[(this.startIndex + k) % N]
+            if (candidate && candidatePool.some((account) => account.id === candidate.id)) {
+              selected = candidate
+              break
+            }
+          }
+        }
         if (selected) this.stickyId = selected.id
       } else if (this.strategy === 'round-robin') {
         selected = candidatePool[this.rrCursor % candidatePool.length]
         this.rrCursor++
-      } else if (this.strategy === 'lowest-usage') {
-        selected = [...candidatePool].sort(
-          (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
-        )[0]
+      } else {
+        const sortedIndexById = new Map(sorted.map((account, index) => [account.id, index]))
+        selected = [...candidatePool].sort((a, b) => {
+          const usageDifference = (a.usedCount || 0) - (b.usedCount || 0)
+          if (usageDifference !== 0) return usageDifference
+
+          const lastUsedDifference = (a.lastUsed || 0) - (b.lastUsed || 0)
+          if (lastUsedDifference !== 0) return lastUsedDifference
+
+          const aIndex = sortedIndexById.get(a.id) ?? 0
+          const bIndex = sortedIndexById.get(b.id) ?? 0
+          const aOffset = (((aIndex - this.startIndex) % N) + N) % N
+          const bOffset = (((bIndex - this.startIndex) % N) + N) % N
+          return aOffset - bOffset
+        })[0]
       }
     }
     if (!selected) {

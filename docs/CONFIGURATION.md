@@ -9,6 +9,8 @@ root [README](../README.md#configuration) for the short version.
 {
   "auto_sync_kiro_cli": false,
   "account_selection_strategy": "lowest-usage",
+  "distribute_across_processes": true,
+  "per_request_spread": false,
   "quota_avoidance_enabled": true,
   "quota_reserve_threshold": 0.95,
   "stop_on_overage": true,
@@ -54,6 +56,17 @@ because moving a live database during an upgrade is unsafe.
   supported multi-account path; enable this only if you rely on `kiro-cli`.
 - `account_selection_strategy`: Account rotation strategy (default: `lowest-usage`).
   See the [strategy table](#account-selection-strategy) below.
+- `distribute_across_processes`: Spread simultaneously-started OpenCode
+  processes across different accounts using a DB-backed atomic counter
+  (default: `true`). Set to `false` to restore the old behavior where every
+  process starts from the first account. See
+  [Account distribution across processes](#account-distribution-across-processes)
+  below.
+- `per_request_spread`: Re-pick the lowest-usage account on every single
+  request instead of pinning to the process's assigned account (default:
+  `false`). Overrides sticky pinning from `account_selection_strategy`. See
+  [Account distribution across processes](#account-distribution-across-processes)
+  below.
 - `quota_avoidance_enabled`: Softly avoid near-exhausted accounts when
   multiple accounts are registered (default: `true`). See
   [Quota-aware account avoidance](#quota-aware-account-avoidance) below.
@@ -105,6 +118,41 @@ because moving a live database during an upgrade is unsafe.
 - `enable_log_effort_debug`: Log each request's inbound body shape (top-level
   keys and reasoning-related fields only, no message content) and the resolved
   Kiro effort (default: `false`). Independent from `enable_log_api_request`.
+
+## Account distribution across processes
+
+If you run several OpenCode processes at once (multiple terminals, editor
+sessions, or CI jobs), each process previously started with its own
+process-local selection cursor at index 0 — so with no cross-process
+coordination, every process's first pick landed on the same account, piling
+all their traffic onto it while other registered accounts sat idle.
+
+`distribute_across_processes` (default `true`) fixes this with an atomic
+counter stored in the `plugin_meta` table of `kiro.db`. On startup, each
+process claims the next counter value and uses it as its starting offset, so
+concurrently-launched processes begin on different accounts instead of
+converging on the first one. Each strategy applies that offset differently:
+`sticky` does a circular scan over the stable, id-sorted account list
+starting at the offset, picking the first selectable account at or after it
+(wrapping around without collapsing back to index 0); `lowest-usage` uses the
+offset only as a deterministic tie-breaker over that same id-sorted order,
+never overriding an account with genuinely lower usage; and `round-robin`
+starts its rotation cursor at the offset and cycles through the current pool
+of available accounts in their existing order. If the counter can't be read
+for any reason, the process falls back to offset 0 — startup is never blocked
+by this. Set it to `false` to restore the old single-offset behavior.
+
+`per_request_spread` (default `false`) is a separate, opt-in trade-off: with
+it on, every request re-picks whichever account currently has the lowest
+usage, rather than staying pinned to the account the process was assigned.
+This maximizes spread across accounts but gives up the conversation affinity
+that a pinned/sticky account provides. Leave it off unless you specifically
+want per-request rebalancing over sticky conversation pinning.
+
+Both keys are additive — see the automatic backfill note above; if you
+already have a `~/.config/opencode/kiro-auth-plugin/kiro.json`, these are
+added with their default values the next time the plugin loads. No manual
+edit is required.
 
 ## Token keep-alive
 

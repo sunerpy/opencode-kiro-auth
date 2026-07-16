@@ -35,9 +35,7 @@ const threshold = 90
 console.log(`Coverage: ${coverage}% (threshold ${threshold}%)`)
 
 if (coverage < threshold) {
-  console.error(
-    `❌ Coverage ${coverage}% is below threshold ${threshold}%`
-  )
+  console.error(`❌ Coverage ${coverage}% is below threshold ${threshold}%`)
   process.exit(1)
 }
 

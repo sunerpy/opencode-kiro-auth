@@ -70,7 +70,9 @@ export const createKiroPlugin =
       quotaAvoidanceEnabled: config.quota_avoidance_enabled,
       quotaReserveThreshold: config.quota_reserve_threshold,
       stopOnOverage: config.stop_on_overage,
-      overageThreshold: config.overage_threshold
+      overageThreshold: config.overage_threshold,
+      distributeAcrossProcesses: config.distribute_across_processes,
+      perRequestSpread: config.per_request_spread
     })
     authHandler.setAccountManager(accountManager)
 

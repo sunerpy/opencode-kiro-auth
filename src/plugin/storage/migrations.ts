@@ -11,6 +11,7 @@ export function runMigrations(db: Database): void {
   migrateDropRefreshTokenUniqueIndex(db)
   migrateRemovedAccountsTable(db)
   migrateOverageColumn(db)
+  migratePluginMetaTable(db)
 }
 
 function migrateToUniqueRefreshToken(db: Database): void {
@@ -200,4 +201,8 @@ function migrateOverageColumn(db: Database): void {
   if (!names.has('overage_count')) {
     db.exec('ALTER TABLE accounts ADD COLUMN overage_count INTEGER DEFAULT 0')
   }
+}
+
+function migratePluginMetaTable(db: Database): void {
+  db.exec('CREATE TABLE IF NOT EXISTS plugin_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)')
 }

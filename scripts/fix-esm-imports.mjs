@@ -3,8 +3,8 @@
  * Postbuild script: adds .js extensions to relative imports in dist/ files.
  * Fixes ESM compatibility for strict runtimes (Bun 1.3.13+, Node.js).
  */
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs'
-import { join, dirname, resolve } from 'node:path'
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 
 const DIST_DIR = resolve(import.meta.dirname, '..', 'dist')
 
