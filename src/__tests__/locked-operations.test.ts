@@ -8,6 +8,7 @@ import {
   getRefreshLockPath,
   mergeAccounts,
   withDatabaseLock,
+  withDatabaseLockSync,
   withRefreshLock
 } from '../plugin/storage/locked-operations.js'
 import { createDatabase } from '../plugin/storage/sqlite.js'
@@ -158,6 +159,38 @@ describe('withDatabaseLock', () => {
     writeFileSync(path, 'SEEDED')
     await withDatabaseLock(path, async () => {})
     expect(readFileSync(path, 'utf8')).toBe('SEEDED')
+  })
+})
+
+describe('withDatabaseLockSync', () => {
+  test('creates the db file if missing, runs the callback, and returns its value', () => {
+    const path = tempDbPath()
+    expect(existsSync(path)).toBe(false)
+
+    const result = withDatabaseLockSync(path, () => {
+      expect(existsSync(path)).toBe(true)
+      return 'ok'
+    })
+
+    expect(result).toBe('ok')
+  })
+
+  test('propagates the callback error but still releases the lock', () => {
+    const path = tempDbPath()
+    expect(() =>
+      withDatabaseLockSync(path, () => {
+        throw new Error('inner failure')
+      })
+    ).toThrow('inner failure')
+
+    const after = withDatabaseLockSync(path, () => 'recovered')
+    expect(after).toBe('recovered')
+  })
+
+  test('releases the lock so a subsequent sync acquisition succeeds', () => {
+    const path = tempDbPath()
+    expect(withDatabaseLockSync(path, () => 'first')).toBe('first')
+    expect(withDatabaseLockSync(path, () => 'second')).toBe('second')
   })
 })
 

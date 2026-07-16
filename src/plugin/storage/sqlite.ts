@@ -4,7 +4,12 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ManagedAccount } from '../types'
-import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-operations'
+import {
+  deduplicateAccounts,
+  mergeAccounts,
+  withDatabaseLock,
+  withDatabaseLockSync
+} from './locked-operations'
 import { runMigrations } from './migrations'
 
 function getBaseDir(): string {
@@ -26,7 +31,7 @@ export class KiroDatabase {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     this.db = new Database(path)
     this.db.pragma('busy_timeout = 5000')
-    this.init()
+    withDatabaseLockSync(this.path, () => this.init())
   }
   private init() {
     this.db.pragma('journal_mode = WAL')
