@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.12.0...v0.13.0) (2026-07-16)
+
+
+### Features
+
+* **models:** 支持 GPT 5.6 思考等级变体与图片输入 ([#44](https://github.com/sunerpy/opencode-kiro-auth/issues/44)) ([35dea03](https://github.com/sunerpy/opencode-kiro-auth/commit/35dea03fa898256d7c31be93b1d435e2fbd6e2c2))
+
 ## [0.12.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.11.0...v0.12.0) (2026-07-16)
 
 
