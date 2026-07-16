@@ -234,12 +234,33 @@ Haiku variants plus the open-weight models Kiro proxies):
         "qwen3-coder-next": {
           "name": "Qwen3 Coder Next (0.05x)",
           "limit": { "context": 256000, "output": 64000 }
+        },
+        "gpt-5.6-sol": {
+          "name": "GPT 5.6 Sol (2.4x)",
+          "limit": { "context": 272000, "output": 64000 },
+          "modalities": { "input": ["text"], "output": ["text"] }
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT 5.6 Terra (1.2x)",
+          "limit": { "context": 272000, "output": 64000 },
+          "modalities": { "input": ["text"], "output": ["text"] }
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT 5.6 Luna",
+          "limit": { "context": 272000, "output": 64000 },
+          "modalities": { "input": ["text"], "output": ["text"] }
         }
       }
     }
   }
 }
 ```
+
+> **GPT 5.6 (Sol / Terra / Luna)** are OpenAI models Kiro proxies, each with a
+> 272k context window. Their wire ids (`gpt-5.6-sol`, `gpt-5.6-terra`,
+> `gpt-5.6-luna`) were confirmed against the live `generateAssistantResponse`
+> endpoint (HTTP 200, `us-east-1`). They are text-only and have no thinking /
+> effort variant.
 
 ## Thinking effort configuration
 

@@ -149,6 +149,19 @@ This maximizes spread across accounts but gives up the conversation affinity
 that a pinned/sticky account provides. Leave it off unless you specifically
 want per-request rebalancing over sticky conversation pinning.
 
+An internal benchmark (4 concurrent workers × 5 requests each, real
+`generateAssistantResponse` calls, `us-east-1`, `claude-opus-4-8`) puts the
+trade-off in numbers. Both distribution modes reach the same throughput —
+roughly 1.6× the single-account baseline (~34 s → ~21 s wall time) — because
+that gain comes from spreading load off one account, not from re-picking per
+request. What differs is the tail: leaving `per_request_spread` off (the
+default `distribute_across_processes`-only mode) kept p95 latency lower
+(~3.8 s vs ~5.7 s), while turning it on spread quota consumption more evenly
+across accounts (a 10/10 split vs 15/5). So: keep it off if you care about
+stable tail latency and conversation pinning; turn it on if even quota
+draw-down across accounts matters more to you than p95. These are small-sample,
+directional figures, not an SLA.
+
 Both keys are additive — see the automatic backfill note above; if you
 already have a `~/.config/opencode/kiro-auth-plugin/kiro.json`, these are
 added with their default values the next time the plugin loads. No manual

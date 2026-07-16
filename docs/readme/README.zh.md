@@ -7,8 +7,8 @@
 [![license](https://img.shields.io/npm/l/@sunerpy/opencode-kiro-auth)](https://www.npmjs.com/package/@sunerpy/opencode-kiro-auth)
 
 > 一个 OpenCode 插件，让 OpenCode 把 AWS Kiro（CodeWhisperer）作为模型提供方——
-> 支持 Claude Sonnet、Opus、Haiku，以及 Kiro 代理的开放权重模型（DeepSeek、GLM、
-> MiniMax、Qwen3），并附带较为宽裕的试用额度。
+> 支持 Claude Sonnet、Opus、Haiku，以及 Kiro 代理的其他模型（OpenAI GPT 5.6、
+> DeepSeek、GLM、MiniMax、Qwen3），并附带较为宽裕的试用额度。
 
 ## 目录
 
