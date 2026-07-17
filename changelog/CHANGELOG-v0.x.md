@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.0...v0.13.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **models:** 统一模型上下文窗口来源以避免超长输入 400 ([#46](https://github.com/sunerpy/opencode-kiro-auth/issues/46)) ([7b9f7ee](https://github.com/sunerpy/opencode-kiro-auth/commit/7b9f7ee8125b3a7c8695e53ee2382bdbe281b563))
+
 ## [0.13.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.12.0...v0.13.0) (2026-07-16)
 
 
