@@ -282,9 +282,10 @@ describe('RequestHandler.handle — error retry / switch', () => {
     expect(fakes.errorHandler.handle).toHaveBeenCalledTimes(0)
   })
 
-  test('an HTTP error that is not retryable throws Kiro Error: <status>', async () => {
+  test('a non-retryable 400 overflow body resolves to a 413 Response with the body preserved', async () => {
     const acc = makeAccount({ id: 'A' })
-    const httpError: any = new Error('bad request')
+    const httpError: any = new Error('Input is too long.')
+    httpError.name = 'ValidationException'
     httpError.$metadata = { httpStatusCode: 400 }
 
     const { handler, fakes } = buildHandler({
@@ -293,10 +294,71 @@ describe('RequestHandler.handle — error retry / switch', () => {
       errorHandleResults: [{ shouldRetry: false }]
     })
 
-    await expect(handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)).rejects.toThrow(
-      'Kiro Error: 400'
-    )
+    const res = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(res).toBeInstanceOf(Response)
+    // 400 "Input is too long." remaps to 413 -> OpenCode context_overflow -> auto-compact.
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.message).toBe('Input is too long.')
+    expect(body.__type).toBe('ValidationException')
     expect(fakes.errorHandler.handle).toHaveBeenCalledTimes(1)
+  })
+
+  test('a non-retryable, non-overflow 400 resolves to a 400 Response with the body preserved', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const httpError: any = new Error('Invalid model. Please select a different model to continue.')
+    httpError.name = 'ValidationException'
+    httpError.$metadata = { httpStatusCode: 400 }
+
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [httpError],
+      errorHandleResults: [{ shouldRetry: false }]
+    })
+
+    const res = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(res).toBeInstanceOf(Response)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.message).toBe('Invalid model. Please select a different model to continue.')
+  })
+
+  test('a terminal 402 resolves to a 402 Response with a readable preserved body', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const httpError: any = new Error('Monthly request limit reached')
+    httpError.name = 'PaymentRequired'
+    httpError.$metadata = { httpStatusCode: 402 }
+
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [httpError],
+      errorHandleResults: [{ shouldRetry: false }]
+    })
+
+    const res = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(res).toBeInstanceOf(Response)
+    expect(res.status).toBe(402)
+    const body = await res.json()
+    expect(body.message).toBe('Monthly request limit reached')
+  })
+
+  test('a retry-exhausted 403 resolves to a 403 Response with a readable preserved body', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const httpError: any = new Error('Forbidden')
+    httpError.name = 'AccessDeniedException'
+    httpError.$metadata = { httpStatusCode: 403 }
+
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [httpError],
+      errorHandleResults: [{ shouldRetry: false }]
+    })
+
+    const res = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(res).toBeInstanceOf(Response)
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.message).toBe('Forbidden')
   })
 })
 
@@ -419,9 +481,10 @@ describe('RequestHandler.handle — API request logging', () => {
     expect(sdkSend).toHaveBeenCalledTimes(1)
   })
 
-  test('with enable_log_api_request the error path logs the SDK error before rethrowing', async () => {
+  test('with enable_log_api_request the terminal error path returns a preserved-body Response', async () => {
     const acc = makeAccount({ id: 'A' })
     const httpError: any = new Error('bad request')
+    httpError.name = 'ValidationException'
     httpError.$metadata = { httpStatusCode: 400 }
     const accountManager: any = {
       getAccounts: mock(() => [acc]),
@@ -447,9 +510,11 @@ describe('RequestHandler.handle — API request logging', () => {
     })
     h.prepareSdkRequest = () => cannedPrep()
 
-    await expect(handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)).rejects.toThrow(
-      'Kiro Error: 400'
-    )
+    const res = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(res).toBeInstanceOf(Response)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.message).toBe('bad request')
   })
 })
 

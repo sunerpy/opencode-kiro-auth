@@ -106,6 +106,40 @@ export function isLongContextModel(model: string): boolean {
   return LONG_CONTEXT_MODELS.has(model)
 }
 
+// SSOT for token accounting, keyed by BASE model id (effort/thinking suffix
+// stripped). Values MUST equal the limit.context advertised in src/plugin.ts —
+// enforced by context-window.test.ts. Drift makes OpenCode under-count usage and
+// skip auto-compaction until Kiro hard-rejects with 400 "Input is too long."
+export const DEFAULT_MODEL_CONTEXT_LIMIT = 200000
+
+export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  auto: 200000,
+  'claude-haiku-4-5': 200000,
+  'claude-sonnet-4': 200000,
+  'claude-sonnet-4-5': 200000,
+  'claude-sonnet-4-5-1m': 1000000,
+  'claude-sonnet-4-6': 1000000,
+  'claude-sonnet-4-6-1m': 1000000,
+  'claude-sonnet-5': 1000000,
+  'claude-opus-4-5': 200000,
+  'claude-opus-4-6': 1000000,
+  'claude-opus-4-6-1m': 1000000,
+  'claude-opus-4-7': 1000000,
+  'claude-opus-4-8': 1000000,
+  'deepseek-3.2': 128000,
+  'glm-5': 200000,
+  'minimax-m2.5': 200000,
+  'minimax-m2.1': 200000,
+  'qwen3-coder-next': 256000,
+  'gpt-5.6-sol': 272000,
+  'gpt-5.6-terra': 272000,
+  'gpt-5.6-luna': 272000
+}
+
+export function getModelContextLimit(baseModel: string): number {
+  return MODEL_CONTEXT_LIMITS[baseModel] ?? DEFAULT_MODEL_CONTEXT_LIMIT
+}
+
 export const KIRO_AUTH_SERVICE = {
   ENDPOINT: 'https://prod.{{region}}.auth.desktop.kiro.dev',
   SSO_OIDC_ENDPOINT: 'https://oidc.{{region}}.amazonaws.com',
