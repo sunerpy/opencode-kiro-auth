@@ -11,7 +11,7 @@ import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../
 import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
 import { TokenRefresher } from '../auth/token-refresher'
-import { ErrorHandler, type RequestContext } from './error-handler'
+import { ErrorHandler, isKiroContextOverflowBody, type RequestContext } from './error-handler'
 import { ResponseHandler } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 
@@ -195,18 +195,17 @@ export class RequestHandler {
             this.logSdkError(sdkPrep, e, acc, apiTimestamp)
           }
 
-          const mockResponse = new Response(
-            JSON.stringify({ message: e.message, __type: e.name }),
-            {
-              status: httpStatus,
-              statusText: e.name || 'Error',
-              headers: { 'Content-Type': 'application/json' }
-            }
-          )
+          const errorBody = JSON.stringify({ message: e.message, __type: e.name })
+          const errorStatusText = e.name || 'Error'
+          const jsonHeaders = { 'Content-Type': 'application/json' }
 
           const errorResult = await this.errorHandler.handle(
             e,
-            mockResponse,
+            new Response(errorBody, {
+              status: httpStatus,
+              statusText: errorStatusText,
+              headers: jsonHeaders
+            }),
             acc,
             handlerContext,
             showToast
@@ -222,7 +221,19 @@ export class RequestHandler {
             continue
           }
 
-          throw new Error(`Kiro Error: ${httpStatus}`)
+          // Terminal, non-retryable HTTP error. Return a fresh Response carrying
+          // the real Kiro body so @ai-sdk/openai-compatible produces an
+          // APICallError with status+body (not a bare Error that OpenCode
+          // degrades to UnknownError). Remap size-overflow 400s to 413 so
+          // OpenCode classifies context_overflow and auto-compacts.
+          const terminalStatus =
+            httpStatus === 400 && isKiroContextOverflowBody(e.message ?? '') ? 413 : httpStatus
+
+          return new Response(errorBody, {
+            status: terminalStatus,
+            statusText: errorStatusText,
+            headers: jsonHeaders
+          })
         }
 
         const networkResult = await this.errorHandler.handleNetworkError(

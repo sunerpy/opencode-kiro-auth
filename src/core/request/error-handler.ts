@@ -6,6 +6,15 @@ import type { ForceRefreshResult } from '../auth/token-refresher'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
+// Unambiguous Kiro size-overflow 400 signals only. The generic "Improperly
+// formed request." is deliberately excluded: it has no size discriminator in
+// the body, so matching it would wrongly reclassify unrelated 400s as overflow.
+const KIRO_CONTEXT_OVERFLOW_PATTERNS = [/input is too long/i, /CONTENT_LENGTH_EXCEEDS_THRESHOLD/i]
+
+export function isKiroContextOverflowBody(text: string): boolean {
+  return KIRO_CONTEXT_OVERFLOW_PATTERNS.some((p) => p.test(text))
+}
+
 export interface RequestContext {
   retry: number
   // Loop-bound invariant: account ids already force-refreshed this request.

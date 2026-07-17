@@ -1,4 +1,4 @@
-import { MODEL_MAPPING, SUPPORTED_MODELS, isLongContextModel } from '../constants'
+import { MODEL_MAPPING, SUPPORTED_MODELS, getModelContextLimit } from '../constants'
 import type { Effort } from './types'
 
 export function resolveKiroModel(model: string): string {
@@ -54,6 +54,25 @@ export function resolveModelVariant(model: string): ResolvedModelVariant {
   return { wireId: resolveKiroModel(model), effort: undefined }
 }
 
+export function stripModelSuffix(model: string): string {
+  for (const suffix of EFFORT_SUFFIXES) {
+    const marker = `-${suffix}`
+    if (model.endsWith(marker)) {
+      const base = model.slice(0, -marker.length)
+      if (VARIANT_BASE_ALLOWLIST.has(base)) {
+        return base
+      }
+    }
+  }
+  if (model.endsWith('-thinking')) {
+    const base = model.slice(0, -'-thinking'.length)
+    if (MODEL_MAPPING[base]) {
+      return base
+    }
+  }
+  return model
+}
+
 export function getContextWindowSize(model: string): number {
-  return isLongContextModel(model) ? 1000000 : 200000
+  return getModelContextLimit(stripModelSuffix(model))
 }
