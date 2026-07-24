@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.6](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.5...v0.13.6) (2026-07-24)
+
+
+### Bug Fixes
+
+* **timeout:** disable ambiguous SDK response deadline ([#57](https://github.com/sunerpy/opencode-kiro-auth/issues/57)) ([c2f9027](https://github.com/sunerpy/opencode-kiro-auth/commit/c2f902702cdb0654d7030996bfbaf01f5e14df45))
+
 ## [0.13.5](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.4...v0.13.5) (2026-07-24)
 
 
