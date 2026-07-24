@@ -92,16 +92,22 @@ export class RequestHandler {
     const abortFromInbound = (): void => requestController.abort(inboundSignal?.reason)
     if (inboundSignal?.aborted) abortFromInbound()
     else inboundSignal?.addEventListener('abort', abortFromInbound, { once: true })
-    const timeout = setDeadlineTimeout(
-      () => requestController.abort(new DOMException('Kiro request timed out', 'TimeoutError')),
-      this.config.request_timeout_ms
-    )
+    let timeout: ReturnType<typeof setDeadlineTimeout> | undefined
+    const refreshRequestDeadline = (): void => {
+      if (requestController.signal.aborted) return
+      if (timeout) clearDeadlineTimeout(timeout)
+      timeout = setDeadlineTimeout(
+        () => requestController.abort(new DOMException('Kiro request timed out', 'TimeoutError')),
+        this.config.request_timeout_ms
+      )
+    }
+    refreshRequestDeadline()
     let requestCleanupDone = false
     let responseOwnsLifecycle = false
     const cleanupRequest = (): void => {
       if (requestCleanupDone) return
       requestCleanupDone = true
-      clearDeadlineTimeout(timeout)
+      if (timeout) clearDeadlineTimeout(timeout)
       inboundSignal?.removeEventListener('abort', abortFromInbound)
     }
     const signal = requestController.signal
@@ -220,6 +226,7 @@ export class RequestHandler {
 
           const sdkResponse = await client.send(command, { abortSignal: signal })
           sendResolved = true
+          refreshRequestDeadline()
 
           if (apiTimestamp) {
             this.logSdkResponse(sdkPrep, apiTimestamp)
@@ -232,6 +239,7 @@ export class RequestHandler {
             sdkPrep.streaming,
             {
               signal,
+              onActivity: refreshRequestDeadline,
               onComplete: completeRequest,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),

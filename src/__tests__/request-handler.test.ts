@@ -662,6 +662,76 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
   })
 
+  test('periodic upstream activity allows a thinking stream to outlive the timeout window', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+    const sdkResponse = {
+      generateAssistantResponseResponse: (async function* () {
+        yield { reasoningContentEvent: { text: 'first thought' } }
+        await delay(100)
+        yield { reasoningContentEvent: { text: 'second thought' } }
+        await delay(100)
+        yield { assistantResponseEvent: { content: 'final answer' } }
+      })()
+    }
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkResponse],
+      streaming: true,
+      useRealResponseHandler: true,
+      requestTimeoutMs: 150
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+
+    expect(body).toContain('first thought')
+    expect(body).toContain('second thought')
+    expect(body).toContain('final answer')
+  })
+
+  test('an idle thinking stream still times out after the configured inactivity window', async () => {
+    const acc = makeAccount({ id: 'A' })
+    let returnCalls = 0
+    let yielded = false
+    const sdkResponse = {
+      generateAssistantResponseResponse: {
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<unknown>> {
+              if (!yielded) {
+                yielded = true
+                return {
+                  done: false,
+                  value: { reasoningContentEvent: { text: 'first thought' } }
+                }
+              }
+              return new Promise<IteratorResult<unknown>>(() => {})
+            },
+            async return(): Promise<IteratorResult<unknown>> {
+              returnCalls++
+              return { done: true, value: undefined }
+            }
+          }
+        }
+      }
+    }
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkResponse],
+      streaming: true,
+      useRealResponseHandler: true,
+      requestTimeoutMs: 20
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const reader = response.body!.getReader()
+
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('first thought')
+    await expect(reader.read()).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(returnCalls).toBeGreaterThanOrEqual(1)
+  })
+
   test('consumer cancellation does not retry or mark the request successful', async () => {
     const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
     let returnCalls = 0

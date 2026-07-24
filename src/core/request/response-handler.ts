@@ -5,6 +5,7 @@ import { SdkEventStreamIterationError } from './stream-error.js'
 
 export interface SdkResponseLifecycle {
   signal?: AbortSignal
+  onActivity?: () => void
   onComplete?: () => void | Promise<void>
   onTerminal?: () => void
   onCancel?: (reason: unknown) => void
@@ -26,7 +27,11 @@ async function closeIterator(iterator: AsyncIterator<unknown>): Promise<void> {
   } catch {}
 }
 
-function wrapSdkEventStream(sdkResponse: any, signal?: AbortSignal): WrappedSdkStream {
+function wrapSdkEventStream(
+  sdkResponse: any,
+  signal?: AbortSignal,
+  onActivity?: () => void
+): WrappedSdkStream {
   const eventStream = sdkResponse.generateAssistantResponseResponse
   if (!eventStream || typeof eventStream[Symbol.asyncIterator] !== 'function') {
     return { response: sdkResponse, closeRaw: async () => {} }
@@ -41,7 +46,12 @@ function wrapSdkEventStream(sdkResponse: any, signal?: AbortSignal): WrappedSdkS
   }
 
   const nextRaw = async (): Promise<IteratorResult<unknown>> => {
-    if (!signal) return rawIterator.next()
+    const recordActivity = (result: IteratorResult<unknown>): IteratorResult<unknown> => {
+      if (!result.done) onActivity?.()
+      return result
+    }
+
+    if (!signal) return rawIterator.next().then(recordActivity)
     if (signal.aborted) {
       await closeRaw()
       throw abortReason(signal)
@@ -62,7 +72,7 @@ function wrapSdkEventStream(sdkResponse: any, signal?: AbortSignal): WrappedSdkS
 
       signal.addEventListener('abort', onAbort, { once: true })
       Promise.resolve(rawIterator.next()).then(
-        (result) => settle(() => resolve(result)),
+        (result) => settle(() => resolve(recordActivity(result))),
         (error) => settle(() => reject(error))
       )
     })
@@ -131,7 +141,7 @@ export class ResponseHandler {
     if (streaming) {
       return this.handleSdkStreaming(sdkResponse, model, conversationId, lifecycle)
     }
-    return this.handleSdkNonStreaming(sdkResponse, model, conversationId, lifecycle.signal)
+    return this.handleSdkNonStreaming(sdkResponse, model, conversationId, lifecycle)
   }
 
   private async handleStreaming(
@@ -163,7 +173,7 @@ export class ResponseHandler {
     conversationId: string,
     lifecycle: SdkResponseLifecycle
   ): Promise<Response> {
-    const wrapped = wrapSdkEventStream(sdkResponse, lifecycle.signal)
+    const wrapped = wrapSdkEventStream(sdkResponse, lifecycle.signal, lifecycle.onActivity)
     const transformed = transformSdkStream(wrapped.response, model, conversationId)
     const buffered: Uint8Array[] = []
     let firstSemantic: Uint8Array | undefined
@@ -275,7 +285,7 @@ export class ResponseHandler {
     sdkResponse: any,
     model: string,
     conversationId: string,
-    signal?: AbortSignal
+    lifecycle: SdkResponseLifecycle
   ): Promise<Response> {
     // For non-streaming SDK responses, collect all events
     let content = ''
@@ -284,7 +294,7 @@ export class ResponseHandler {
     let inputTokens = 0
     let outputTokens = 0
 
-    const wrapped = wrapSdkEventStream(sdkResponse, signal)
+    const wrapped = wrapSdkEventStream(sdkResponse, lifecycle.signal, lifecycle.onActivity)
     const eventStream = wrapped.response.generateAssistantResponseResponse
     if (eventStream) {
       try {
@@ -304,7 +314,7 @@ export class ResponseHandler {
           }
         }
       } finally {
-        if (signal?.aborted) await wrapped.closeRaw()
+        if (lifecycle.signal?.aborted) await wrapped.closeRaw()
       }
     }
 
