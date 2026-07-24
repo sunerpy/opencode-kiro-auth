@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.2...v0.13.3) (2026-07-24)
+
+
+### Bug Fixes
+
+* **streaming:** 将请求超时改为上游无活动超时 ([#51](https://github.com/sunerpy/opencode-kiro-auth/issues/51)) ([9cf9d58](https://github.com/sunerpy/opencode-kiro-auth/commit/9cf9d589aed6a8784410e4e35ceaef1a199b7d41))
+
 ## [0.13.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.1...v0.13.2) (2026-07-24)
 
 
