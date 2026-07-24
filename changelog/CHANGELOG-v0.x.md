@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.1...v0.13.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **streaming:** 修复 SDK 事件流迭代错误的输出前透明重试 ([#48](https://github.com/sunerpy/opencode-kiro-auth/issues/48)) ([94d8199](https://github.com/sunerpy/opencode-kiro-auth/commit/94d8199bdcdf234d3b12dbafce986ee16863d25a))
+
 ## [0.13.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.0...v0.13.1) (2026-07-17)
 
 
