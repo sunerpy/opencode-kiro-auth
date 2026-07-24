@@ -9,6 +9,15 @@ function makeSdkResponse(events: any[]): any {
   }
 }
 
+function makeFailingSdkResponse(events: any[], error: Error): any {
+  return {
+    generateAssistantResponseResponse: (async function* () {
+      for (const event of events) yield event
+      throw error
+    })()
+  }
+}
+
 async function readSseChunks(response: Response): Promise<any[]> {
   const text = await response.text()
   return text
@@ -107,6 +116,22 @@ describe('handleSdkSuccess — non-streaming', () => {
     expect(body.choices[0].message.content).toBe('')
     expect(body.choices[0].finish_reason).toBe('stop')
   })
+
+  test('raw iterator failure rejects with the typed stream-iteration boundary', async () => {
+    const upstream = new Error('event stream deserialization failed')
+
+    await expect(
+      new ResponseHandler().handleSdkSuccess(
+        makeFailingSdkResponse([], upstream),
+        'auto',
+        'c',
+        false
+      )
+    ).rejects.toMatchObject({
+      name: 'SdkEventStreamIterationError',
+      cause: upstream
+    })
+  })
 })
 
 describe('handleSdkSuccess — streaming', () => {
@@ -129,5 +154,172 @@ describe('handleSdkSuccess — streaming', () => {
       .filter((c) => c !== undefined)
       .join('')
     expect(content).toBe('AB')
+  })
+
+  test('pre-output raw iterator failure rejects before returning a Response', async () => {
+    const upstream = new Error('HTTP 200 stream decode failure')
+
+    await expect(
+      new ResponseHandler().handleSdkSuccess(
+        makeFailingSdkResponse([], upstream),
+        'auto',
+        'c',
+        true
+      )
+    ).rejects.toMatchObject({
+      name: 'SdkEventStreamIterationError',
+      cause: upstream
+    })
+  })
+
+  test('post-output failure preserves the first semantic chunk before rejecting', async () => {
+    const upstream = new Error('stream failed after output')
+    const mapped = new Error('mapped post-output failure')
+    const emitted: boolean[] = []
+    const response = await new ResponseHandler().handleSdkSuccess(
+      makeFailingSdkResponse([{ reasoningContentEvent: { text: 'visible thought' } }], upstream),
+      'auto',
+      'c',
+      true,
+      {
+        mapError(error, emittedOutput) {
+          expect(error).toMatchObject({ name: 'SdkEventStreamIterationError', cause: upstream })
+          emitted.push(emittedOutput)
+          return mapped
+        }
+      }
+    )
+
+    const reader = response.body!.getReader()
+    const first = await reader.read()
+    expect(new TextDecoder().decode(first.value)).toContain('visible thought')
+    await expect(reader.read()).rejects.toBe(mapped)
+    expect(emitted).toEqual([true])
+  })
+
+  test('normal completion invokes the lifecycle callback exactly once', async () => {
+    let completions = 0
+    const response = await new ResponseHandler().handleSdkSuccess(
+      makeSdkResponse([{ assistantResponseEvent: { content: 'completed response' } }]),
+      'auto',
+      'c',
+      true,
+      {
+        onComplete: () => {
+          completions++
+        }
+      }
+    )
+
+    expect(completions).toBe(0)
+    await response.text()
+    expect(completions).toBe(1)
+  })
+
+  test('empty upstream completion returns an empty SSE body and completes exactly once', async () => {
+    let completions = 0
+    const response = await new ResponseHandler().handleSdkSuccess(
+      makeSdkResponse([]),
+      'auto',
+      'empty',
+      true,
+      {
+        onComplete: () => {
+          completions++
+        }
+      }
+    )
+
+    expect(completions).toBe(1)
+    expect(await response.text()).toContain('"finish_reason":"stop"')
+    expect(completions).toBe(1)
+  })
+
+  test('consumer cancellation closes the raw iterator without completing successfully', async () => {
+    let returnCalls = 0
+    let completions = 0
+    let yielded = false
+    const sdkResponse = {
+      generateAssistantResponseResponse: {
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (!yielded) {
+                yielded = true
+                return {
+                  done: false,
+                  value: { reasoningContentEvent: { text: 'first output' } }
+                }
+              }
+              return new Promise<IteratorResult<unknown>>(() => {})
+            },
+            async return() {
+              returnCalls++
+              return { done: true, value: undefined }
+            }
+          }
+        }
+      }
+    }
+    const response = await new ResponseHandler().handleSdkSuccess(
+      sdkResponse,
+      'auto',
+      'cancel-conv',
+      true,
+      {
+        onComplete: () => {
+          completions++
+        }
+      }
+    )
+    const reader = response.body!.getReader()
+
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('first output')
+    await reader.cancel('consumer stopped')
+
+    expect(returnCalls).toBeGreaterThanOrEqual(1)
+    expect(completions).toBe(0)
+  })
+
+  test('an idle post-output stream observes abort and closes its raw iterator', async () => {
+    const controller = new AbortController()
+    let returnCalls = 0
+    let yielded = false
+    const sdkResponse = {
+      generateAssistantResponseResponse: {
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (!yielded) {
+                yielded = true
+                return {
+                  done: false,
+                  value: { reasoningContentEvent: { text: 'first output' } }
+                }
+              }
+              return new Promise<IteratorResult<unknown>>(() => {})
+            },
+            async return() {
+              returnCalls++
+              return { done: true, value: undefined }
+            }
+          }
+        }
+      }
+    }
+    const response = await new ResponseHandler().handleSdkSuccess(
+      sdkResponse,
+      'auto',
+      'abort-conv',
+      true,
+      { signal: controller.signal }
+    )
+    const reader = response.body!.getReader()
+    await reader.read()
+
+    controller.abort(new DOMException('request cancelled', 'AbortError'))
+
+    await expect(reader.read()).rejects.toMatchObject({ name: 'AbortError' })
+    expect(returnCalls).toBeGreaterThanOrEqual(1)
   })
 })

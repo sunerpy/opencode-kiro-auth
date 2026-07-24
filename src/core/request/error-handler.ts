@@ -47,7 +47,8 @@ export class ErrorHandler {
     response: Response,
     account: ManagedAccount,
     context: RequestContext,
-    showToast: ToastFunction
+    showToast: ToastFunction,
+    signal?: AbortSignal
   ): Promise<{ shouldRetry: boolean; newContext?: RequestContext; switchAccount?: boolean }> {
     const readBody = async (): Promise<string> => {
       try {
@@ -89,7 +90,7 @@ export class ErrorHandler {
       if (account.failCount < 5) {
         const delay = 1000 * Math.pow(2, account.failCount - 1)
         showToast(`500: ${errorMessage}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
-        await this.sleep(delay)
+        await this.sleep(delay, signal)
         return { shouldRetry: true }
       } else {
         this.accountManager.markUnhealthy(
@@ -111,7 +112,7 @@ export class ErrorHandler {
         return { shouldRetry: true, switchAccount: true }
       }
       showToast(`429: Rate limited. Waiting ${Math.ceil(w / 1000)}s...`, 'warning')
-      await this.sleep(w)
+      await this.sleep(w, signal)
       return { shouldRetry: true }
     }
 
@@ -166,7 +167,8 @@ export class ErrorHandler {
             errorReason,
             response.status,
             { ...context, forcedRefreshAccountIds: nextForced },
-            showToast
+            showToast,
+            signal
           )
         }
 
@@ -196,7 +198,7 @@ export class ErrorHandler {
         !isPermanent &&
         context.retry < this.config.rate_limit_max_retries
       ) {
-        return this.transientForbidden(errorReason, response.status, context, showToast)
+        return this.transientForbidden(errorReason, response.status, context, showToast, signal)
       }
 
       showToast(`${response.status}: ${errorReason}`, 'error')
@@ -237,7 +239,8 @@ export class ErrorHandler {
     errorReason: string,
     status: number,
     context: RequestContext,
-    showToast: ToastFunction
+    showToast: ToastFunction,
+    signal?: AbortSignal
   ): Promise<{ shouldRetry: boolean; newContext?: RequestContext }> {
     if (context.retry >= this.config.rate_limit_max_retries) {
       showToast(`${status}: ${errorReason}`, 'error')
@@ -245,7 +248,7 @@ export class ErrorHandler {
     }
     const delay = this.config.rate_limit_retry_delay_ms * Math.pow(2, context.retry)
     showToast(`${status}: ${errorReason}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
-    await this.sleep(delay)
+    await this.sleep(delay, signal)
     return {
       shouldRetry: true,
       newContext: { ...context, retry: context.retry + 1 }
@@ -255,12 +258,13 @@ export class ErrorHandler {
   async handleNetworkError(
     error: any,
     context: RequestContext,
-    showToast: ToastFunction
+    showToast: ToastFunction,
+    signal?: AbortSignal
   ): Promise<{ shouldRetry: boolean; newContext?: RequestContext }> {
     if (this.isNetworkError(error) && context.retry < this.config.rate_limit_max_retries) {
       const d = this.config.rate_limit_retry_delay_ms * Math.pow(2, context.retry)
       showToast(`Network error. Retrying in ${Math.ceil(d / 1000)}s...`, 'warning')
-      await this.sleep(d)
+      await this.sleep(d, signal)
       return {
         shouldRetry: true,
         newContext: { ...context, retry: context.retry + 1 }
@@ -275,7 +279,18 @@ export class ErrorHandler {
     )
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((r) => setTimeout(r, ms))
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason)
+    let onAbort: (() => void) | undefined
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, ms)
+      onAbort = (): void => {
+        clearTimeout(timer)
+        reject(signal?.reason)
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    }).finally(() => {
+      if (onAbort) signal?.removeEventListener('abort', onAbort)
+    })
   }
 }

@@ -340,4 +340,57 @@ describe('AccountManager.getCurrentOrNext force-recover fallback', () => {
     expect(sel?.usedCount).toBe(6)
     expect(sel?.lastUsed ?? 0).toBeGreaterThanOrEqual(before)
   })
+
+  test('exclusion selects a healthy alternative without healing excluded or unhealthy rows', () => {
+    const a = makeAccount({ id: 'A', usedCount: 1 })
+    const b = makeAccount({
+      id: 'B',
+      isHealthy: false,
+      unhealthyReason: 'invalid bearer token',
+      recoveryTime: Date.now() - 1000,
+      failCount: 3,
+      usedCount: 0
+    })
+    const c = makeAccount({ id: 'C', usedCount: 2 })
+    const beforeB = { ...b }
+    const mgr = new AccountManager([a, b, c], 'lowest-usage')
+
+    const selected = mgr.getCurrentOrNext({
+      excludedIds: new Set(['A']),
+      recoverUnhealthy: false
+    })
+
+    expect(selected?.id).toBe('C')
+    expect(b).toEqual(beforeB)
+    expect(a.usedCount).toBe(1)
+  })
+
+  test('disabled recovery leaves access-token and recovery-due rows unchanged for every strategy', () => {
+    for (const strategy of ['sticky', 'round-robin', 'lowest-usage'] as const) {
+      const excluded = makeAccount({ id: 'A' })
+      const accessTokenError = makeAccount({
+        id: 'B',
+        isHealthy: false,
+        unhealthyReason: 'invalid bearer token',
+        recoveryTime: Date.now() - 1000,
+        failCount: 10
+      })
+      const recoveryDue = makeAccount({
+        id: 'C',
+        isHealthy: false,
+        unhealthyReason: 'transient',
+        recoveryTime: Date.now() - 1000,
+        failCount: 3
+      })
+      const beforeAccessTokenError = { ...accessTokenError }
+      const beforeRecoveryDue = { ...recoveryDue }
+      const mgr = new AccountManager([excluded, accessTokenError, recoveryDue], strategy)
+
+      expect(
+        mgr.getCurrentOrNext({ excludedIds: new Set(['A']), recoverUnhealthy: false })
+      ).toBeNull()
+      expect(accessTokenError).toEqual(beforeAccessTokenError)
+      expect(recoveryDue).toEqual(beforeRecoveryDue)
+    }
+  })
 })

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { RequestHandler } from '../core/request/request-handler.js'
+import { ResponseHandler } from '../core/request/response-handler.js'
 import type { ManagedAccount, SdkPreparedRequest } from '../plugin/types.js'
 
 // RequestHandler is pure orchestration: handle() routes by KIRO_API_PATTERN
@@ -37,11 +38,11 @@ function makeAccount(o: Partial<ManagedAccount> & { id: string }): ManagedAccoun
   }
 }
 
-function cannedPrep(): SdkPreparedRequest {
+function cannedPrep(streaming = false): SdkPreparedRequest {
   return {
     conversationState: { chatTriggerType: 'MANUAL', conversationId: 'c1' } as any,
     profileArn: 'arn:aws:test',
-    streaming: false,
+    streaming,
     effectiveModel: 'claude-sonnet-4-5',
     conversationId: 'c1',
     region: 'us-east-1',
@@ -64,7 +65,10 @@ const baseConfig = {
 } as any
 
 interface Fakes {
-  accountSelector: { selectHealthyAccount: ReturnType<typeof mock> }
+  accountSelector: {
+    selectHealthyAccount: ReturnType<typeof mock>
+    selectAlternativeAccount: ReturnType<typeof mock>
+  }
   tokenRefresher: {
     refreshIfNeeded: ReturnType<typeof mock>
     forceRefresh: ReturnType<typeof mock>
@@ -83,6 +87,10 @@ function buildHandler(opts: {
   sdkResults?: Array<any | Error>
   errorHandleResults?: Array<any>
   responseResult?: Response
+  streaming?: boolean
+  useRealResponseHandler?: boolean
+  alternativeAccount?: ManagedAccount | null
+  requestTimeoutMs?: number
 }): { handler: RequestHandler; fakes: Fakes } {
   const accounts = opts.accounts ?? []
   const selectQueue = [...(opts.selectResults ?? [])]
@@ -107,7 +115,8 @@ function buildHandler(opts: {
       const next = selectQueue.shift()
       if (next instanceof Error) throw next
       return next ?? null
-    })
+    }),
+    selectAlternativeAccount: mock(async () => opts.alternativeAccount ?? null)
   }
   const tokenRefresher = {
     refreshIfNeeded: mock(async (acc: ManagedAccount) => ({
@@ -120,9 +129,22 @@ function buildHandler(opts: {
     handle: mock(async () => errorQueue.shift() ?? { shouldRetry: false }),
     handleNetworkError: mock(async () => ({ shouldRetry: false }))
   }
-  const responseHandler = {
-    handleSdkSuccess: mock(async () => opts.responseResult ?? new Response('ok'))
-  }
+  const responseHandler = opts.useRealResponseHandler
+    ? { handleSdkSuccess: mock(new ResponseHandler().handleSdkSuccess.bind(new ResponseHandler())) }
+    : {
+        handleSdkSuccess: mock(
+          async (
+            _sdkResponse: unknown,
+            _model: string,
+            _conversationId: string,
+            _streaming: boolean,
+            lifecycle?: { onComplete?: () => void }
+          ) => {
+            lifecycle?.onComplete?.()
+            return opts.responseResult ?? new Response('ok')
+          }
+        )
+      }
   const usageTracker = { syncUsage: mock(() => {}) }
 
   const sdkSend = mock(async () => {
@@ -131,7 +153,11 @@ function buildHandler(opts: {
     return next ?? {}
   })
 
-  const handler = new RequestHandler(accountManager, baseConfig, repository)
+  const handler = new RequestHandler(
+    accountManager,
+    { ...baseConfig, request_timeout_ms: opts.requestTimeoutMs ?? baseConfig.request_timeout_ms },
+    repository
+  )
   const h = handler as any
   h.accountSelector = accountSelector
   h.tokenRefresher = tokenRefresher
@@ -139,7 +165,7 @@ function buildHandler(opts: {
   h.responseHandler = responseHandler
   h.usageTracker = usageTracker
   h.makeSdkClient = () => ({ send: sdkSend })
-  h.prepareSdkRequest = () => cannedPrep()
+  h.prepareSdkRequest = () => cannedPrep(opts.streaming)
 
   return {
     handler,
@@ -153,6 +179,26 @@ function buildHandler(opts: {
       accountManager,
       repository
     }
+  }
+}
+
+function sdkStream(events: unknown[], error?: Error): object {
+  return {
+    generateAssistantResponseResponse: (async function* () {
+      for (const event of events) yield event
+      if (error) throw error
+    })()
+  }
+}
+
+function installImmediateStreamBackoff(handler: RequestHandler): void {
+  const internals = handler as unknown as {
+    streamRetryRandom: () => number
+    sleep: (ms: number, signal?: AbortSignal) => Promise<void>
+  }
+  internals.streamRetryRandom = () => 0
+  internals.sleep = async (_ms, signal) => {
+    if (signal?.aborted) throw signal.reason
   }
 }
 
@@ -237,6 +283,427 @@ describe('RequestHandler.handle — Kiro success path', () => {
 
     expect(fakes.accountSelector.selectHealthyAccount).toHaveBeenCalledTimes(2)
     expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
+  test('retries two pre-output failures and exposes only the successful attempt', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([], new Error('decode-1')),
+        sdkStream([], new Error('decode-2')),
+        sdkStream([{ assistantResponseEvent: { content: 'successful response' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+    const streamedContent = body
+      .split('\n\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice('data: '.length)).choices?.[0]?.delta?.content ?? '')
+      .join('')
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+    expect(streamedContent).toBe('successful response')
+    expect(body).not.toContain('decode-1')
+    expect(fakes.errorHandler.handle).toHaveBeenCalledTimes(0)
+    expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
+  })
+
+  test('retry 1 reuses A and retry 2 selects healthy alternative B', async () => {
+    const a = makeAccount({ id: 'A' })
+    const b = makeAccount({ id: 'B' })
+    const { handler, fakes } = buildHandler({
+      accounts: [a, b],
+      selectResults: [a],
+      alternativeAccount: b,
+      sdkResults: [
+        sdkStream([], new Error('decode-1')),
+        sdkStream([], new Error('decode-2')),
+        sdkStream([{ assistantResponseEvent: { content: 'from B successfully' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+
+    expect(fakes.accountSelector.selectHealthyAccount).toHaveBeenCalledTimes(1)
+    expect(fakes.accountSelector.selectAlternativeAccount).toHaveBeenCalledTimes(1)
+    expect(
+      fakes.accountManager.toAuthDetails.mock.calls.map((call: [ManagedAccount]) => call[0].id)
+    ).toEqual(['A', 'A', 'B'])
+  })
+
+  test('exhaustion returns a structured retryable HTTP 503', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const metadataError = new Error('HTTP 200 internal stream error') as Error & {
+      $metadata: { httpStatusCode: number }
+    }
+    metadataError.$metadata = { httpStatusCode: 200 }
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([], metadataError),
+        sdkStream([], metadataError),
+        sdkStream([], metadataError)
+      ],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({
+      retryable: true,
+      phase: 'stream',
+      emittedOutput: false,
+      code: 'UPSTREAM_UNEXPECTED'
+    })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+    expect(fakes.errorHandler.handle).toHaveBeenCalledTimes(0)
+  })
+
+  test('post-output iterator failure is not replayed', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [{ reasoningContentEvent: { text: 'visible before failure' } }],
+          new Error('late decode')
+        )
+      ],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const reader = response.body!.getReader()
+    const first = await reader.read()
+    expect(new TextDecoder().decode(first.value)).toContain('visible before failure')
+    await expect(reader.read()).rejects.toMatchObject({
+      name: 'UpstreamUnexpectedError',
+      retryable: true,
+      phase: 'stream',
+      emittedOutput: true,
+      code: 'UPSTREAM_UNEXPECTED'
+    })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+  })
+
+  test('success bookkeeping waits for full stream completion', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const deferredResponse = {
+      generateAssistantResponseResponse: (async function* () {
+        yield { reasoningContentEvent: { text: 'first semantic output' } }
+        await gate
+      })()
+    }
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [deferredResponse],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(acc.failCount).toBe(2)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+
+    const reading = response.text()
+    release()
+    await reading
+    expect(acc.failCount).toBe(0)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+  })
+
+  test('an empty successful stream completes and marks the account successful once', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkStream([])],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    expect(await response.text()).toContain('"finish_reason":"stop"')
+    expect(acc.failCount).toBe(0)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+  })
+
+  test('a newer failed attempt invalidates an older stream completion on the same account', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    let releaseOldStream!: () => void
+    const oldStreamGate = new Promise<void>((resolve) => {
+      releaseOldStream = resolve
+    })
+    const newerError = new Error('newer request failed') as Error & {
+      $metadata: { httpStatusCode: number }
+    }
+    newerError.$metadata = { httpStatusCode: 400 }
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc, acc],
+      sdkResults: [
+        {
+          generateAssistantResponseResponse: (async function* () {
+            yield { reasoningContentEvent: { text: 'old output' } }
+            await oldStreamGate
+          })()
+        },
+        newerError
+      ],
+      errorHandleResults: [{ shouldRetry: false }],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    const oldResponse = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const oldReader = oldResponse.body!.getReader()
+    await oldReader.read()
+    const newerResponse = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(newerResponse.status).toBe(400)
+
+    releaseOldStream()
+    while (!(await oldReader.read()).done) {}
+
+    expect(acc.failCount).toBe(2)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+  })
+
+  test('non-streaming iteration failures use the same pre-output retry policy', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([], new Error('decode-1')),
+        sdkStream([], new Error('decode-2')),
+        sdkStream([{ assistantResponseEvent: { content: 'non-stream success' } }])
+      ],
+      useRealResponseHandler: true
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.json()
+
+    expect(body.choices[0].message.content).toBe('non-stream success')
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+  })
+
+  test('a stream iteration error carrying HTTP 403 never enters HTTP handling', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const metadataError = new Error('stream decode with embedded forbidden') as Error & {
+      $metadata: { httpStatusCode: number }
+    }
+    metadataError.$metadata = { httpStatusCode: 403 }
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([], metadataError),
+        sdkStream([], metadataError),
+        sdkStream([], metadataError)
+      ],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    expect(response.status).toBe(503)
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+    expect(fakes.errorHandler.handle).toHaveBeenCalledTimes(0)
+  })
+
+  test('a network-looking transformation error bypasses retry handlers and is not replayed', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const malformedEvent = {
+      get reasoningContentEvent() {
+        throw new Error('fetch failed while transforming an already-read event')
+      }
+    }
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkStream([malformedEvent])],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    await expect(handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)).rejects.toThrow(
+      'fetch failed while transforming'
+    )
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+    expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
+  })
+
+  test('stream retry jitter stays inside the documented bounds', () => {
+    const { handler } = buildHandler({})
+    const internals = handler as unknown as {
+      streamRetryRandom: () => number
+      getStreamRetryDelay: (failureCount: number) => number
+    }
+
+    internals.streamRetryRandom = () => 0
+    expect(internals.getStreamRetryDelay(1)).toBe(250)
+    expect(internals.getStreamRetryDelay(2)).toBe(500)
+    internals.streamRetryRandom = () => 1
+    expect(internals.getStreamRetryDelay(1)).toBe(312.5)
+    expect(internals.getStreamRetryDelay(2)).toBe(625)
+  })
+})
+
+describe('RequestHandler.handle — cancellation and queue release', () => {
+  test('inbound abort interrupts a pending send without retry and releases the next request', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({ selectResults: [acc, acc] })
+    const internals = handler as unknown as {
+      makeSdkClient: () => {
+        send: (command: unknown, options: { abortSignal: AbortSignal }) => Promise<object>
+      }
+    }
+    let sendCalls = 0
+    let notifyFirstSendStarted!: () => void
+    const firstSendStarted = new Promise<void>((resolve) => {
+      notifyFirstSendStarted = resolve
+    })
+    internals.makeSdkClient = () => ({
+      send: async (_command, options) => {
+        sendCalls++
+        if (sendCalls === 2) return { generateAssistantResponseResponse: {} }
+        notifyFirstSendStarted()
+        return new Promise<object>((_resolve, reject) => {
+          options.abortSignal.addEventListener('abort', () => reject(options.abortSignal.reason), {
+            once: true
+          })
+        })
+      }
+    })
+    const controller = new AbortController()
+    const first = handler.handle(
+      KIRO_URL,
+      { body: JSON.stringify({}), signal: controller.signal },
+      noToast
+    )
+    await firstSendStarted
+    const second = handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    controller.abort(new DOMException('cancelled by caller', 'AbortError'))
+
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await second).toBeInstanceOf(Response)
+    expect(sendCalls).toBe(2)
+    expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
+  })
+
+  test('active timeout interrupts a pending send and releases the next queued request', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc, acc],
+      requestTimeoutMs: 20
+    })
+    const internals = handler as unknown as {
+      makeSdkClient: () => {
+        send: (command: unknown, options: { abortSignal: AbortSignal }) => Promise<object>
+      }
+    }
+    let sendCalls = 0
+    internals.makeSdkClient = () => ({
+      send: async (_command, options) => {
+        sendCalls++
+        if (sendCalls === 2) return { generateAssistantResponseResponse: {} }
+        return new Promise<object>((_resolve, reject) => {
+          options.abortSignal.addEventListener('abort', () => reject(options.abortSignal.reason), {
+            once: true
+          })
+        })
+      }
+    })
+
+    const first = handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const second = handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    await expect(first).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(await second).toBeInstanceOf(Response)
+    expect(sendCalls).toBe(2)
+    expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
+  })
+
+  test('active timeout interrupts stream retry backoff without issuing another SDK request', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkStream([], new Error('decode before timeout'))],
+      streaming: true,
+      useRealResponseHandler: true,
+      requestTimeoutMs: 20
+    })
+
+    await expect(
+      handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    ).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+  })
+
+  test('consumer cancellation does not retry or mark the request successful', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    let returnCalls = 0
+    let emitted = false
+    const sdkResponse = {
+      generateAssistantResponseResponse: {
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<unknown>> {
+              if (!emitted) {
+                emitted = true
+                return {
+                  done: false,
+                  value: { reasoningContentEvent: { text: 'first output' } }
+                }
+              }
+              return new Promise<IteratorResult<unknown>>(() => {})
+            },
+            async return(): Promise<IteratorResult<unknown>> {
+              returnCalls++
+              return { done: true, value: undefined }
+            }
+          }
+        }
+      }
+    }
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkResponse],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const reader = response.body!.getReader()
+    await reader.read()
+    await reader.cancel('consumer stopped')
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+    expect(acc.failCount).toBe(2)
+    expect(returnCalls).toBeGreaterThanOrEqual(1)
   })
 })
 

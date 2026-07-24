@@ -215,6 +215,24 @@ describe('ErrorHandler 429 rate limiting', () => {
     expect(manager.markRateLimited.mock.calls[0][1]).toBe(60000)
     expect(sleepCalls).toContain(60000)
   })
+
+  test('single-account retry-after rejects immediately when already aborted', async () => {
+    const controller = new AbortController()
+    const reason = new DOMException('cancelled', 'AbortError')
+    controller.abort(reason)
+    const handler = new ErrorHandler(CONFIG, makeAccountManager(1), makeRepository())
+
+    await expect(
+      handler.handle(
+        new Error('429'),
+        jsonResponse(429, {}, { 'retry-after': '60' }),
+        makeAccount(),
+        { retry: 0 },
+        noopToast,
+        controller.signal
+      )
+    ).rejects.toBe(reason)
+  })
 })
 
 describe('ErrorHandler 402 / 403 quota & permanence', () => {
@@ -374,5 +392,51 @@ describe('ErrorHandler network errors', () => {
     const handler = new ErrorHandler(CONFIG, makeAccountManager(1), makeRepository())
     const res = await handler.handleNetworkError('string error' as any, { retry: 0 }, noopToast)
     expect(res.shouldRetry).toBe(false)
+  })
+
+  test('an already-aborted signal interrupts network backoff', async () => {
+    const controller = new AbortController()
+    const reason = new DOMException('cancelled', 'AbortError')
+    controller.abort(reason)
+    const handler = new ErrorHandler(CONFIG, makeAccountManager(1), makeRepository())
+
+    await expect(
+      handler.handleNetworkError(
+        new Error('ECONNRESET'),
+        { retry: 0 },
+        noopToast,
+        controller.signal
+      )
+    ).rejects.toBe(reason)
+  })
+})
+
+describe('ErrorHandler abortable HTTP backoffs', () => {
+  test('an already-aborted signal interrupts 500 and transient 403 backoffs', async () => {
+    const controller = new AbortController()
+    const reason = new DOMException('cancelled', 'AbortError')
+    controller.abort(reason)
+    const handler = new ErrorHandler(CONFIG, makeAccountManager(1), makeRepository())
+
+    await expect(
+      handler.handle(
+        new Error('500'),
+        jsonResponse(500, {}),
+        makeAccount(),
+        { retry: 0 },
+        noopToast,
+        controller.signal
+      )
+    ).rejects.toBe(reason)
+    await expect(
+      handler.handle(
+        new Error('403'),
+        jsonResponse(403, { message: 'Transient forbidden' }),
+        makeAccount(),
+        { retry: 0 },
+        noopToast,
+        controller.signal
+      )
+    ).rejects.toBe(reason)
   })
 })

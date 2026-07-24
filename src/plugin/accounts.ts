@@ -157,12 +157,18 @@ export class AccountManager {
 
     return hasOverageBlockedEligible && !hasCleanRateLimited && !hasHealthySelectable
   }
-  getCurrentOrNext(): ManagedAccount | null {
+  getCurrentOrNext(
+    options: { excludedIds?: ReadonlySet<string>; recoverUnhealthy?: boolean } = {}
+  ): ManagedAccount | null {
     const now = Date.now()
+    const excludedIds = options.excludedIds ?? new Set<string>()
+    const recoverUnhealthy = options.recoverUnhealthy ?? true
     const overageBlocked = (a: ManagedAccount) => this.isOverageBlocked(a)
     const available = this.accounts.filter((a) => {
+      if (excludedIds.has(a.id)) return false
       if (overageBlocked(a)) return false
       if (!a.isHealthy) {
+        if (!recoverUnhealthy) return false
         if (isPermanentError(a.unhealthyReason)) {
           return false
         }
@@ -240,10 +246,11 @@ export class AccountManager {
         })[0]
       }
     }
-    if (!selected) {
+    if (!selected && recoverUnhealthy) {
       const fallback = this.accounts
         .filter(
           (a) =>
+            !excludedIds.has(a.id) &&
             !a.isHealthy &&
             a.failCount < 10 &&
             !isPermanentError(a.unhealthyReason) &&
