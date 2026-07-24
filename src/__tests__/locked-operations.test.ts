@@ -138,6 +138,25 @@ describe('withDatabaseLock', () => {
     expect(order.sort()).toEqual([1, 2, 3])
   })
 
+  test('waits through sustained contention until the lock is released within the deadline', async () => {
+    const path = tempDbPath()
+    const firstEntered = deferred()
+    const releaseFirst = deferred()
+
+    const first = withDatabaseLock(path, async () => {
+      firstEntered.resolve()
+      await releaseFirst.promise
+    })
+    await firstEntered.promise
+
+    const second = withDatabaseLock(path, async () => 'second')
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+    releaseFirst.resolve()
+
+    await first
+    await expect(second).resolves.toBe('second')
+  })
+
   test('propagates the callback error but still releases the lock', async () => {
     const path = tempDbPath()
     await expect(
