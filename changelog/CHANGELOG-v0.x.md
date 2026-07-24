@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.7](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.6...v0.13.7) (2026-07-24)
+
+
+### Bug Fixes
+
+* **storage:** prevent database lock retry starvation ([#59](https://github.com/sunerpy/opencode-kiro-auth/issues/59)) ([6d8d62e](https://github.com/sunerpy/opencode-kiro-auth/commit/6d8d62ef92329a31d4ae7c347c71fe2ac5a16a49))
+
 ## [0.13.6](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.5...v0.13.6) (2026-07-24)
 
 
