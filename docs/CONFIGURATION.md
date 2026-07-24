@@ -88,7 +88,9 @@ because moving a live database during an upgrade is unsafe.
 - `rate_limit_retry_delay_ms`: Delay between rate limit retries (1000-60000ms).
 - `rate_limit_max_retries`: Maximum retry attempts for rate limits (0-10).
 - `max_request_iterations`: Maximum loop iterations to prevent hangs (10-1000).
-- `request_timeout_ms`: Request timeout in milliseconds (60000-600000ms).
+- `request_timeout_ms`: Maximum time without an SDK response or stream event
+  before the request is aborted (30000-600000ms). Active reasoning streams may
+  run longer than this as long as Kiro continues sending events.
 - `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms, default:
   `300000`). An access token within this window of expiry is treated as expired
   and refreshed on next use.
