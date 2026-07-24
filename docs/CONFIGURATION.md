@@ -21,6 +21,7 @@ root [README](../README.md#configuration) for the short version.
   "rate_limit_retry_delay_ms": 5000,
   "rate_limit_max_retries": 3,
   "max_request_iterations": 20,
+  "sdk_response_timeout_enabled": false,
   "sdk_response_timeout_ms": 300000,
   "request_timeout_ms": 120000,
   "token_expiry_buffer_ms": 300000,
@@ -89,10 +90,16 @@ because moving a live database during an upgrade is unsafe.
 - `rate_limit_retry_delay_ms`: Delay between rate limit retries (1000-60000ms).
 - `rate_limit_max_retries`: Maximum retry attempts for rate limits (0-10).
 - `max_request_iterations`: Maximum loop iterations to prevent hangs (10-1000).
-- `sdk_response_timeout_ms`: Maximum time waiting for `client.send()` to return
-  the initial SDK response (30000-600000ms, default: `300000`). High-effort
-  models can legitimately take more than two minutes before their event stream
-  becomes available. Override with `KIRO_SDK_RESPONSE_TIMEOUT_MS`.
+- `sdk_response_timeout_enabled`: Opt into a fixed deadline while waiting for
+  `client.send()` to return the initial SDK response (default: `false`). It is
+  disabled because a pending request is ambiguous: high-effort models can
+  legitimately spend several minutes generating before their event stream is
+  available, and Windows sleep or network transitions can consume a wall-clock
+  deadline. Caller cancellation still aborts the SDK request and releases the
+  request queue. Override with `KIRO_SDK_RESPONSE_TIMEOUT_ENABLED`.
+- `sdk_response_timeout_ms`: Fixed SDK response deadline when
+  `sdk_response_timeout_enabled` is `true` (30000-600000ms, default: `300000`).
+  Override with `KIRO_SDK_RESPONSE_TIMEOUT_MS`.
 - `request_timeout_ms`: Maximum inactivity while waiting for the next upstream
   stream event (30000-600000ms, default: `120000`). The timer is paused after an
   event arrives and while the downstream consumer is not pulling, so active

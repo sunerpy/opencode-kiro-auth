@@ -97,16 +97,30 @@ export class RequestHandler {
     if (inboundSignal?.aborted) abortFromInbound()
     else inboundSignal?.addEventListener('abort', abortFromInbound, { once: true })
     let timeout: ReturnType<typeof setDeadlineTimeout> | undefined
-    const beginUpstreamWait = (phase: UpstreamWaitPhase, timeoutMs: number): void => {
+    const beginUpstreamWait = (
+      phase: UpstreamWaitPhase,
+      timeoutMs: number,
+      details: Record<string, unknown> = {}
+    ): void => {
       if (requestController.signal.aborted) return
       if (timeout) clearDeadlineTimeout(timeout)
-      timeout = setDeadlineTimeout(
-        () =>
-          requestController.abort(
-            new DOMException(`Kiro request timed out waiting for ${phase}`, 'TimeoutError')
-          ),
-        timeoutMs
-      )
+      if (timeoutMs <= 0) {
+        timeout = undefined
+        return
+      }
+      const startedAt = Date.now()
+      timeout = setDeadlineTimeout(() => {
+        logger.warn('Kiro upstream wait timed out', {
+          phase,
+          configuredTimeoutMs: timeoutMs,
+          elapsedMs: Date.now() - startedAt,
+          platform: process.platform,
+          ...details
+        })
+        requestController.abort(
+          new DOMException(`Kiro request timed out waiting for ${phase}`, 'TimeoutError')
+        )
+      }, timeoutMs)
     }
     const endUpstreamWait = (): void => {
       if (!timeout) return
@@ -236,7 +250,18 @@ export class RequestHandler {
           }
 
           let sdkResponse: GenerateAssistantResponseCommandOutput
-          beginUpstreamWait('SDK response', this.config.sdk_response_timeout_ms)
+          if (this.config.sdk_response_timeout_enabled) {
+            const messageContext =
+              sdkPrep.conversationState.currentMessage?.userInputMessage?.userInputMessageContext
+            beginUpstreamWait('SDK response', this.config.sdk_response_timeout_ms, {
+              model,
+              effectiveModel: sdkPrep.effectiveModel,
+              effort: sdkPrep.effort,
+              region: sdkPrep.region,
+              historyLength: sdkPrep.conversationState.history?.length ?? 0,
+              toolCount: messageContext?.tools?.length ?? 0
+            })
+          }
           try {
             sdkResponse = await client.send(command, { abortSignal: signal })
           } finally {
@@ -256,7 +281,11 @@ export class RequestHandler {
             {
               signal,
               onUpstreamWaitStart: () =>
-                beginUpstreamWait('stream event', this.config.request_timeout_ms),
+                beginUpstreamWait('stream event', this.config.request_timeout_ms, {
+                  model,
+                  effectiveModel: sdkPrep.effectiveModel,
+                  region: sdkPrep.region
+                }),
               onUpstreamWaitEnd: endUpstreamWait,
               onComplete: completeRequest,
               onTerminal: cleanupRequest,
