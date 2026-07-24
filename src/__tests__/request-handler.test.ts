@@ -53,6 +53,7 @@ function cannedPrep(streaming = false): SdkPreparedRequest {
 const baseConfig = {
   max_request_iterations: 20,
   request_timeout_ms: 60000,
+  sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
   rate_limit_max_retries: 3,
   rate_limit_retry_delay_ms: 100,
@@ -92,6 +93,7 @@ function buildHandler(opts: {
   useRealResponseHandler?: boolean
   alternativeAccount?: ManagedAccount | null
   requestTimeoutMs?: number
+  sdkResponseTimeoutEnabled?: boolean
   sdkResponseTimeoutMs?: number
 }): { handler: RequestHandler; fakes: Fakes } {
   const accounts = opts.accounts ?? []
@@ -160,6 +162,8 @@ function buildHandler(opts: {
     {
       ...baseConfig,
       request_timeout_ms: opts.requestTimeoutMs ?? baseConfig.request_timeout_ms,
+      sdk_response_timeout_enabled:
+        opts.sdkResponseTimeoutEnabled ?? baseConfig.sdk_response_timeout_enabled,
       sdk_response_timeout_ms: opts.sdkResponseTimeoutMs ?? baseConfig.sdk_response_timeout_ms
     },
     repository
@@ -619,12 +623,13 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
   })
 
-  test('SDK response may outlive the stream inactivity timeout', async () => {
+  test('disabled SDK response timeout allows a send to outlive the configured window', async () => {
     const acc = makeAccount({ id: 'A' })
     const { handler } = buildHandler({
       selectResults: [acc],
       requestTimeoutMs: 20,
-      sdkResponseTimeoutMs: 200
+      sdkResponseTimeoutEnabled: false,
+      sdkResponseTimeoutMs: 20
     })
     const internals = handler as unknown as {
       makeSdkClient: () => {
@@ -656,6 +661,7 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     const { handler, fakes } = buildHandler({
       selectResults: [acc, acc],
       requestTimeoutMs: 1000,
+      sdkResponseTimeoutEnabled: true,
       sdkResponseTimeoutMs: 20
     })
     const internals = handler as unknown as {
