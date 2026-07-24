@@ -640,25 +640,48 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     const first = handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
     const second = handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
 
-    await expect(first).rejects.toMatchObject({ name: 'TimeoutError' })
+    await expect(first).rejects.toMatchObject({
+      name: 'TimeoutError',
+      message: 'Kiro request timed out waiting for SDK response'
+    })
     expect(await second).toBeInstanceOf(Response)
     expect(sendCalls).toBe(2)
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
   })
 
-  test('active timeout interrupts stream retry backoff without issuing another SDK request', async () => {
+  test('inbound abort interrupts stream retry backoff without issuing another SDK request', async () => {
     const acc = makeAccount({ id: 'A' })
     const { handler, fakes } = buildHandler({
       selectResults: [acc],
       sdkResults: [sdkStream([], new Error('decode before timeout'))],
       streaming: true,
       useRealResponseHandler: true,
-      requestTimeoutMs: 20
+      requestTimeoutMs: 1000
     })
+    const internals = handler as unknown as {
+      sleep: (ms: number, signal?: AbortSignal) => Promise<void>
+    }
+    let notifyBackoffStarted!: () => void
+    const backoffStarted = new Promise<void>((resolve) => {
+      notifyBackoffStarted = resolve
+    })
+    internals.sleep = async (_ms, signal) => {
+      notifyBackoffStarted()
+      return new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }
+    const controller = new AbortController()
+    const request = handler.handle(
+      KIRO_URL,
+      { body: JSON.stringify({}), signal: controller.signal },
+      noToast
+    )
 
-    await expect(
-      handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
-    ).rejects.toMatchObject({ name: 'TimeoutError' })
+    await backoffStarted
+    controller.abort(new DOMException('cancelled during retry backoff', 'AbortError'))
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
     expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
   })
 
@@ -687,6 +710,30 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
 
     expect(body).toContain('first thought')
     expect(body).toContain('second thought')
+    expect(body).toContain('final answer')
+  })
+
+  test('delayed response consumption does not count as upstream inactivity', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([
+          { reasoningContentEvent: { text: 'first thought' } },
+          { assistantResponseEvent: { content: 'final answer' } }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      requestTimeoutMs: 20
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await delay(50)
+
+    const body = await response.text()
+    expect(body).toContain('first thought')
     expect(body).toContain('final answer')
   })
 
@@ -728,7 +775,10 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     const reader = response.body!.getReader()
 
     expect(new TextDecoder().decode((await reader.read()).value)).toContain('first thought')
-    await expect(reader.read()).rejects.toMatchObject({ name: 'TimeoutError' })
+    await expect(reader.read()).rejects.toMatchObject({
+      name: 'TimeoutError',
+      message: 'Kiro request timed out waiting for stream event'
+    })
     expect(returnCalls).toBeGreaterThanOrEqual(1)
   })
 

@@ -1,4 +1,7 @@
-import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
+import {
+  GenerateAssistantResponseCommand,
+  type GenerateAssistantResponseCommandOutput
+} from '@aws/codewhisperer-streaming-client'
 import { clearTimeout as clearDeadlineTimeout, setTimeout as setDeadlineTimeout } from 'node:timers'
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
@@ -21,6 +24,7 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
+type UpstreamWaitPhase = 'SDK response' | 'stream event'
 
 export class RequestHandler {
   private accountSelector: AccountSelector
@@ -93,21 +97,28 @@ export class RequestHandler {
     if (inboundSignal?.aborted) abortFromInbound()
     else inboundSignal?.addEventListener('abort', abortFromInbound, { once: true })
     let timeout: ReturnType<typeof setDeadlineTimeout> | undefined
-    const refreshRequestDeadline = (): void => {
+    const beginUpstreamWait = (phase: UpstreamWaitPhase): void => {
       if (requestController.signal.aborted) return
       if (timeout) clearDeadlineTimeout(timeout)
       timeout = setDeadlineTimeout(
-        () => requestController.abort(new DOMException('Kiro request timed out', 'TimeoutError')),
+        () =>
+          requestController.abort(
+            new DOMException(`Kiro request timed out waiting for ${phase}`, 'TimeoutError')
+          ),
         this.config.request_timeout_ms
       )
     }
-    refreshRequestDeadline()
+    const endUpstreamWait = (): void => {
+      if (!timeout) return
+      clearDeadlineTimeout(timeout)
+      timeout = undefined
+    }
     let requestCleanupDone = false
     let responseOwnsLifecycle = false
     const cleanupRequest = (): void => {
       if (requestCleanupDone) return
       requestCleanupDone = true
-      if (timeout) clearDeadlineTimeout(timeout)
+      endUpstreamWait()
       inboundSignal?.removeEventListener('abort', abortFromInbound)
     }
     const signal = requestController.signal
@@ -224,9 +235,14 @@ export class RequestHandler {
             await this.usageTracker.syncUsage(acc, auth, isCurrentAttempt)
           }
 
-          const sdkResponse = await client.send(command, { abortSignal: signal })
+          let sdkResponse: GenerateAssistantResponseCommandOutput
+          beginUpstreamWait('SDK response')
+          try {
+            sdkResponse = await client.send(command, { abortSignal: signal })
+          } finally {
+            endUpstreamWait()
+          }
           sendResolved = true
-          refreshRequestDeadline()
 
           if (apiTimestamp) {
             this.logSdkResponse(sdkPrep, apiTimestamp)
@@ -239,7 +255,8 @@ export class RequestHandler {
             sdkPrep.streaming,
             {
               signal,
-              onActivity: refreshRequestDeadline,
+              onUpstreamWaitStart: () => beginUpstreamWait('stream event'),
+              onUpstreamWaitEnd: endUpstreamWait,
               onComplete: completeRequest,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),
