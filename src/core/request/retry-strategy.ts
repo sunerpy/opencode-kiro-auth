@@ -1,11 +1,9 @@
 interface RetryConfig {
   max_request_iterations: number
-  request_timeout_ms: number
 }
 
 interface RetryContext {
   iterations: number
-  startTime: number
 }
 
 export class RetryStrategy {
@@ -21,20 +19,12 @@ export class RetryStrategy {
       }
     }
 
-    if (Date.now() - context.startTime > this.config.request_timeout_ms) {
-      return {
-        canContinue: false,
-        error: 'Request timeout'
-      }
-    }
-
     return { canContinue: true }
   }
 
   createContext(): RetryContext {
     return {
-      iterations: 0,
-      startTime: Date.now()
+      iterations: 0
     }
   }
 }
