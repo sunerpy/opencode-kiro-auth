@@ -22,6 +22,7 @@ const KIRO_ENV_KEYS = [
   'KIRO_RATE_LIMIT_MAX_RETRIES',
   'KIRO_MAX_REQUEST_ITERATIONS',
   'KIRO_REQUEST_TIMEOUT_MS',
+  'KIRO_SDK_RESPONSE_TIMEOUT_MS',
   'KIRO_TOKEN_EXPIRY_BUFFER_MS',
   'KIRO_USAGE_SYNC_MAX_RETRIES',
   'KIRO_AUTH_SERVER_PORT_START',
@@ -87,6 +88,7 @@ describe('loadConfig defaults', () => {
     expect(cfg.rate_limit_max_retries).toBe(3)
     expect(cfg.max_request_iterations).toBe(20)
     expect(cfg.request_timeout_ms).toBe(120000)
+    expect(cfg.sdk_response_timeout_ms).toBe(300000)
     expect(cfg.token_expiry_buffer_ms).toBe(300000)
     expect(cfg.usage_tracking_enabled).toBe(true)
     expect(cfg.auto_sync_kiro_cli).toBe(false)
@@ -132,10 +134,12 @@ describe('loadConfig env overrides', () => {
     process.env.KIRO_QUOTA_RESERVE_THRESHOLD = '0.5'
     process.env.KIRO_RATE_LIMIT_MAX_RETRIES = '7'
     process.env.KIRO_REQUEST_TIMEOUT_MS = '90000'
+    process.env.KIRO_SDK_RESPONSE_TIMEOUT_MS = '360000'
     const cfg = loadConfig(projectDir)
     expect(cfg.quota_reserve_threshold).toBe(0.5)
     expect(cfg.rate_limit_max_retries).toBe(7)
     expect(cfg.request_timeout_ms).toBe(90000)
+    expect(cfg.sdk_response_timeout_ms).toBe(360000)
   })
 
   test('non-numeric number env falls back to the base value', () => {

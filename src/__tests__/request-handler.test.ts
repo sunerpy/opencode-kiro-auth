@@ -53,6 +53,7 @@ function cannedPrep(streaming = false): SdkPreparedRequest {
 const baseConfig = {
   max_request_iterations: 20,
   request_timeout_ms: 60000,
+  sdk_response_timeout_ms: 300000,
   rate_limit_max_retries: 3,
   rate_limit_retry_delay_ms: 100,
   enable_log_effort_debug: false,
@@ -91,6 +92,7 @@ function buildHandler(opts: {
   useRealResponseHandler?: boolean
   alternativeAccount?: ManagedAccount | null
   requestTimeoutMs?: number
+  sdkResponseTimeoutMs?: number
 }): { handler: RequestHandler; fakes: Fakes } {
   const accounts = opts.accounts ?? []
   const selectQueue = [...(opts.selectResults ?? [])]
@@ -155,7 +157,11 @@ function buildHandler(opts: {
 
   const handler = new RequestHandler(
     accountManager,
-    { ...baseConfig, request_timeout_ms: opts.requestTimeoutMs ?? baseConfig.request_timeout_ms },
+    {
+      ...baseConfig,
+      request_timeout_ms: opts.requestTimeoutMs ?? baseConfig.request_timeout_ms,
+      sdk_response_timeout_ms: opts.sdkResponseTimeoutMs ?? baseConfig.sdk_response_timeout_ms
+    },
     repository
   )
   const h = handler as any
@@ -613,11 +619,44 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
   })
 
-  test('active timeout interrupts a pending send and releases the next queued request', async () => {
+  test('SDK response may outlive the stream inactivity timeout', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      requestTimeoutMs: 20,
+      sdkResponseTimeoutMs: 200
+    })
+    const internals = handler as unknown as {
+      makeSdkClient: () => {
+        send: (command: unknown, options: { abortSignal: AbortSignal }) => Promise<object>
+      }
+    }
+    internals.makeSdkClient = () => ({
+      send: (_command, options) =>
+        new Promise<object>((resolve, reject) => {
+          const timer = setTimeout(() => resolve({ generateAssistantResponseResponse: {} }), 50)
+          options.abortSignal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer)
+              reject(options.abortSignal.reason)
+            },
+            { once: true }
+          )
+        })
+    })
+
+    await expect(
+      handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    ).resolves.toBeInstanceOf(Response)
+  })
+
+  test('SDK response timeout interrupts a pending send and releases the next queued request', async () => {
     const acc = makeAccount({ id: 'A' })
     const { handler, fakes } = buildHandler({
       selectResults: [acc, acc],
-      requestTimeoutMs: 20
+      requestTimeoutMs: 1000,
+      sdkResponseTimeoutMs: 20
     })
     const internals = handler as unknown as {
       makeSdkClient: () => {
@@ -637,6 +676,7 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
       }
     })
 
+    const startedAt = Date.now()
     const first = handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
     const second = handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
 
@@ -645,6 +685,7 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
       message: 'Kiro request timed out waiting for SDK response'
     })
     expect(await second).toBeInstanceOf(Response)
+    expect(Date.now() - startedAt).toBeLessThan(500)
     expect(sendCalls).toBe(2)
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
   })

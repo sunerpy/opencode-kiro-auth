@@ -97,7 +97,7 @@ export class RequestHandler {
     if (inboundSignal?.aborted) abortFromInbound()
     else inboundSignal?.addEventListener('abort', abortFromInbound, { once: true })
     let timeout: ReturnType<typeof setDeadlineTimeout> | undefined
-    const beginUpstreamWait = (phase: UpstreamWaitPhase): void => {
+    const beginUpstreamWait = (phase: UpstreamWaitPhase, timeoutMs: number): void => {
       if (requestController.signal.aborted) return
       if (timeout) clearDeadlineTimeout(timeout)
       timeout = setDeadlineTimeout(
@@ -105,7 +105,7 @@ export class RequestHandler {
           requestController.abort(
             new DOMException(`Kiro request timed out waiting for ${phase}`, 'TimeoutError')
           ),
-        this.config.request_timeout_ms
+        timeoutMs
       )
     }
     const endUpstreamWait = (): void => {
@@ -236,7 +236,7 @@ export class RequestHandler {
           }
 
           let sdkResponse: GenerateAssistantResponseCommandOutput
-          beginUpstreamWait('SDK response')
+          beginUpstreamWait('SDK response', this.config.sdk_response_timeout_ms)
           try {
             sdkResponse = await client.send(command, { abortSignal: signal })
           } finally {
@@ -255,7 +255,8 @@ export class RequestHandler {
             sdkPrep.streaming,
             {
               signal,
-              onUpstreamWaitStart: () => beginUpstreamWait('stream event'),
+              onUpstreamWaitStart: () =>
+                beginUpstreamWait('stream event', this.config.request_timeout_ms),
               onUpstreamWaitEnd: endUpstreamWait,
               onComplete: completeRequest,
               onTerminal: cleanupRequest,

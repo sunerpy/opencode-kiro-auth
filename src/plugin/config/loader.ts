@@ -177,6 +177,11 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       config.max_request_iterations
     ),
 
+    sdk_response_timeout_ms: parseNumberEnv(
+      env.KIRO_SDK_RESPONSE_TIMEOUT_MS,
+      config.sdk_response_timeout_ms
+    ),
+
     request_timeout_ms: parseNumberEnv(env.KIRO_REQUEST_TIMEOUT_MS, config.request_timeout_ms),
 
     token_expiry_buffer_ms: parseNumberEnv(

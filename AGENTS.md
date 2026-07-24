@@ -93,10 +93,12 @@ that typed error and:
 Output uses a pull-driven `ReadableStream` with `highWaterMark: 0`; an empty
 stream still emits a terminal `finish_reason:"stop"` SSE chunk. Caller abort is
 threaded through the SDK send, iterator, stream-retry backoff, and every
-ErrorHandler/AccountSelector wait. The inactivity timeout is armed only while an
-SDK send or iterator `next()` is pending, so downstream backpressure is not
-misclassified as upstream inactivity. Both paths always release the static
-request queue.
+ErrorHandler/AccountSelector wait. `sdk_response_timeout_ms` (default 300s)
+limits the initial `client.send()` wait; `request_timeout_ms` (default 120s)
+limits only iterator `next()` inactivity. The latter is paused during downstream
+backpressure. SDK-response timeouts are not automatically retried because the
+server may already be generating, so replay could duplicate output and quota
+usage. Both paths always release the static request queue.
 A per-account **attempt epoch** plus `UsageTracker.syncUsage(..., isValid)`
 prevents a stale (superseded) stream from committing success or usage over a
 newer failure.
