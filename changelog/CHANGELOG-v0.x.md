@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.5](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.4...v0.13.5) (2026-07-24)
+
+
+### Bug Fixes
+
+* **timeout:** separate SDK response wait from stream inactivity ([#55](https://github.com/sunerpy/opencode-kiro-auth/issues/55)) ([f8de13d](https://github.com/sunerpy/opencode-kiro-auth/commit/f8de13dff086a333533f25f54fd45f631f75c831))
+
 ## [0.13.4](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.3...v0.13.4) (2026-07-24)
 
 
