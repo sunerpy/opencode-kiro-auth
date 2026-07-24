@@ -178,6 +178,26 @@ describe('AccountSelector.selectHealthyAccount - all rate-limited (wait branch)'
       globalThis.setTimeout = realSetTimeout
     }
   })
+
+  test('an aborted signal interrupts the rate-limit wait', async () => {
+    const mgr = new AccountManager(
+      [makeAccount({ id: 'A', rateLimitResetTime: Date.now() + 1000 })],
+      'sticky'
+    )
+    const selector = new AccountSelector(
+      mgr,
+      defaultConfig,
+      mock(async () => {}),
+      fakeRepo()
+    )
+    const controller = new AbortController()
+    const reason = new DOMException('caller aborted', 'AbortError')
+    controller.abort(reason)
+
+    await expect(
+      selector.selectHealthyAccount(collectingToast().fn, controller.signal)
+    ).rejects.toBe(reason)
+  })
 })
 
 describe('AccountSelector.selectHealthyAccount - circuit breaker', () => {

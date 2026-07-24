@@ -21,7 +21,10 @@ export class AccountSelector {
     private repository: AccountRepository
   ) {}
 
-  async selectHealthyAccount(showToast: ToastFunction): Promise<ManagedAccount | null> {
+  async selectHealthyAccount(
+    showToast: ToastFunction,
+    signal?: AbortSignal
+  ): Promise<ManagedAccount | null> {
     this.checkCircuitBreaker()
 
     let count = this.accountManager.getAccountCount()
@@ -50,7 +53,7 @@ export class AccountSelector {
         if (this.accountManager.shouldShowToast()) {
           showToast(`All accounts rate-limited. Waiting ${Math.ceil(wait / 1000)}s...`, 'warning')
         }
-        await this.sleep(wait)
+        await this.sleep(wait, signal)
         return null
       }
       throw new Error('All accounts are unhealthy or rate-limited: reauth required')
@@ -65,6 +68,10 @@ export class AccountSelector {
     }
 
     return acc
+  }
+
+  async selectAlternativeAccount(excludedIds: ReadonlySet<string>): Promise<ManagedAccount | null> {
+    return this.accountManager.getCurrentOrNext({ excludedIds, recoverUnhealthy: false })
   }
 
   private async handleEmptyAccounts(): Promise<void> {
@@ -102,7 +109,18 @@ export class AccountSelector {
     }
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((r) => setTimeout(r, ms))
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason)
+    let onAbort: (() => void) | undefined
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, ms)
+      onAbort = (): void => {
+        clearTimeout(timer)
+        reject(signal?.reason)
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    }).finally(() => {
+      if (onAbort) signal?.removeEventListener('abort', onAbort)
+    })
   }
 }

@@ -1,4 +1,5 @@
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
+import { clearTimeout as clearDeadlineTimeout, setTimeout as setDeadlineTimeout } from 'node:timers'
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
@@ -14,6 +15,7 @@ import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler, isKiroContextOverflowBody, type RequestContext } from './error-handler'
 import { ResponseHandler } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
+import { SdkEventStreamIterationError, UpstreamUnexpectedError } from './stream-error'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
@@ -29,6 +31,8 @@ export class RequestHandler {
   private retryStrategy: RetryStrategy
   private reauthInFlight: Promise<boolean> | null = null
   private lastFailedReauthAt = 0
+  private accountAttemptEpochs = new Map<string, number>()
+  private streamRetryRandom = Math.random
   private static kiroRequestQueue: Promise<void> = Promise.resolve()
 
   constructor(
@@ -83,6 +87,24 @@ export class RequestHandler {
     init: any,
     showToast: ToastFunction
   ): Promise<Response> {
+    const requestController = new AbortController()
+    const inboundSignal = init?.signal as AbortSignal | undefined
+    const abortFromInbound = (): void => requestController.abort(inboundSignal?.reason)
+    if (inboundSignal?.aborted) abortFromInbound()
+    else inboundSignal?.addEventListener('abort', abortFromInbound, { once: true })
+    const timeout = setDeadlineTimeout(
+      () => requestController.abort(new DOMException('Kiro request timed out', 'TimeoutError')),
+      this.config.request_timeout_ms
+    )
+    let requestCleanupDone = false
+    let responseOwnsLifecycle = false
+    const cleanupRequest = (): void => {
+      if (requestCleanupDone) return
+      requestCleanupDone = true
+      clearDeadlineTimeout(timeout)
+      inboundSignal?.removeEventListener('abort', abortFromInbound)
+    }
+    const signal = requestController.signal
     const body = init?.body ? JSON.parse(init.body) : {}
     const model = this.extractModel(url) || body.model || 'claude-sonnet-4-5'
     const think =
@@ -95,162 +117,219 @@ export class RequestHandler {
 
     let handlerContext: RequestContext = { retry: 0, forcedRefreshAccountIds: new Set<string>() }
     let consecutiveNullAccounts = 0
+    let streamFailureCount = 0
+    let forcedStreamAccount: ManagedAccount | null = null
     const retryContext = this.retryStrategy.createContext()
 
-    while (true) {
-      const check = this.retryStrategy.shouldContinue(retryContext)
-      if (!check.canContinue) {
-        throw new Error(check.error)
-      }
-
-      if (this.allAccountsPermanentlyUnhealthy()) {
-        const reauthed = await this.triggerReauth(showToast)
-        if (!reauthed) {
-          throw new Error('All accounts are permanently unhealthy. Please re-authenticate.')
+    try {
+      while (true) {
+        if (signal.aborted) throw signal.reason
+        const check = this.retryStrategy.shouldContinue(retryContext)
+        if (!check.canContinue) {
+          throw new Error(check.error)
         }
-        continue
-      }
 
-      let acc = await this.accountSelector.selectHealthyAccount(showToast).catch(async (e) => {
-        if (e instanceof Error && e.message.includes('reauth required')) {
+        if (this.allAccountsPermanentlyUnhealthy()) {
           const reauthed = await this.triggerReauth(showToast)
-          if (!reauthed)
-            throw new Error('All accounts are unhealthy or rate-limited. Please re-authenticate.')
-          return null
-        }
-        throw e
-      })
-      if (!acc) {
-        consecutiveNullAccounts++
-        const backoffDelay = Math.min(1000 * Math.pow(2, consecutiveNullAccounts - 1), 10000)
-        await this.sleep(backoffDelay)
-        continue
-      }
-
-      consecutiveNullAccounts = 0
-      const auth = this.accountManager.toAuthDetails(acc)
-
-      const tokenResult = await this.tokenRefresher.refreshIfNeeded(acc, auth, showToast)
-      if (tokenResult.shouldContinue) {
-        acc = tokenResult.account
-        await this.sleep(500)
-        continue
-      }
-
-      const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
-
-      if (this.config.enable_log_effort_debug) {
-        try {
-          logger.log('[effort-debug] request effort resolution', {
-            model,
-            effectiveModel: sdkPrep.effectiveModel,
-            think,
-            budget,
-            resolvedEffort: sdkPrep.effort ?? 'undefined (not effort-capable or not thinking)',
-            inboundBodyKeys: Object.keys(body),
-            messagesCount: body.messages?.length,
-            reasoningSubtree: {
-              reasoningEffort: body.reasoningEffort,
-              reasoning_effort: body.reasoning_effort,
-              reasoning: body.reasoning,
-              providerOptions: body.providerOptions,
-              thinkingConfig: body.thinkingConfig,
-              providerOptionsThinkingConfig: body.providerOptions?.thinkingConfig
-            }
-          })
-        } catch {}
-      }
-
-      const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null
-      if (apiTimestamp) {
-        this.logSdkRequest(sdkPrep, acc, apiTimestamp)
-      }
-      try {
-        const client = this.makeSdkClient(auth, sdkPrep.region, sdkPrep.effort)
-        const command = new GenerateAssistantResponseCommand({
-          conversationState: sdkPrep.conversationState as any,
-          profileArn: sdkPrep.profileArn
-        })
-
-        const sdkResponse = await client.send(command)
-
-        if (apiTimestamp) {
-          this.logSdkResponse(sdkPrep, apiTimestamp)
-        }
-
-        this.handleSuccessfulRequest(acc)
-        this.usageTracker.syncUsage(acc, auth)
-
-        return await this.responseHandler.handleSdkSuccess(
-          sdkResponse,
-          model,
-          sdkPrep.conversationId,
-          sdkPrep.streaming
-        )
-      } catch (e: any) {
-        const httpStatus = e?.$metadata?.httpStatusCode
-
-        if (httpStatus) {
-          if (apiTimestamp) {
-            this.logSdkError(sdkPrep, e, acc, apiTimestamp)
-          }
-
-          const errorBody = JSON.stringify({ message: e.message, __type: e.name })
-          const errorStatusText = e.name || 'Error'
-          const jsonHeaders = { 'Content-Type': 'application/json' }
-
-          const errorResult = await this.errorHandler.handle(
-            e,
-            new Response(errorBody, {
-              status: httpStatus,
-              statusText: errorStatusText,
-              headers: jsonHeaders
-            }),
-            acc,
-            handlerContext,
-            showToast
-          )
-
-          if (errorResult.shouldRetry) {
-            if (errorResult.newContext) {
-              handlerContext = errorResult.newContext
-            }
-            if (errorResult.switchAccount) {
-              continue
-            }
-            continue
-          }
-
-          // Terminal, non-retryable HTTP error. Return a fresh Response carrying
-          // the real Kiro body so @ai-sdk/openai-compatible produces an
-          // APICallError with status+body (not a bare Error that OpenCode
-          // degrades to UnknownError). Remap size-overflow 400s to 413 so
-          // OpenCode classifies context_overflow and auto-compacts.
-          const terminalStatus =
-            httpStatus === 400 && isKiroContextOverflowBody(e.message ?? '') ? 413 : httpStatus
-
-          return new Response(errorBody, {
-            status: terminalStatus,
-            statusText: errorStatusText,
-            headers: jsonHeaders
-          })
-        }
-
-        const networkResult = await this.errorHandler.handleNetworkError(
-          e,
-          handlerContext,
-          showToast
-        )
-
-        if (networkResult.shouldRetry) {
-          if (networkResult.newContext) {
-            handlerContext = { ...handlerContext, ...networkResult.newContext }
+          if (!reauthed) {
+            throw new Error('All accounts are permanently unhealthy. Please re-authenticate.')
           }
           continue
         }
 
-        throw e
+        let acc: ManagedAccount | null = forcedStreamAccount
+        forcedStreamAccount = null
+        if (!acc) {
+          acc = await this.accountSelector
+            .selectHealthyAccount(showToast, signal)
+            .catch(async (e) => {
+              if (e instanceof Error && e.message.includes('reauth required')) {
+                const reauthed = await this.triggerReauth(showToast)
+                if (!reauthed)
+                  throw new Error(
+                    'All accounts are unhealthy or rate-limited. Please re-authenticate.'
+                  )
+                return null
+              }
+              throw e
+            })
+        }
+        if (!acc) {
+          consecutiveNullAccounts++
+          const backoffDelay = Math.min(1000 * Math.pow(2, consecutiveNullAccounts - 1), 10000)
+          await this.sleep(backoffDelay, signal)
+          continue
+        }
+
+        consecutiveNullAccounts = 0
+        const auth = this.accountManager.toAuthDetails(acc)
+
+        const tokenResult = await this.tokenRefresher.refreshIfNeeded(acc, auth, showToast)
+        if (tokenResult.shouldContinue) {
+          acc = tokenResult.account
+          await this.sleep(500, signal)
+          continue
+        }
+
+        const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
+
+        if (this.config.enable_log_effort_debug) {
+          try {
+            logger.log('[effort-debug] request effort resolution', {
+              model,
+              effectiveModel: sdkPrep.effectiveModel,
+              think,
+              budget,
+              resolvedEffort: sdkPrep.effort ?? 'undefined (not effort-capable or not thinking)',
+              inboundBodyKeys: Object.keys(body),
+              messagesCount: body.messages?.length,
+              reasoningSubtree: {
+                reasoningEffort: body.reasoningEffort,
+                reasoning_effort: body.reasoning_effort,
+                reasoning: body.reasoning,
+                providerOptions: body.providerOptions,
+                thinkingConfig: body.thinkingConfig,
+                providerOptionsThinkingConfig: body.providerOptions?.thinkingConfig
+              }
+            })
+          } catch {}
+        }
+
+        const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null
+        if (apiTimestamp) {
+          this.logSdkRequest(sdkPrep, acc, apiTimestamp)
+        }
+        let sendResolved = false
+        try {
+          const client = this.makeSdkClient(auth, sdkPrep.region, sdkPrep.effort)
+          const command = new GenerateAssistantResponseCommand({
+            conversationState: sdkPrep.conversationState as any,
+            profileArn: sdkPrep.profileArn
+          })
+          const attemptEpoch = this.nextAccountAttemptEpoch(acc.id)
+          const isCurrentAttempt = (): boolean =>
+            this.accountAttemptEpochs.get(acc.id) === attemptEpoch
+          let completionDone = false
+          const completeRequest = async (): Promise<void> => {
+            if (completionDone) return
+            completionDone = true
+            if (!isCurrentAttempt()) return
+            this.handleSuccessfulRequest(acc)
+            await this.usageTracker.syncUsage(acc, auth, isCurrentAttempt)
+          }
+
+          const sdkResponse = await client.send(command, { abortSignal: signal })
+          sendResolved = true
+
+          if (apiTimestamp) {
+            this.logSdkResponse(sdkPrep, apiTimestamp)
+          }
+
+          const response = await this.responseHandler.handleSdkSuccess(
+            sdkResponse,
+            model,
+            sdkPrep.conversationId,
+            sdkPrep.streaming,
+            {
+              signal,
+              onComplete: completeRequest,
+              onTerminal: cleanupRequest,
+              onCancel: (reason) => requestController.abort(reason),
+              mapError: (error) => new UpstreamUnexpectedError(error, true)
+            }
+          )
+
+          if (sdkPrep.streaming) {
+            responseOwnsLifecycle = true
+          } else {
+            await completeRequest()
+          }
+          return response
+        } catch (e: any) {
+          if (signal.aborted) throw signal.reason
+
+          if (e instanceof SdkEventStreamIterationError) {
+            streamFailureCount++
+            const streamError = new UpstreamUnexpectedError(e, false)
+            if (streamFailureCount >= 3) return streamError.toResponse()
+
+            await this.sleep(this.getStreamRetryDelay(streamFailureCount), signal)
+            if (streamFailureCount === 1) {
+              forcedStreamAccount = acc
+            } else {
+              forcedStreamAccount =
+                (await this.accountSelector.selectAlternativeAccount(new Set([acc.id]))) ?? acc
+            }
+            continue
+          }
+
+          if (sendResolved) throw e
+
+          const httpStatus = e?.$metadata?.httpStatusCode
+
+          if (httpStatus) {
+            if (apiTimestamp) {
+              this.logSdkError(sdkPrep, e, acc, apiTimestamp)
+            }
+
+            const errorBody = JSON.stringify({ message: e.message, __type: e.name })
+            const errorStatusText = e.name || 'Error'
+            const jsonHeaders = { 'Content-Type': 'application/json' }
+
+            const errorResult = await this.errorHandler.handle(
+              e,
+              new Response(errorBody, {
+                status: httpStatus,
+                statusText: errorStatusText,
+                headers: jsonHeaders
+              }),
+              acc,
+              handlerContext,
+              showToast,
+              signal
+            )
+
+            if (errorResult.shouldRetry) {
+              if (errorResult.newContext) {
+                handlerContext = errorResult.newContext
+              }
+              continue
+            }
+
+            // Terminal, non-retryable HTTP error. Return a fresh Response carrying
+            // the real Kiro body so @ai-sdk/openai-compatible produces an
+            // APICallError with status+body (not a bare Error that OpenCode
+            // degrades to UnknownError). Remap size-overflow 400s to 413 so
+            // OpenCode classifies context_overflow and auto-compacts.
+            const terminalStatus =
+              httpStatus === 400 && isKiroContextOverflowBody(e.message ?? '') ? 413 : httpStatus
+
+            return new Response(errorBody, {
+              status: terminalStatus,
+              statusText: errorStatusText,
+              headers: jsonHeaders
+            })
+          }
+
+          const networkResult = await this.errorHandler.handleNetworkError(
+            e,
+            handlerContext,
+            showToast,
+            signal
+          )
+
+          if (networkResult.shouldRetry) {
+            if (networkResult.newContext) {
+              handlerContext = { ...handlerContext, ...networkResult.newContext }
+            }
+            continue
+          }
+
+          throw e
+        }
       }
+    } finally {
+      if (!responseOwnsLifecycle) cleanupRequest()
     }
   }
 
@@ -435,7 +514,29 @@ export class RequestHandler {
     return accounts.every((acc) => !acc.isHealthy && isPermanentError(acc.unhealthyReason))
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
+  private nextAccountAttemptEpoch(accountId: string): number {
+    const next = (this.accountAttemptEpochs.get(accountId) ?? 0) + 1
+    this.accountAttemptEpochs.set(accountId, next)
+    return next
+  }
+
+  private getStreamRetryDelay(failureCount: number): number {
+    const base = 250 * Math.pow(2, failureCount - 1)
+    return base + base * 0.25 * this.streamRetryRandom()
+  }
+
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason)
+    let onAbort: (() => void) | undefined
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, ms)
+      onAbort = () => {
+        clearTimeout(timer)
+        reject(signal?.reason)
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    }).finally(() => {
+      if (onAbort) signal?.removeEventListener('abort', onAbort)
+    })
   }
 }

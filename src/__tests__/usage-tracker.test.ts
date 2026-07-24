@@ -174,6 +174,31 @@ describe('UsageTracker.syncUsage - success + cooldown', () => {
     await until(() => calls === 2)
     expect(calls).toBe(2)
   })
+
+  test('a stale validity predicate prevents deferred usage mutations and persistence', async () => {
+    let resolveUsage!: (value: UsageResult) => void
+    usageResponder = () =>
+      new Promise<UsageResult>((resolve) => {
+        resolveUsage = resolve
+      })
+    const acc = makeAccount({ id: 'A', usedCount: 3, limitCount: 10 })
+    const mgr = new AccountManager([acc], 'sticky')
+    const repo = fakeRepo()
+    const tracker = new UsageTracker(baseConfig, mgr, repo)
+    let valid = true
+
+    await tracker.syncUsage(acc, authFor(acc), () => valid)
+    await until(() => resolveUsage !== undefined)
+    valid = false
+    resolveUsage({ usedCount: 9, limitCount: 10, email: 'stale@example.com' })
+    await until(() => false, 20)
+
+    const managed = mgr.getAccounts().find((account) => account.id === 'A')!
+    expect(managed.usedCount).toBe(3)
+    expect(managed.email).toBe('A@example.com')
+    expect(repo.batchSave).toHaveBeenCalledTimes(0)
+    expect(repo.save).toHaveBeenCalledTimes(0)
+  })
 })
 
 describe('UsageTracker.syncWithRetry - retry then success', () => {

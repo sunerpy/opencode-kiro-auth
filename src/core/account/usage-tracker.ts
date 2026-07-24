@@ -22,14 +22,19 @@ export class UsageTracker {
     this.cooldownMs = config.usage_sync_cooldown_ms ?? 60000
   }
 
-  async syncUsage(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
+  async syncUsage(
+    account: ManagedAccount,
+    auth: KiroAuthDetails,
+    isValid: () => boolean = () => true
+  ): Promise<void> {
     if (!this.config.usage_tracking_enabled) return
+    if (!isValid()) return
 
     const last = this.lastSyncTime.get(account.id) ?? 0
     if (Date.now() - last < this.cooldownMs) return
 
     this.lastSyncTime.set(account.id, Date.now())
-    this.syncWithRetry(account, auth, 0).catch((e) => {
+    this.syncWithRetry(account, auth, 0, isValid).catch((e) => {
       logger.warn('Usage sync failed after all retries', {
         accountId: account.id,
         error: e instanceof Error ? e.message : String(e)
@@ -40,16 +45,21 @@ export class UsageTracker {
   private async syncWithRetry(
     account: ManagedAccount,
     auth: KiroAuthDetails,
-    attempt: number
+    attempt: number,
+    isValid: () => boolean
   ): Promise<void> {
     try {
       const u = await fetchUsageLimits(auth)
+      if (!isValid()) return
       updateAccountQuota(account, u, this.accountManager)
+      if (!isValid()) return
       await this.repository.batchSave(this.accountManager.getAccounts())
     } catch (e: any) {
+      if (!isValid()) return
       if (attempt < this.config.usage_sync_max_retries) {
         await this.sleep(1000 * Math.pow(2, attempt))
-        return this.syncWithRetry(account, auth, attempt + 1)
+        if (!isValid()) return
+        return this.syncWithRetry(account, auth, attempt + 1, isValid)
       }
 
       if (e.message?.includes('FEATURE_NOT_SUPPORTED')) {
@@ -62,7 +72,9 @@ export class UsageTracker {
         e.message?.includes('invalid') ||
         e.message?.includes('bearer token')
       ) {
+        if (!isValid()) return
         this.accountManager.markUnhealthy(account, e.message)
+        if (!isValid()) return
         this.repository.save(account).catch(() => {})
       }
 
