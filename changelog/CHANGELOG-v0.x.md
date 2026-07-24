@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.4](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.3...v0.13.4) (2026-07-24)
+
+
+### Bug Fixes
+
+* **streaming:** pause timeout during downstream backpressure ([#53](https://github.com/sunerpy/opencode-kiro-auth/issues/53)) ([474d7a4](https://github.com/sunerpy/opencode-kiro-auth/commit/474d7a49f4309b33a2a29a697d6913cd12c45872))
+
 ## [0.13.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.2...v0.13.3) (2026-07-24)
 
 
