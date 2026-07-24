@@ -21,6 +21,7 @@ root [README](../README.md#configuration) for the short version.
   "rate_limit_retry_delay_ms": 5000,
   "rate_limit_max_retries": 3,
   "max_request_iterations": 20,
+  "sdk_response_timeout_ms": 300000,
   "request_timeout_ms": 120000,
   "token_expiry_buffer_ms": 300000,
   "token_keepalive_enabled": false,
@@ -88,10 +89,15 @@ because moving a live database during an upgrade is unsafe.
 - `rate_limit_retry_delay_ms`: Delay between rate limit retries (1000-60000ms).
 - `rate_limit_max_retries`: Maximum retry attempts for rate limits (0-10).
 - `max_request_iterations`: Maximum loop iterations to prevent hangs (10-1000).
-- `request_timeout_ms`: Maximum time spent actively waiting for an SDK response
-  or the next upstream stream event (30000-600000ms). The timer is paused after
-  an event arrives and while the downstream consumer is not pulling, so active
-  reasoning streams and slow consumers may outlive this interval.
+- `sdk_response_timeout_ms`: Maximum time waiting for `client.send()` to return
+  the initial SDK response (30000-600000ms, default: `300000`). High-effort
+  models can legitimately take more than two minutes before their event stream
+  becomes available. Override with `KIRO_SDK_RESPONSE_TIMEOUT_MS`.
+- `request_timeout_ms`: Maximum inactivity while waiting for the next upstream
+  stream event (30000-600000ms, default: `120000`). The timer is paused after an
+  event arrives and while the downstream consumer is not pulling, so active
+  reasoning streams and slow consumers may outlive this interval. Override with
+  `KIRO_REQUEST_TIMEOUT_MS`.
 - `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms, default:
   `300000`). An access token within this window of expiry is treated as expired
   and refreshed on next use.

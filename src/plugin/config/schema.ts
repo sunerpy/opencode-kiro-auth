@@ -107,6 +107,16 @@ export const KiroConfigSchema = z.object({
 
   max_request_iterations: z.number().min(5).max(1000).default(20),
 
+  /**
+   * Maximum wait for client.send() to return the initial SDK response.
+   * High-effort models can legitimately take several minutes before the
+   * event stream becomes available.
+   */
+  sdk_response_timeout_ms: z.number().min(30000).max(600000).default(300000),
+
+  /**
+   * Maximum inactivity while waiting for the next upstream stream event.
+   */
   request_timeout_ms: z.number().min(30000).max(600000).default(120000),
 
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
@@ -170,6 +180,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   rate_limit_retry_delay_ms: 5000,
   rate_limit_max_retries: 3,
   max_request_iterations: 20,
+  sdk_response_timeout_ms: 300000,
   request_timeout_ms: 120000,
   token_expiry_buffer_ms: 300000,
   token_keepalive_enabled: false,

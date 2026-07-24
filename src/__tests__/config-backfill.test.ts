@@ -61,6 +61,7 @@ describe('config backfill: additive new-key insertion', () => {
     expect(written.account_selection_strategy).toBe('sticky')
     expect(written.request_timeout_ms).toBe(90000)
     // newly-added default keys present with their default values
+    expect(written.sdk_response_timeout_ms).toBe(300000)
     expect(written.token_keepalive_enabled).toBe(false)
     expect(written.token_keepalive_interval_ms).toBe(600000)
     expect(written.auto_sync_kiro_cli).toBe(false)
