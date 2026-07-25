@@ -413,6 +413,52 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
   })
 
+  test('transport close after completion metadata finalizes the response successfully', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    const socketError = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+    const terminated = new TypeError('terminated', { cause: socketError })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [
+            {
+              assistantResponseEvent: {
+                content: 'complete response before the transport closes'
+              }
+            },
+            {
+              metadataEvent: {
+                tokenUsage: {
+                  uncachedInputTokens: 12,
+                  outputTokens: 7,
+                  totalTokens: 19
+                }
+              }
+            }
+          ],
+          terminated
+        )
+      ],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+    const streamedContent = body
+      .split('\n\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice('data: '.length)).choices?.[0]?.delta?.content ?? '')
+      .join('')
+
+    expect(streamedContent).toBe('complete response before the transport closes')
+    expect(body).toContain('"finish_reason":"stop"')
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+    expect(acc.failCount).toBe(0)
+  })
+
   test('success bookkeeping waits for full stream completion', async () => {
     const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
     let release!: () => void

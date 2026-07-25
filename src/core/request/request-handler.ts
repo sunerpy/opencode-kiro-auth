@@ -26,6 +26,19 @@ const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
 type UpstreamWaitPhase = 'SDK response' | 'stream event'
 
+function describeError(error: unknown, depth = 0): unknown {
+  if (!(error instanceof Error)) return String(error)
+  const code = (error as Error & { code?: unknown }).code
+  return {
+    name: error.name,
+    message: error.message,
+    ...(code !== undefined ? { code } : {}),
+    ...(depth < 2 && error.cause !== undefined
+      ? { cause: describeError(error.cause, depth + 1) }
+      : {})
+  }
+}
+
 export class RequestHandler {
   private accountSelector: AccountSelector
   private tokenRefresher: TokenRefresher
@@ -287,6 +300,16 @@ export class RequestHandler {
                   region: sdkPrep.region
                 }),
               onUpstreamWaitEnd: endUpstreamWait,
+              onIterationError: (error, afterCompletionMetadata) =>
+                logger.warn('Kiro SDK event stream iteration failed', {
+                  model,
+                  effectiveModel: sdkPrep.effectiveModel,
+                  region: sdkPrep.region,
+                  platform: process.platform,
+                  afterCompletionMetadata,
+                  recovered: afterCompletionMetadata,
+                  error: describeError(error)
+                }),
               onComplete: completeRequest,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),
