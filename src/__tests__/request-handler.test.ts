@@ -702,6 +702,31 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     ).resolves.toBeInstanceOf(Response)
   })
 
+  test('disabled SDK response timeout allows the first stream event to outlive the inactivity window', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+    const sdkResponse = {
+      generateAssistantResponseResponse: (async function* () {
+        await delay(75)
+        yield { assistantResponseEvent: { content: 'slow first answer' } }
+      })()
+    }
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkResponse],
+      streaming: true,
+      useRealResponseHandler: true,
+      requestTimeoutMs: 20,
+      sdkResponseTimeoutEnabled: false,
+      sdkResponseTimeoutMs: 20
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+    expect(body).toContain('slow fi')
+    expect(body).toContain('rst answer')
+  })
+
   test('SDK response timeout interrupts a pending send and releases the next queued request', async () => {
     const acc = makeAccount({ id: 'A' })
     const { handler, fakes } = buildHandler({
@@ -740,6 +765,33 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     expect(Date.now() - startedAt).toBeLessThan(500)
     expect(sendCalls).toBe(2)
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
+  })
+
+  test('SDK response timeout remains active until the first stream event arrives', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+    const sdkResponse = {
+      generateAssistantResponseResponse: (async function* () {
+        await delay(75)
+        yield { assistantResponseEvent: { content: 'too late' } }
+      })()
+    }
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkResponse],
+      streaming: true,
+      useRealResponseHandler: true,
+      requestTimeoutMs: 1000,
+      sdkResponseTimeoutEnabled: true,
+      sdkResponseTimeoutMs: 20
+    })
+
+    await expect(
+      handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    ).rejects.toMatchObject({
+      name: 'TimeoutError',
+      message: 'Kiro request timed out waiting for SDK response'
+    })
   })
 
   test('inbound abort interrupts stream retry backoff without issuing another SDK request', async () => {

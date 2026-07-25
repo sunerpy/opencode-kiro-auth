@@ -96,11 +96,14 @@ stream still emits a terminal `finish_reason:"stop"` SSE chunk. Caller abort is
 threaded through the SDK send, iterator, stream-retry backoff, and every
 ErrorHandler/AccountSelector wait. The initial `client.send()` deadline is
 disabled by default; `sdk_response_timeout_enabled` opts into the
-`sdk_response_timeout_ms` fixed deadline. `request_timeout_ms` (default 120s)
-limits only iterator `next()` inactivity and is paused during downstream
-backpressure. SDK-response timeouts are not automatically retried because the
-server may already be generating, so replay could duplicate output and quota
-usage. All terminal paths release the static request queue.
+`sdk_response_timeout_ms` fixed deadline, which continues through the first raw
+stream event. When that deadline is disabled, the first event has no plugin
+deadline but remains caller-cancellable. After the first event,
+`request_timeout_ms` (default 120s) limits each subsequent iterator `next()`
+wait and is paused during downstream backpressure. Initial-response timeouts
+are not automatically retried because the server may already be generating, so
+replay could duplicate output and quota usage. All terminal paths release the
+static request queue.
 A per-account **attempt epoch** plus `UsageTracker.syncUsage(..., isValid)`
 prevents a stale (superseded) stream from committing success or usage over a
 newer failure.

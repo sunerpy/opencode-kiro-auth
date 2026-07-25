@@ -5,7 +5,7 @@ import { SdkEventStreamIterationError } from './stream-error.js'
 
 export interface SdkResponseLifecycle {
   signal?: AbortSignal
-  onUpstreamWaitStart?: () => void
+  onUpstreamWaitStart?: (context: { eventIndex: number }) => void
   onUpstreamWaitEnd?: () => void
   onIterationError?: (error: unknown, afterCompletionMetadata: boolean) => void
   onComplete?: () => void | Promise<void>
@@ -39,7 +39,7 @@ function isCompletionMetadataEvent(event: unknown): boolean {
 function wrapSdkEventStream(
   sdkResponse: any,
   signal?: AbortSignal,
-  onUpstreamWaitStart?: () => void,
+  onUpstreamWaitStart?: (context: { eventIndex: number }) => void,
   onUpstreamWaitEnd?: () => void,
   onIterationError?: (error: unknown, afterCompletionMetadata: boolean) => void
 ): WrappedSdkStream {
@@ -51,6 +51,7 @@ function wrapSdkEventStream(
   const rawIterator = eventStream[Symbol.asyncIterator]() as AsyncIterator<unknown>
   let closed = false
   let completionMetadataSeen = false
+  let eventIndex = 0
   const closeRaw = async (): Promise<void> => {
     if (closed) return
     closed = true
@@ -63,29 +64,34 @@ function wrapSdkEventStream(
       throw abortReason(signal)
     }
 
-    onUpstreamWaitStart?.()
+    onUpstreamWaitStart?.({ eventIndex })
     try {
-      if (!signal) return await rawIterator.next()
+      let result: IteratorResult<unknown>
+      if (!signal) {
+        result = await rawIterator.next()
+      } else {
+        result = await new Promise<IteratorResult<unknown>>((resolve, reject) => {
+          let settled = false
+          const settle = (callback: () => void): void => {
+            if (settled) return
+            settled = true
+            signal.removeEventListener('abort', onAbort)
+            callback()
+          }
+          const onAbort = (): void => {
+            void closeRaw()
+            settle(() => reject(abortReason(signal)))
+          }
 
-      return await new Promise<IteratorResult<unknown>>((resolve, reject) => {
-        let settled = false
-        const settle = (callback: () => void): void => {
-          if (settled) return
-          settled = true
-          signal.removeEventListener('abort', onAbort)
-          callback()
-        }
-        const onAbort = (): void => {
-          void closeRaw()
-          settle(() => reject(abortReason(signal)))
-        }
-
-        signal.addEventListener('abort', onAbort, { once: true })
-        Promise.resolve(rawIterator.next()).then(
-          (result) => settle(() => resolve(result)),
-          (error) => settle(() => reject(error))
-        )
-      })
+          signal.addEventListener('abort', onAbort, { once: true })
+          Promise.resolve(rawIterator.next()).then(
+            (nextResult) => settle(() => resolve(nextResult)),
+            (error) => settle(() => reject(error))
+          )
+        })
+      }
+      if (!result.done) eventIndex++
+      return result
     } finally {
       onUpstreamWaitEnd?.()
     }
