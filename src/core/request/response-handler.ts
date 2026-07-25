@@ -7,6 +7,7 @@ export interface SdkResponseLifecycle {
   signal?: AbortSignal
   onUpstreamWaitStart?: () => void
   onUpstreamWaitEnd?: () => void
+  onIterationError?: (error: unknown, afterCompletionMetadata: boolean) => void
   onComplete?: () => void | Promise<void>
   onTerminal?: () => void
   onCancel?: (reason: unknown) => void
@@ -28,11 +29,19 @@ async function closeIterator(iterator: AsyncIterator<unknown>): Promise<void> {
   } catch {}
 }
 
+function isCompletionMetadataEvent(event: unknown): boolean {
+  if (typeof event !== 'object' || event === null || !('metadataEvent' in event)) return false
+  const metadata = event.metadataEvent
+  if (typeof metadata !== 'object' || metadata === null || !('tokenUsage' in metadata)) return false
+  return typeof metadata.tokenUsage === 'object' && metadata.tokenUsage !== null
+}
+
 function wrapSdkEventStream(
   sdkResponse: any,
   signal?: AbortSignal,
   onUpstreamWaitStart?: () => void,
-  onUpstreamWaitEnd?: () => void
+  onUpstreamWaitEnd?: () => void,
+  onIterationError?: (error: unknown, afterCompletionMetadata: boolean) => void
 ): WrappedSdkStream {
   const eventStream = sdkResponse.generateAssistantResponseResponse
   if (!eventStream || typeof eventStream[Symbol.asyncIterator] !== 'function') {
@@ -41,6 +50,7 @@ function wrapSdkEventStream(
 
   const rawIterator = eventStream[Symbol.asyncIterator]() as AsyncIterator<unknown>
   let closed = false
+  let completionMetadataSeen = false
   const closeRaw = async (): Promise<void> => {
     if (closed) return
     closed = true
@@ -84,9 +94,18 @@ function wrapSdkEventStream(
   const wrappedIterator: AsyncIterator<unknown> = {
     async next() {
       try {
-        return await nextRaw()
+        const result = await nextRaw()
+        if (!result.done && isCompletionMetadataEvent(result.value)) {
+          completionMetadataSeen = true
+        }
+        return result
       } catch (error) {
         if (signal?.aborted) throw abortReason(signal)
+        onIterationError?.(error, completionMetadataSeen)
+        if (completionMetadataSeen) {
+          await closeRaw()
+          return { done: true, value: undefined }
+        }
         throw new SdkEventStreamIterationError(error)
       }
     },
@@ -180,7 +199,8 @@ export class ResponseHandler {
       sdkResponse,
       lifecycle.signal,
       lifecycle.onUpstreamWaitStart,
-      lifecycle.onUpstreamWaitEnd
+      lifecycle.onUpstreamWaitEnd,
+      lifecycle.onIterationError
     )
     const transformed = transformSdkStream(wrapped.response, model, conversationId)
     const buffered: Uint8Array[] = []
@@ -306,7 +326,8 @@ export class ResponseHandler {
       sdkResponse,
       lifecycle.signal,
       lifecycle.onUpstreamWaitStart,
-      lifecycle.onUpstreamWaitEnd
+      lifecycle.onUpstreamWaitEnd,
+      lifecycle.onIterationError
     )
     const eventStream = wrapped.response.generateAssistantResponseResponse
     if (eventStream) {

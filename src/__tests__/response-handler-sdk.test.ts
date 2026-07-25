@@ -132,6 +132,57 @@ describe('handleSdkSuccess — non-streaming', () => {
       cause: upstream
     })
   })
+
+  test('transport failure after completion metadata is treated as clean EOF', async () => {
+    const upstream = Object.assign(new TypeError('terminated'), { code: 'ECONNRESET' })
+    const iterationErrors: Array<{ error: unknown; afterCompletionMetadata: boolean }> = []
+    const response = await new ResponseHandler().handleSdkSuccess(
+      makeFailingSdkResponse(
+        [
+          { assistantResponseEvent: { content: 'complete answer' } },
+          {
+            metadataEvent: {
+              tokenUsage: {
+                uncachedInputTokens: 4,
+                outputTokens: 2,
+                totalTokens: 6
+              }
+            }
+          }
+        ],
+        upstream
+      ),
+      'auto',
+      'c',
+      false,
+      {
+        onIterationError(error, afterCompletionMetadata) {
+          iterationErrors.push({ error, afterCompletionMetadata })
+        }
+      }
+    )
+
+    const body = await response.json()
+    expect(body.choices[0].message.content).toBe('complete answer')
+    expect(body.choices[0].finish_reason).toBe('stop')
+    expect(iterationErrors).toEqual([{ error: upstream, afterCompletionMetadata: true }])
+  })
+
+  test('metadata without valid token usage does not hide a transport failure', async () => {
+    const upstream = new TypeError('terminated before completion metadata')
+
+    await expect(
+      new ResponseHandler().handleSdkSuccess(
+        makeFailingSdkResponse([{ metadataEvent: { tokenUsage: null } }], upstream),
+        'auto',
+        'c',
+        false
+      )
+    ).rejects.toMatchObject({
+      name: 'SdkEventStreamIterationError',
+      cause: upstream
+    })
+  })
 })
 
 describe('handleSdkSuccess — streaming', () => {
