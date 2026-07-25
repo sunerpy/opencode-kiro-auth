@@ -44,6 +44,9 @@ describe('context-window: effort/thinking suffixes resolve to the base limit', (
   })
 
   test('claude opus/sonnet long-context families are 1000000, suffix-independent', () => {
+    expect(getContextWindowSize('claude-opus-5')).toBe(1000000)
+    expect(getContextWindowSize('claude-opus-5-xhigh')).toBe(1000000)
+    expect(getContextWindowSize('claude-opus-5-thinking')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-4-8')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-4-8-xhigh')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-4-8-thinking')).toBe(1000000)

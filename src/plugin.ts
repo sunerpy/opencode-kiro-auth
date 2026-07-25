@@ -265,6 +265,36 @@ export const createKiroPlugin =
               limit: { context: 1000000, output: 64000 },
               modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
             },
+            'claude-opus-5': {
+              name: 'Claude Opus 5 (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-low': {
+              name: 'Claude Opus 5 (low) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-medium': {
+              name: 'Claude Opus 5 (medium) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-high': {
+              name: 'Claude Opus 5 (high) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-xhigh': {
+              name: 'Claude Opus 5 (xhigh) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-max': {
+              name: 'Claude Opus 5 (max) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
             // Open weight models
             'deepseek-3.2': {
               name: 'DeepSeek 3.2 (0.25x)',

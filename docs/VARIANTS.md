@@ -18,12 +18,12 @@ per model instead of globally.
 
 ## Available variants
 
-Only these four base models have variant ids. Every level below is
-probe-confirmed against the live Kiro API — no variant outside this table
-exists.
+Only the base models below have variant ids. Every listed level is
+probe-confirmed against the live Kiro API.
 
 | Base model          | `low`                   | `medium`                   | `high`                   | `xhigh`                 | `max`                   |
 | ------------------- | ----------------------- | -------------------------- | ------------------------ | ----------------------- | ----------------------- |
+| `claude-opus-5`     | `claude-opus-5-low`     | `claude-opus-5-medium`     | `claude-opus-5-high`     | `claude-opus-5-xhigh`   | `claude-opus-5-max`     |
 | `claude-opus-4-8`   | `claude-opus-4-8-low`   | `claude-opus-4-8-medium`   | `claude-opus-4-8-high`   | `claude-opus-4-8-xhigh` | `claude-opus-4-8-max`   |
 | `claude-opus-4-7`   | `claude-opus-4-7-low`   | `claude-opus-4-7-medium`   | `claude-opus-4-7-high`   | `claude-opus-4-7-xhigh` | `claude-opus-4-7-max`   |
 | `claude-sonnet-5`   | `claude-sonnet-5-low`   | `claude-sonnet-5-medium`   | `claude-sonnet-5-high`   | `claude-sonnet-5-xhigh` | `claude-sonnet-5-max`   |
@@ -54,7 +54,7 @@ specifics differ from the Claude variants:
 Reference a variant id anywhere you'd normally reference a model:
 
 ```
-kiro-auth/claude-opus-4-8-xhigh
+kiro-auth/claude-opus-5-xhigh
 ```
 
 - In `opencode` TUI, pick it from the model picker like any other model.
@@ -71,11 +71,11 @@ the id itself.
 
 Both stay available side by side; picking one doesn't remove the other.
 
-- **Variant model id** (`claude-opus-4-8-xhigh`, etc.): explicit, per-request
+- **Variant model id** (`claude-opus-5-xhigh`, etc.): explicit, per-request
   effort. Whatever effort is baked into the id is what gets sent, every time,
   regardless of what's in `kiro.json`. Use this when you want a specific
   agent, session, or one-off request pinned to a known reasoning depth.
-- **Non-variant base model** (`claude-opus-4-8`, `claude-sonnet-4-6`, etc.):
+- **Non-variant base model** (`claude-opus-5`, `claude-sonnet-4-6`, etc.):
   uses the global `effort` key in `kiro.json` if set, or falls back to
   automatic budget-based mapping / `medium`, as described in
   [Reasoning effort](CONFIGURATION.md#reasoning-effort). Use this when one

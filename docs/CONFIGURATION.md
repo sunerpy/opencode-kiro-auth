@@ -235,14 +235,16 @@ trying to give different agents different reasoning depths.
 
 Effort only changes behavior on effort-capable models:
 
-- `claude-opus-4-5`, `claude-opus-4-6`, `claude-opus-4-6-1m`
+- `claude-opus-4-5`, `claude-opus-4-6`, `claude-opus-4-6-1m`,
+  `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`
 - `claude-sonnet-4-5`, `claude-sonnet-4-5-1m`, `claude-sonnet-4-6`,
-  `claude-sonnet-4-6-1m`
-- `claude-opus-4-7`, `claude-opus-4-8`
+  `claude-sonnet-4-6-1m`, `claude-sonnet-5`
+- `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
 
-`xhigh` is only honored on `claude-opus-4-7` and `claude-opus-4-8`; on every
-other effort-capable model it's clamped down to `max`. Any model outside
-this list (Haiku, the open-weight models, etc.) ignores `effort` entirely.
+`xhigh` is honored on `claude-opus-4-7`, `claude-opus-4-8`,
+`claude-opus-5`, `claude-sonnet-5`, and the GPT 5.6 family; on other
+effort-capable models it's clamped down to `max`. Any model outside this list
+(Haiku, the open-weight models, etc.) ignores `effort` entirely.
 
 ### `-thinking` model ids
 

@@ -7,7 +7,8 @@ index (`.codegraph/codegraph.db`); paths below are verified against on-disk sour
 
 `@sunerpy/opencode-kiro-auth` is an OpenCode plugin (TypeScript, runs on Bun)
 that lets OpenCode use AWS Kiro (CodeWhisperer) as a model provider — Claude
-Sonnet (including Sonnet 5)/Opus/Haiku, OpenAI GPT 5.6 (Sol/Terra/Luna), plus a
+Sonnet (including Sonnet 5)/Opus (including Opus 5)/Haiku, OpenAI GPT 5.6
+(Sol/Terra/Luna), plus a
 handful of open-weight models (DeepSeek, GLM, MiniMax, Qwen3) that Kiro
 proxies. The provider id it registers with OpenCode is
 `kiro-auth` (deliberately not `kiro` — see invariants). This is a fork of
@@ -152,7 +153,9 @@ and is the only class with direct access to the OpenCode `client` (used for
   `MODEL_MAPPING` (`src/constants.ts:52`) must be backed by an observed 200
   response from the real API before being added. Sonnet 5 is now probe-confirmed
   (wire id `claude-sonnet-5`, no dot suffix, HTTP 200 in us-east-1); its `.0` and
-  `-1m` variants returned 400 "Invalid model" and must NOT be added.
+  `-1m` variants returned 400 "Invalid model" and must NOT be added. Opus 5 is
+  also probe-confirmed (wire id `claude-opus-5`, HTTP 200 in us-east-1), including
+  all five effort levels: `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ## 5. Build / test / dev
 
