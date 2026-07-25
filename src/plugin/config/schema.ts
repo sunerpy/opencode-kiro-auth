@@ -108,20 +108,28 @@ export const KiroConfigSchema = z.object({
   max_request_iterations: z.number().min(5).max(1000).default(20),
 
   /**
-   * Opt into a fixed deadline while waiting for client.send() to return.
+   * Opt into a fixed deadline covering client.send() and the first stream event.
    * Disabled by default because a pending request is ambiguous: Kiro may
    * still be performing a valid long-running generation.
    */
   sdk_response_timeout_enabled: z.boolean().default(false),
 
   /**
-   * Maximum wait for client.send() to return the initial SDK response.
+   * Maximum wait for the initial SDK response and first stream event.
    * Only used when sdk_response_timeout_enabled is true.
    */
   sdk_response_timeout_ms: z.number().min(30000).max(600000).default(300000),
 
   /**
-   * Maximum inactivity while waiting for the next upstream stream event.
+   * Opt into a fixed inactivity deadline between upstream stream events.
+   * Disabled by default because a silent event gap is ambiguous: Kiro may
+   * still be performing a valid long-running generation.
+   */
+  stream_event_timeout_enabled: z.boolean().default(false),
+
+  /**
+   * Maximum inactivity between upstream stream events.
+   * Only used when stream_event_timeout_enabled is true.
    */
   request_timeout_ms: z.number().min(30000).max(600000).default(120000),
 
@@ -188,6 +196,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   max_request_iterations: 20,
   sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
+  stream_event_timeout_enabled: false,
   request_timeout_ms: 120000,
   token_expiry_buffer_ms: 300000,
   token_keepalive_enabled: false,
