@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.8](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.7...v0.13.8) (2026-07-25)
+
+
+### Bug Fixes
+
+* **streaming:** tolerate transport close after completion ([#61](https://github.com/sunerpy/opencode-kiro-auth/issues/61)) ([fcd69d1](https://github.com/sunerpy/opencode-kiro-auth/commit/fcd69d1f6643cfd2db49dfa1d7d1312b85092ec0))
+
 ## [0.13.7](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.6...v0.13.7) (2026-07-24)
 
 
