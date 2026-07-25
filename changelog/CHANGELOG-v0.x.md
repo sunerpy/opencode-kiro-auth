@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.14.0...v0.14.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **timeout:** exempt first stream event from idle deadline ([#65](https://github.com/sunerpy/opencode-kiro-auth/issues/65)) ([7de57d5](https://github.com/sunerpy/opencode-kiro-auth/commit/7de57d527fc5295af656a48843646b9c4348f0b7))
+
 ## [0.14.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.8...v0.14.0) (2026-07-25)
 
 
