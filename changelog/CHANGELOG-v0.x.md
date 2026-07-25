@@ -5,7 +5,6 @@
 
 ### Features
 
-* **models:** add Claude Opus 5 support ([ef0deaf](https://github.com/sunerpy/opencode-kiro-auth/commit/ef0deaf6002dc0d5fc1ef4ccce62a919ad53d036))
 * **models:** add Claude Opus 5 support ([ee30e20](https://github.com/sunerpy/opencode-kiro-auth/commit/ee30e2075c55a645648ce818ebc8fbddbe88fc61))
 
 ## [0.13.8](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.7...v0.13.8) (2026-07-25)
