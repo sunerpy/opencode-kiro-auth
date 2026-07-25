@@ -48,6 +48,9 @@ describe('config hook', () => {
     expect(models['claude-sonnet-4-5']).toBeDefined()
     expect(models['claude-opus-4-8']).toBeDefined()
     expect(models['claude-opus-4-8-xhigh']).toBeDefined()
+    expect(models['claude-opus-5']).toBeDefined()
+    expect(models['claude-opus-5-xhigh']).toBeDefined()
+    expect(models['claude-opus-5-max']).toBeDefined()
     expect(models['claude-sonnet-5-max']).toBeDefined()
     expect(models['deepseek-3.2']).toBeDefined()
     expect(models['glm-5']).toBeDefined()
@@ -62,6 +65,11 @@ describe('config hook', () => {
     expect(sonnet.name).toBe('Claude Sonnet 4.5 (1.3x)')
     expect(sonnet.limit).toEqual({ context: 200000, output: 64000 })
     expect(sonnet.modalities).toEqual({ input: ['text', 'image', 'pdf'], output: ['text'] })
+
+    const opus5 = input.provider[PROVIDER_ID].models['claude-opus-5']
+    expect(opus5.name).toBe('Claude Opus 5 (2.2x)')
+    expect(opus5.limit).toEqual({ context: 1000000, output: 64000 })
+    expect(opus5.modalities).toEqual({ input: ['text', 'image', 'pdf'], output: ['text'] })
   })
 
   test('does not overwrite a user-defined api or models block', async () => {

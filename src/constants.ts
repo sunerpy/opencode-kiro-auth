@@ -77,6 +77,9 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-opus-4-7-thinking': 'claude-opus-4.7',
   'claude-opus-4-8': 'claude-opus-4.8',
   'claude-opus-4-8-thinking': 'claude-opus-4.8',
+  // Wire id has no dot suffix (probe-confirmed against the live API).
+  'claude-opus-5': 'claude-opus-5',
+  'claude-opus-5-thinking': 'claude-opus-5',
   // Auto
   auto: 'auto',
   // Open weight models
@@ -126,6 +129,7 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   'claude-opus-4-6-1m': 1000000,
   'claude-opus-4-7': 1000000,
   'claude-opus-4-8': 1000000,
+  'claude-opus-5': 1000000,
   'deepseek-3.2': 128000,
   'glm-5': 200000,
   'minimax-m2.5': 200000,

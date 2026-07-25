@@ -59,6 +59,12 @@ describe('resolveKiroModel', () => {
     expect(resolveKiroModel('claude-opus-4-8-thinking')).toBe(resolveKiroModel('claude-opus-4-8'))
   })
 
+  test('resolves probe-confirmed Opus 5 to wire id claude-opus-5 (no dot suffix)', () => {
+    expect(resolveKiroModel('claude-opus-5')).toBe('claude-opus-5')
+    expect(resolveKiroModel('claude-opus-5-thinking')).toBe('claude-opus-5')
+    expect(resolveKiroModel('claude-opus-5-thinking')).toBe(resolveKiroModel('claude-opus-5'))
+  })
+
   test('rejects an unconfirmed Opus slug (claude-opus-9)', () => {
     expect(() => resolveKiroModel('claude-opus-9')).toThrow('Unsupported model')
   })

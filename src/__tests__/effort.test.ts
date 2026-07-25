@@ -10,6 +10,7 @@ import {
 describe('effort module', () => {
   describe('supportsEffort', () => {
     test('returns true for supported models', () => {
+      expect(supportsEffort('claude-opus-5')).toBe(true)
       expect(supportsEffort('claude-opus-4.8')).toBe(true)
       expect(supportsEffort('claude-opus-4.7')).toBe(true)
       expect(supportsEffort('claude-sonnet-4.6')).toBe(true)
@@ -23,7 +24,8 @@ describe('effort module', () => {
   })
 
   describe('supportsXHighEffort', () => {
-    test('returns true for opus 4.7 and 4.8', () => {
+    test('returns true for opus 5, 4.7, and 4.8', () => {
+      expect(supportsXHighEffort('claude-opus-5')).toBe(true)
       expect(supportsXHighEffort('claude-opus-4.8')).toBe(true)
       expect(supportsXHighEffort('claude-opus-4.7')).toBe(true)
     })

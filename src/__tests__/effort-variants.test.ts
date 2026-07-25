@@ -31,6 +31,15 @@ describe('resolveModelVariant', () => {
       })
     })
 
+    test('all claude-opus-5 effort variants resolve to the probe-confirmed wire id', () => {
+      for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+        expect(resolveModelVariant(`claude-opus-5-${effort}`)).toEqual({
+          wireId: 'claude-opus-5',
+          effort
+        })
+      }
+    })
+
     test('claude-sonnet-4-6-max -> {wireId: claude-sonnet-4.6, effort: max}', () => {
       expect(resolveModelVariant('claude-sonnet-4-6-max')).toEqual({
         wireId: 'claude-sonnet-4.6',
@@ -109,6 +118,13 @@ describe('resolveModelVariant', () => {
 })
 
 describe('effort capability', () => {
+  test('claude-opus-5 supports effort and xhigh', () => {
+    expect(supportsEffort('claude-opus-5')).toBe(true)
+    expect(supportsXHighEffort('claude-opus-5')).toBe(true)
+    expect(resolveEffort('claude-opus-5', 'xhigh')).toBe('xhigh')
+    expect(resolveEffort('claude-opus-5', 'max')).toBe('max')
+  })
+
   test('claude-sonnet-5 supports effort and xhigh', () => {
     expect(supportsEffort('claude-sonnet-5')).toBe(true)
     expect(supportsXHighEffort('claude-sonnet-5')).toBe(true)
@@ -137,6 +153,13 @@ describe('effort capability', () => {
 })
 
 describe('transformToSdkRequest — end-to-end effort selection', () => {
+  test('variant claude-opus-5-xhigh -> effort xhigh, wire id claude-opus-5', () => {
+    const req = transformToSdkRequest(minimalBody, 'claude-opus-5-xhigh', fakeAuth)
+    expect(req.effort).toBe('xhigh')
+    expect(req.effectiveModel).toBe('claude-opus-5')
+    expect(req.conversationState.currentMessage.userInputMessage?.modelId).toBe('claude-opus-5')
+  })
+
   test('variant claude-opus-4-8-xhigh -> effort xhigh, wire id claude-opus-4.8', () => {
     const req = transformToSdkRequest(minimalBody, 'claude-opus-4-8-xhigh', fakeAuth)
     expect(req.effort).toBe('xhigh')
@@ -217,7 +240,12 @@ describe('buildEffortRequestFields — per-model wire shape dispatch', () => {
   })
 
   test('Claude models use output_config.effort', () => {
-    for (const wire of ['claude-opus-4.8', 'claude-sonnet-5', 'claude-sonnet-4.6']) {
+    for (const wire of [
+      'claude-opus-5',
+      'claude-opus-4.8',
+      'claude-sonnet-5',
+      'claude-sonnet-4.6'
+    ]) {
       expect(buildEffortRequestFields(wire, 'high')).toEqual({ output_config: { effort: 'high' } })
     }
   })
