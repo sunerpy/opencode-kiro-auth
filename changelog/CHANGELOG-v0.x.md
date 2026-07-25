@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.14.1...v0.14.2) (2026-07-25)
+
+
+### Bug Fixes
+
+* **timeout:** make stream inactivity deadline opt-in ([#67](https://github.com/sunerpy/opencode-kiro-auth/issues/67)) ([52f4c8e](https://github.com/sunerpy/opencode-kiro-auth/commit/52f4c8eec445e35c02e97b2a796eeaa701397759))
+
 ## [0.14.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.14.0...v0.14.1) (2026-07-25)
 
 
