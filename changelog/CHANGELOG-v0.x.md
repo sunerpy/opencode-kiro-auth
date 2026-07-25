@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.8...v0.14.0) (2026-07-25)
+
+
+### Features
+
+* **models:** add Claude Opus 5 support ([ee30e20](https://github.com/sunerpy/opencode-kiro-auth/commit/ee30e2075c55a645648ce818ebc8fbddbe88fc61))
+
 ## [0.13.8](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.13.7...v0.13.8) (2026-07-25)
 
 
