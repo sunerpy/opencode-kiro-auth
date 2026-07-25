@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.14.2...v0.15.0) (2026-07-25)
+
+
+### Features
+
+* **auth:** show plugin version in login menu ([#69](https://github.com/sunerpy/opencode-kiro-auth/issues/69)) ([76d0dde](https://github.com/sunerpy/opencode-kiro-auth/commit/76d0dde0717d8dc3be74a62f51f13377739b754c))
+
 ## [0.14.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.14.1...v0.14.2) (2026-07-25)
 
 
