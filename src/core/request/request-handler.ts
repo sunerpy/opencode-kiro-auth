@@ -277,8 +277,9 @@ export class RequestHandler {
           }
           try {
             sdkResponse = await client.send(command, { abortSignal: signal })
-          } finally {
+          } catch (error) {
             endUpstreamWait()
+            throw error
           }
           sendResolved = true
 
@@ -293,12 +294,18 @@ export class RequestHandler {
             sdkPrep.streaming,
             {
               signal,
-              onUpstreamWaitStart: () =>
+              onUpstreamWaitStart: ({ eventIndex }) => {
+                if (eventIndex === 0) {
+                  if (!this.config.sdk_response_timeout_enabled) endUpstreamWait()
+                  return
+                }
                 beginUpstreamWait('stream event', this.config.request_timeout_ms, {
                   model,
                   effectiveModel: sdkPrep.effectiveModel,
-                  region: sdkPrep.region
-                }),
+                  region: sdkPrep.region,
+                  eventIndex
+                })
+              },
               onUpstreamWaitEnd: endUpstreamWait,
               onIterationError: (error, afterCompletionMetadata) =>
                 logger.warn('Kiro SDK event stream iteration failed', {
