@@ -3,6 +3,7 @@ import type { AccountRepository } from '../../infrastructure/database/account-re
 import { RegionSchema } from '../../plugin/config/schema.js'
 import { isRefreshTokenDead } from '../../plugin/health.js'
 import * as logger from '../../plugin/logger.js'
+import { PLUGIN_VERSION } from '../../version.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
 import { isInteractiveTty, ttyConfirm, ttySelect } from './tty-menu.js'
 
@@ -101,7 +102,7 @@ export class AuthHandler {
 
     const currentAccounts: any[] = this.accountManager.getAccounts?.() ?? []
     const usageSummary = this.buildUsageSummary(currentAccounts)
-    const firstLabelBase = 'Add account · AWS Builder ID / IAM Identity Center'
+    const firstLabelBase = `Add account · AWS Builder ID / IAM Identity Center · plugin v${PLUGIN_VERSION}`
     const firstLabel = usageSummary ? `${firstLabelBase}  ${usageSummary}` : firstLabelBase
 
     const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)

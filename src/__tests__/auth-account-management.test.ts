@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { AuthHandler } from '../core/auth/auth-handler.js'
+import { PLUGIN_VERSION } from '../version.js'
 
 type FakeAccount = {
   id: string
@@ -41,6 +42,7 @@ describe('auth account management', () => {
     const methods = handler.getMethods()
     const first = methods[0]!
     expect(first.label).toContain('Add account')
+    expect(first.label).toContain(`plugin v${PLUGIN_VERSION}`)
     expect(first.label).toContain('a@b.com')
     expect(first.label).toContain('929/10000')
     expect(first.label).toContain('9%')
