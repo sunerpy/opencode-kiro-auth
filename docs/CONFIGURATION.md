@@ -23,6 +23,7 @@ root [README](../README.md#configuration) for the short version.
   "max_request_iterations": 20,
   "sdk_response_timeout_enabled": false,
   "sdk_response_timeout_ms": 300000,
+  "stream_event_timeout_enabled": false,
   "request_timeout_ms": 120000,
   "token_expiry_buffer_ms": 300000,
   "token_keepalive_enabled": false,
@@ -100,12 +101,16 @@ because moving a live database during an upgrade is unsafe.
 - `sdk_response_timeout_ms`: Fixed SDK response deadline when
   `sdk_response_timeout_enabled` is `true` (30000-600000ms, default: `300000`).
   Override with `KIRO_SDK_RESPONSE_TIMEOUT_MS`.
-- `request_timeout_ms`: Maximum inactivity between upstream stream events
-  (30000-600000ms, default: `120000`). It starts only after the first raw event;
-  waiting for that first event follows `sdk_response_timeout_enabled`. The timer
-  is paused after an event arrives and while the downstream consumer is not
-  pulling, so active reasoning streams and slow consumers may outlive this
-  interval. Override with `KIRO_REQUEST_TIMEOUT_MS`.
+- `stream_event_timeout_enabled`: Opt into a fixed inactivity deadline between
+  upstream stream events (default: `false`). It is disabled because high-effort
+  models can legitimately compute for several minutes between events, so event
+  silence alone cannot distinguish generation from a stalled connection.
+  Caller cancellation and SDK transport errors remain active. Override with
+  `KIRO_STREAM_EVENT_TIMEOUT_ENABLED`.
+- `request_timeout_ms`: Stream-event inactivity deadline when
+  `stream_event_timeout_enabled` is `true` (30000-600000ms, default: `120000`).
+  It starts only after the first raw event and is paused while the downstream
+  consumer is not pulling. Override with `KIRO_REQUEST_TIMEOUT_MS`.
 - `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms, default:
   `300000`). An access token within this window of expiry is treated as expired
   and refreshed on next use.

@@ -22,6 +22,7 @@ const KIRO_ENV_KEYS = [
   'KIRO_RATE_LIMIT_MAX_RETRIES',
   'KIRO_MAX_REQUEST_ITERATIONS',
   'KIRO_REQUEST_TIMEOUT_MS',
+  'KIRO_STREAM_EVENT_TIMEOUT_ENABLED',
   'KIRO_SDK_RESPONSE_TIMEOUT_ENABLED',
   'KIRO_SDK_RESPONSE_TIMEOUT_MS',
   'KIRO_TOKEN_EXPIRY_BUFFER_MS',
@@ -89,6 +90,7 @@ describe('loadConfig defaults', () => {
     expect(cfg.rate_limit_max_retries).toBe(3)
     expect(cfg.max_request_iterations).toBe(20)
     expect(cfg.request_timeout_ms).toBe(120000)
+    expect(cfg.stream_event_timeout_enabled).toBe(false)
     expect(cfg.sdk_response_timeout_enabled).toBe(false)
     expect(cfg.sdk_response_timeout_ms).toBe(300000)
     expect(cfg.token_expiry_buffer_ms).toBe(300000)
@@ -135,6 +137,11 @@ describe('loadConfig env overrides', () => {
   test('KIRO_SDK_RESPONSE_TIMEOUT_ENABLED opts into a finite SDK response wait', () => {
     process.env.KIRO_SDK_RESPONSE_TIMEOUT_ENABLED = 'true'
     expect(loadConfig(projectDir).sdk_response_timeout_enabled).toBe(true)
+  })
+
+  test('KIRO_STREAM_EVENT_TIMEOUT_ENABLED opts into a finite stream inactivity wait', () => {
+    process.env.KIRO_STREAM_EVENT_TIMEOUT_ENABLED = 'true'
+    expect(loadConfig(projectDir).stream_event_timeout_enabled).toBe(true)
   })
 
   test('number env overrides parse numerically', () => {

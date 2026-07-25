@@ -53,6 +53,7 @@ function cannedPrep(streaming = false): SdkPreparedRequest {
 const baseConfig = {
   max_request_iterations: 20,
   request_timeout_ms: 60000,
+  stream_event_timeout_enabled: false,
   sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
   rate_limit_max_retries: 3,
@@ -93,6 +94,7 @@ function buildHandler(opts: {
   useRealResponseHandler?: boolean
   alternativeAccount?: ManagedAccount | null
   requestTimeoutMs?: number
+  streamEventTimeoutEnabled?: boolean
   sdkResponseTimeoutEnabled?: boolean
   sdkResponseTimeoutMs?: number
 }): { handler: RequestHandler; fakes: Fakes } {
@@ -162,6 +164,8 @@ function buildHandler(opts: {
     {
       ...baseConfig,
       request_timeout_ms: opts.requestTimeoutMs ?? baseConfig.request_timeout_ms,
+      stream_event_timeout_enabled:
+        opts.streamEventTimeoutEnabled ?? baseConfig.stream_event_timeout_enabled,
       sdk_response_timeout_enabled:
         opts.sdkResponseTimeoutEnabled ?? baseConfig.sdk_response_timeout_enabled,
       sdk_response_timeout_ms: opts.sdkResponseTimeoutMs ?? baseConfig.sdk_response_timeout_ms
@@ -882,7 +886,7 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     expect(body).toContain('final answer')
   })
 
-  test('an idle thinking stream still times out after the configured inactivity window', async () => {
+  test('a silent thinking stream stays caller-cancellable when event timeout is disabled', async () => {
     const acc = makeAccount({ id: 'A' })
     let returnCalls = 0
     let yielded = false
@@ -914,6 +918,60 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
       streaming: true,
       useRealResponseHandler: true,
       requestTimeoutMs: 20
+    })
+    const controller = new AbortController()
+    const response = await handler.handle(
+      KIRO_URL,
+      { body: JSON.stringify({}), signal: controller.signal },
+      noToast
+    )
+    const reader = response.body!.getReader()
+
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('first thought')
+    const pendingRead = reader.read()
+    await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    controller.abort(new DOMException('cancelled by caller', 'AbortError'))
+
+    await expect(pendingRead).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'cancelled by caller'
+    })
+    expect(returnCalls).toBeGreaterThanOrEqual(1)
+  })
+
+  test('an opted-in idle thinking stream times out after the inactivity window', async () => {
+    const acc = makeAccount({ id: 'A' })
+    let returnCalls = 0
+    let yielded = false
+    const sdkResponse = {
+      generateAssistantResponseResponse: {
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<unknown>> {
+              if (!yielded) {
+                yielded = true
+                return {
+                  done: false,
+                  value: { reasoningContentEvent: { text: 'first thought' } }
+                }
+              }
+              return new Promise<IteratorResult<unknown>>(() => {})
+            },
+            async return(): Promise<IteratorResult<unknown>> {
+              returnCalls++
+              return { done: true, value: undefined }
+            }
+          }
+        }
+      }
+    }
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkResponse],
+      streaming: true,
+      useRealResponseHandler: true,
+      requestTimeoutMs: 20,
+      streamEventTimeoutEnabled: true
     })
 
     const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)

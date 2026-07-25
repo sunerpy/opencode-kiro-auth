@@ -299,6 +299,7 @@ export class RequestHandler {
                   if (!this.config.sdk_response_timeout_enabled) endUpstreamWait()
                   return
                 }
+                if (!this.config.stream_event_timeout_enabled) return
                 beginUpstreamWait('stream event', this.config.request_timeout_ms, {
                   model,
                   effectiveModel: sdkPrep.effectiveModel,
