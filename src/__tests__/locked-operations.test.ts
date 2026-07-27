@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import lockfile from 'proper-lockfile'
 import {
   createDeterministicId,
   deduplicateAccounts,
@@ -69,6 +70,17 @@ function removeRefreshLock(accountId: string): void {
   rmSync(getRefreshLockPath(accountId), { force: true })
 }
 
+function lockStatEnoent(lockPath: string): NodeJS.ErrnoException {
+  return Object.assign(
+    new Error(`ENOENT: no such file or directory, statx '${lockPath}'`) as NodeJS.ErrnoException,
+    {
+      code: 'ENOENT',
+      syscall: 'statx',
+      path: lockPath
+    }
+  )
+}
+
 function onlyMergedAccount(accounts: ManagedAccount[]): ManagedAccount {
   const merged = accounts[0]
   if (!merged) {
@@ -96,6 +108,76 @@ function expectWholeTokenTripleFromOneInput(
 }
 
 describe('withDatabaseLock', () => {
+  test('retries a transient lock-directory ENOENT, then runs and releases exactly once', async () => {
+    const path = tempDbPath()
+    let lockAttempts = 0
+    let callbackCalls = 0
+    let releaseCalls = 0
+    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath) => {
+      lockAttempts++
+      if (lockAttempts === 1) {
+        throw lockStatEnoent(`${lockPath}.lock`)
+      }
+      return async () => {
+        releaseCalls++
+      }
+    })
+
+    try {
+      const result = await withDatabaseLock(path, async () => {
+        callbackCalls++
+        return 'ok'
+      })
+
+      expect(result).toBe('ok')
+      expect(lockAttempts).toBe(2)
+      expect(callbackCalls).toBe(1)
+      expect(releaseCalls).toBe(1)
+    } finally {
+      lockSpy.mockRestore()
+    }
+  })
+
+  test('stops retrying a persistent lock-directory ENOENT when the deadline expires', async () => {
+    const path = tempDbPath()
+    const error = lockStatEnoent(`${path}.lock`)
+    let lockAttempts = 0
+    let callbackCalls = 0
+    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async () => {
+      lockAttempts++
+      throw error
+    })
+    const nowValues = [0, 9999, 10000]
+    const nowSpy = spyOn(Date, 'now').mockImplementation(() => nowValues.shift() ?? 10000)
+
+    try {
+      await expect(
+        withDatabaseLock(path, async () => {
+          callbackCalls++
+        })
+      ).rejects.toBe(error)
+      expect(lockAttempts).toBe(2)
+      expect(callbackCalls).toBe(0)
+    } finally {
+      nowSpy.mockRestore()
+      lockSpy.mockRestore()
+    }
+  })
+
+  test('does not retry an ENOENT thrown by the business callback', async () => {
+    const path = tempDbPath()
+    const error = lockStatEnoent('/missing/business-input')
+    let callbackCalls = 0
+
+    await expect(
+      withDatabaseLock(path, async () => {
+        callbackCalls++
+        throw error
+      })
+    ).rejects.toBe(error)
+    expect(callbackCalls).toBe(1)
+  })
+
   test('creates the db file if missing, then runs the callback and returns its value', async () => {
     const path = tempDbPath()
     expect(existsSync(path)).toBe(false)
@@ -182,6 +264,36 @@ describe('withDatabaseLock', () => {
 })
 
 describe('withDatabaseLockSync', () => {
+  test('retries a transient lock-directory ENOENT, then runs and releases exactly once', () => {
+    const path = tempDbPath()
+    let lockAttempts = 0
+    let callbackCalls = 0
+    let releaseCalls = 0
+    const lockSpy = spyOn(lockfile, 'lockSync').mockImplementation((lockPath) => {
+      lockAttempts++
+      if (lockAttempts === 1) {
+        throw lockStatEnoent(`${lockPath}.lock`)
+      }
+      return () => {
+        releaseCalls++
+      }
+    })
+
+    try {
+      const result = withDatabaseLockSync(path, () => {
+        callbackCalls++
+        return 'ok'
+      })
+
+      expect(result).toBe('ok')
+      expect(lockAttempts).toBe(2)
+      expect(callbackCalls).toBe(1)
+      expect(releaseCalls).toBe(1)
+    } finally {
+      lockSpy.mockRestore()
+    }
+  })
+
   test('creates the db file if missing, runs the callback, and returns its value', () => {
     const path = tempDbPath()
     expect(existsSync(path)).toBe(false)
@@ -214,6 +326,38 @@ describe('withDatabaseLockSync', () => {
 })
 
 describe('withRefreshLock', () => {
+  test('retries a transient lock-directory ENOENT, then runs and releases exactly once', async () => {
+    const accountId = 'refresh-enoent-retry'
+    removeRefreshLock(accountId)
+    let lockAttempts = 0
+    let callbackCalls = 0
+    let releaseCalls = 0
+    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath) => {
+      lockAttempts++
+      if (lockAttempts === 1) {
+        throw lockStatEnoent(`${lockPath}.lock`)
+      }
+      return async () => {
+        releaseCalls++
+      }
+    })
+
+    try {
+      const result = await withRefreshLock(accountId, async () => {
+        callbackCalls++
+        return 'ok'
+      })
+
+      expect(result).toBe('ok')
+      expect(lockAttempts).toBe(2)
+      expect(callbackCalls).toBe(1)
+      expect(releaseCalls).toBe(1)
+    } finally {
+      lockSpy.mockRestore()
+      removeRefreshLock(accountId)
+    }
+  })
+
   test('waits through sustained contention until the refresh lock is released within the deadline', async () => {
     const accountId = 'refresh-sustained-contention'
     removeRefreshLock(accountId)

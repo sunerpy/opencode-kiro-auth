@@ -41,8 +41,14 @@ function blockingBackoff(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-function isLockContention(e: unknown): boolean {
-  return typeof e === 'object' && e !== null && 'code' in e && e.code === 'ELOCKED'
+function isRetryableLockAcquisitionError(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null || !('code' in e)) return false
+
+  // proper-lockfile may surface ENOENT from mtimePrecision.probe() when another
+  // process removes the newly-created lock directory during stale takeover.
+  // Keep this scoped to the bounded lock-acquisition loops below so unrelated
+  // filesystem ENOENT errors still propagate immediately.
+  return e.code === 'ELOCKED' || e.code === 'ENOENT'
 }
 
 function asyncBackoff(
@@ -68,7 +74,7 @@ async function acquireDatabaseLock(dbPath: string): Promise<LockRelease> {
       return await lockfile.lock(dbPath, DATABASE_LOCK_OPTIONS)
     } catch (e) {
       const remainingMs = deadline - Date.now()
-      if (!isLockContention(e) || remainingMs <= 0) throw e
+      if (!isRetryableLockAcquisitionError(e) || remainingMs <= 0) throw e
       await asyncBackoff(
         attempt++,
         remainingMs,
@@ -90,7 +96,7 @@ async function acquireRefreshLock(lockPath: string): Promise<LockRelease> {
       return await lockfile.lock(lockPath, REFRESH_LOCK_OPTIONS)
     } catch (e) {
       const remainingMs = deadline - Date.now()
-      if (!isLockContention(e) || remainingMs <= 0) throw e
+      if (!isRetryableLockAcquisitionError(e) || remainingMs <= 0) throw e
       await asyncBackoff(
         attempt++,
         remainingMs,
@@ -117,7 +123,7 @@ export function withDatabaseLockSync<T>(dbPath: string, fn: () => T): T {
       release = lockfile.lockSync(dbPath, SYNC_LOCK_OPTIONS)
       break
     } catch (e) {
-      if (!isLockContention(e) || Date.now() >= deadline) throw e
+      if (!isRetryableLockAcquisitionError(e) || Date.now() >= deadline) throw e
       blockingBackoff(Math.min(100 * 2 ** attempt++, 500))
     }
   }
