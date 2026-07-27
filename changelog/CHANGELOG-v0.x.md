@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.1...v0.15.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* **storage:** 消除多进程数据库锁竞争并保证 token 落盘 ([#73](https://github.com/sunerpy/opencode-kiro-auth/issues/73)) ([e364091](https://github.com/sunerpy/opencode-kiro-auth/commit/e364091c98f8494f996f90c54f1dc3d857f4e994))
+
 ## [0.15.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.0...v0.15.1) (2026-07-27)
 
 
