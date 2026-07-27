@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.0...v0.15.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **storage:** 修复刷新锁固定重试导致的饥饿 ([#71](https://github.com/sunerpy/opencode-kiro-auth/issues/71)) ([ec05535](https://github.com/sunerpy/opencode-kiro-auth/commit/ec055358d7e8269a61a0dfd3f450cbdb7ed0d4ee))
+
 ## [0.15.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.14.2...v0.15.0) (2026-07-25)
 
 
