@@ -19,14 +19,12 @@ const DATABASE_LOCK_MAX_BACKOFF_MS = 250
 
 const REFRESH_LOCK_OPTIONS = {
   stale: 15000,
-  retries: {
-    retries: 10,
-    minTimeout: 100,
-    maxTimeout: 1000,
-    factor: 2
-  },
+  retries: 0,
   realpath: false
 }
+const REFRESH_LOCK_DEADLINE_MS = 15000
+const REFRESH_LOCK_MIN_BACKOFF_MS = 25
+const REFRESH_LOCK_MAX_BACKOFF_MS = 250
 
 const KEEP_ALIVE_LOCK_OPTIONS = {
   stale: 120000,
@@ -47,12 +45,13 @@ function isLockContention(e: unknown): boolean {
   return typeof e === 'object' && e !== null && 'code' in e && e.code === 'ELOCKED'
 }
 
-function asyncBackoff(attempt: number, remainingMs: number): Promise<void> {
-  const ceiling = Math.min(
-    DATABASE_LOCK_MIN_BACKOFF_MS * 2 ** Math.min(attempt, 4),
-    DATABASE_LOCK_MAX_BACKOFF_MS,
-    remainingMs
-  )
+function asyncBackoff(
+  attempt: number,
+  remainingMs: number,
+  minBackoffMs: number,
+  maxBackoffMs: number
+): Promise<void> {
+  const ceiling = Math.min(minBackoffMs * 2 ** Math.min(attempt, 4), maxBackoffMs, remainingMs)
   const floor = Math.max(1, Math.floor(ceiling / 2))
   const delay = floor + Math.floor(Math.random() * (ceiling - floor + 1))
   return new Promise((resolve) => setTimeout(resolve, delay))
@@ -70,7 +69,34 @@ async function acquireDatabaseLock(dbPath: string): Promise<LockRelease> {
     } catch (e) {
       const remainingMs = deadline - Date.now()
       if (!isLockContention(e) || remainingMs <= 0) throw e
-      await asyncBackoff(attempt++, remainingMs)
+      await asyncBackoff(
+        attempt++,
+        remainingMs,
+        DATABASE_LOCK_MIN_BACKOFF_MS,
+        DATABASE_LOCK_MAX_BACKOFF_MS
+      )
+    }
+  }
+}
+
+async function acquireRefreshLock(lockPath: string): Promise<LockRelease> {
+  // A deadline avoids fixed retry-count starvation; jitter keeps contenders
+  // from repeatedly attempting the atomic mkdir in lockstep.
+  const deadline = Date.now() + REFRESH_LOCK_DEADLINE_MS
+  let attempt = 0
+
+  for (;;) {
+    try {
+      return await lockfile.lock(lockPath, REFRESH_LOCK_OPTIONS)
+    } catch (e) {
+      const remainingMs = deadline - Date.now()
+      if (!isLockContention(e) || remainingMs <= 0) throw e
+      await asyncBackoff(
+        attempt++,
+        remainingMs,
+        REFRESH_LOCK_MIN_BACKOFF_MS,
+        REFRESH_LOCK_MAX_BACKOFF_MS
+      )
     }
   }
 }
@@ -138,7 +164,7 @@ export async function withRefreshLock<T>(accountId: string, fn: () => Promise<T>
 
   let release: (() => Promise<void>) | null = null
   try {
-    release = await lockfile.lock(lockPath, REFRESH_LOCK_OPTIONS)
+    release = await acquireRefreshLock(lockPath)
     return await fn()
   } finally {
     if (release) {
