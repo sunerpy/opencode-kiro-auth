@@ -110,6 +110,55 @@ A per-account **attempt epoch** plus `UsageTracker.syncUsage(..., isValid)`
 prevents a stale (superseded) stream from committing success or usage over a
 newer failure.
 
+**Storage concurrency.** Several OpenCode processes share one `kiro.db`, so every
+write path has to assume contention. Runtime writes do NOT take a global file
+lock: each of `KiroDatabase`'s write methods runs its read-modify-write inside a
+`BEGIN IMMEDIATE` transaction (`withImmediateTransaction`,
+`src/plugin/storage/sqlite.ts:64`), which gives `mergeAccounts` a consistent read
+for conflict resolution. Single-statement writes go through the same path,
+because autocommit atomicity does not imply the write eventually lands.
+
+Acquisition is asynchronous by design. Before `BEGIN IMMEDIATE` the transaction
+helper sets `busy_timeout = 0` so `SQLITE_BUSY` returns immediately, then backs
+off via `setTimeout` and retries until the `WRITE_LOCK_DEADLINE_MS` (30s)
+deadline (`sqlite.ts:11`), after which it throws `KIRO_DB_WRITE_LOCK_TIMEOUT`
+(`sqlite.ts:17`) with the original error as `cause` — distinguishable from
+corruption or permission failures.
+
+`proper-lockfile` survives in exactly three narrower scopes
+(`src/plugin/storage/locked-operations.ts`): `withDatabaseLockSync` (:79) around
+schema init and `runMigrations`, since migrations open their own transactions and
+an outer wrapper would nest `BEGIN`; `withRefreshLock` (:111) per account,
+because a rotated refresh token is single-use; and
+`tryAcquireKeepAliveLock`/`withKeepAliveLock` (:134, :149) for non-blocking
+leader election. Lock-acquisition `ENOENT` is treated as a retryable race, not a
+hard failure — `proper-lockfile`'s `mtimePrecision.probe()` surfaces it when
+another process removes the lock file concurrently
+(`locked-operations.ts:38`).
+
+Migrations are marker-gated. `runMigrations` (`migrations.ts:61`) runs
+`migratePluginMetaTable` (:288) first so the marker table exists, then
+`migrateToUniqueRefreshToken` (:73) returns early when
+`refresh_token_dedup_migration_version` is already present in `plugin_meta`
+(`hasRefreshTokenDedupMarker`, :52). The marker is written in the same
+`BEGIN IMMEDIATE` transaction as the dedup work, so a crash rolls back both. The
+other startup migrations probe before writing, and
+`beginImmediateWithRetry` (:31) throws `KIRO_DB_MIGRATION_LOCK_TIMEOUT`
+(:13) once its bounded retry budget is exhausted. On an already-migrated
+database, five consecutive opens leave `PRAGMA data_version` unchanged (zero
+writes); six concurrent processes reach steady-state startup in ~4.5ms average.
+
+**Token persistence ordering.** A rotated token is published to
+`AccountManager`'s in-memory state only after it has been persisted
+(`TokenRefresher.runLockedRefresh`, `src/core/auth/token-refresher.ts:174`). An
+unpersisted candidate is held in `pendingPersistence` (:92) and later attempts
+retry the write only — they do not call AWS again, since the refresh token was
+already consumed. A persistence failure raises `TokenPersistenceError` and is
+never treated as invalid credentials: `refreshIfNeeded` (:110) still does not
+throw and returns `shouldContinue: true` so the main loop backs off and retries,
+`forceRefresh` (:127) still never throws and returns `{ok: false, dead: false}`,
+and a keep-alive failure on one account does not abort the scan.
+
 `RequestHandler` (`src/core/request/request-handler.ts:23`) owns and wires up
 `AccountSelector`, `TokenRefresher`, `ErrorHandler`, `ResponseHandler`, and
 `UsageTracker`/`RetryStrategy`; it is constructed once in `src/plugin.ts:79`
@@ -124,13 +173,13 @@ and is the only class with direct access to the OpenCode `client` (used for
 | `src/core/request/` | `RequestHandler` (main loop + stream-iteration retry), `ErrorHandler` (HTTP status handling incl. 402/403/429), `ResponseHandler` (SDK/stream -> OpenAI response), `RetryStrategy`, `stream-error.ts` (`SdkEventStreamIterationError` / `UpstreamUnexpectedError`). |
 | `src/core/account/` | `AccountSelector` (sticky/round-robin/lowest-usage), `UsageTracker`. |
 | `src/plugin/config/` | Zod schema + `loadConfig`/`loader.ts` (user + project `kiro.json` merge). |
-| `src/plugin/storage/` | `sqlite.ts` (`KiroDatabase`, `DB_PATH` = `kiro.db`), `migrations.ts`, `locked-operations.ts` (cross-process file locking via `proper-lockfile`). |
+| `src/plugin/storage/` | `sqlite.ts` (`KiroDatabase`, `DB_PATH` = `kiro.db`, `withImmediateTransaction`), `migrations.ts` (schema migrations + `plugin_meta` markers), `locked-operations.ts` (`mergeAccounts`/`deduplicateAccounts` plus the three remaining `proper-lockfile` scopes: schema init, per-account refresh, keep-alive leader election). |
 | `src/plugin/streaming/` | Stream transformers: raw Kiro event stream and SDK event stream -> OpenAI SSE chunks. |
 | `src/plugin/sync/` | `syncFromKiroCli` — imports credentials/profile from the external `kiro-cli`'s own `data.sqlite3`. |
 | `src/kiro/` | `auth.ts` (token decode/expiry helpers), `oauth-idc.ts` (IDC OAuth device flow, `authorizeKiroIDC`). |
 | `src/infrastructure/database/` | `AccountRepository`, `AccountCache` — persistence layer in front of `KiroDatabase`. |
 | `src/infrastructure/transformers/` | Message/history/tool-call transformers between OpenAI-shaped input and CodeWhisperer's `conversationState` shape. |
-| `src/__tests__/` | `bun:test` suite (69 test files) — includes a dedicated `provider-id-collision.test.ts`. |
+| `src/__tests__/` | `bun:test` suite (72 test files) — includes `provider-id-collision.test.ts`, `sqlite-concurrency.test.ts`, and `sqlite-multiprocess-stress.test.ts`. |
 | `src/plugin.ts`, `src/index.ts`, `index.ts` (root) | Plugin composition root and public exports. |
 | `src/constants.ts` | `KIRO_CONSTANTS`, `MODEL_MAPPING`, `KIRO_AUTH_SERVICE`, region helpers. |
 
@@ -145,8 +194,31 @@ and is the only class with direct access to the OpenCode `client` (used for
     (`src/plugin/sync/kiro-cli.ts:258`).
   - `kiro-cli`'s own DB path `data.sqlite3` (`src/plugin/sync/kiro-cli-parser.ts:13,16,17`).
 - **Never rename filenames used for local storage/config**: `kiro.db`
-  (`src/plugin/storage/sqlite.ts:22`), `kiro.json`
+  (`src/plugin/storage/sqlite.ts:49`), `kiro.json`
   (`src/plugin/config/loader.ts:29`).
+- **`withImmediateTransaction`'s callback must stay synchronous** (`fn: () => T`,
+  no `await` inside). Yielding the event loop mid-transaction lets the same
+  connection be re-entered — nested `BEGIN`, interleaved inserts, or a writer
+  lock held for the duration of an unrelated `await`. Acquisition is async on
+  purpose and the callback plus `COMMIT`/`ROLLBACK` are sync on purpose; do not
+  collapse the two. Relatedly, do not "simplify" acquisition by leaving
+  `busy_timeout` non-zero: libsql's native layer spins inside the synchronous
+  `exec`, freezing the event loop. Measured with a synchronous implementation, a
+  `setInterval` heartbeat fired zero times while a holder kept the lock for 2.5
+  seconds — and this plugin is forwarding SSE on that same thread. Also: `BEGIN`
+  failing must not be followed by `ROLLBACK` (there is no open transaction).
+- **Never switch the read-modify-write transactions to `BEGIN DEFERRED`.** In
+  libsql, a deferred read-then-write upgrade does not raise
+  `SQLITE_BUSY_SNAPSHOT` — it silently overwrites, losing the concurrent update.
+  `BEGIN IMMEDIATE` is the only safe form here (see the comment at
+  `src/plugin/storage/migrations.ts:80`).
+- **Migration guards must be persistent markers, not schema probes.**
+  `migrateToUniqueRefreshToken` previously keyed off the existence of
+  `idx_refresh_token_unique`, which `migrateDropRefreshTokenUniqueIndex` then
+  dropped — so the guard never held again and every process re-ran a full-table
+  `GROUP BY` plus `CREATE INDEX` inside a write transaction on every open. Guard
+  new one-shot migrations with a `plugin_meta` key committed in the same
+  transaction as the work.
 - **Never alter the AWS wire strings** — these are literal values the
   CodeWhisperer service expects, not display text:
   - `x-amzn-kiro-agent-mode: 'vibe'` header (multiple call sites: `request-handler.ts:380`, `plugin/token.ts:39`, `plugin/sdk-client.ts:44`, `plugin/usage.ts:68`, `plugin/request.ts:333`).
@@ -183,6 +255,17 @@ To use a local checkout as an OpenCode plugin, add the absolute repo path to
 
 `husky` runs `bunx lint-staged` on pre-commit (prettier formatting).
 
+### Test isolation caveat
+
+`bunfig.toml` sets `preload = ["./src/__tests__/setup.ts"]`, so every test file in
+a process shares one `kiro.db` singleton and one set of lock files. Fire-and-forget
+writes from unrelated test files land in that same database. New tests must not
+assert on globally shared state (total row counts, process-wide spy call counts);
+scope assertions with a test-specific id prefix or filter by the target path.
+
+Database concurrency bugs need at least five processes to reproduce reliably —
+four does not surface them. `sqlite-multiprocess-stress.test.ts` uses five.
+
 ## 6. Conventions
 
 - Conventional Commits; Chinese commit subjects are acceptable per repo history.
@@ -204,6 +287,9 @@ To use a local checkout as an OpenCode plugin, add the absolute repo path to
 | Token refresh | `src/core/auth/token-refresher.ts` `TokenRefresher` + `src/plugin/token.ts` `refreshAccessToken` |
 | kiro-cli sync | `src/plugin/sync/kiro-cli.ts` `syncFromKiroCli` |
 | Config load | `src/plugin/config/loader.ts` |
-| SQLite storage | `src/plugin/storage/sqlite.ts` `KiroDatabase` / `DB_PATH` |
+| SQLite storage | `src/plugin/storage/sqlite.ts` `KiroDatabase` / `DB_PATH` (line 49) |
+| DB write transactions | `src/plugin/storage/sqlite.ts:64` `withImmediateTransaction` |
+| Remaining file locks | `src/plugin/storage/locked-operations.ts:79,111,134` |
+| Schema migrations / markers | `src/plugin/storage/migrations.ts:61` `runMigrations` |
 | SDK client construction | `src/plugin/sdk-client.ts` `createSdkClient` |
 | Response -> OpenAI shape | `src/core/request/response-handler.ts` `ResponseHandler` |
