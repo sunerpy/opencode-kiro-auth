@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { TokenRefresher } from '../core/auth/token-refresher.js'
 import { AccountCache } from '../infrastructure/database/account-cache.js'
 import { AccountRepository } from '../infrastructure/database/account-repository.js'
@@ -184,7 +184,268 @@ describe('TokenRefresher.refreshIfNeeded - expired, refresh succeeds', () => {
     expect(repo.findAll).toHaveBeenCalledTimes(1)
     const body = capturedRefreshRequest(requestBody)
     expect(body.refreshToken).toBe('refresh-A')
-    expect(repo.batchSave).toHaveBeenCalledTimes(1)
+    expect(repo.save).toHaveBeenCalledTimes(1)
+    expect(repo.batchSave).toHaveBeenCalledTimes(0)
+  })
+
+  test('rotated token is not published to AccountManager until durable save succeeds', async () => {
+    const acc = makeAccount({
+      id: 'durable-order',
+      accessToken: 'old-access-token',
+      refreshToken: 'old-refresh-token'
+    })
+    const mgr = new AccountManager([acc], 'sticky')
+    const repo = fakeRepo()
+    const saveStarted = deferred()
+    const releaseSave = deferred()
+    let persisted: ManagedAccount | undefined
+    repo.save = mock(async (candidate: ManagedAccount) => {
+      saveStarted.resolve()
+      await releaseSave.promise
+      persisted = { ...candidate }
+    })
+    repo.batchSave = mock(async (accounts: ManagedAccount[]) => {
+      saveStarted.resolve()
+      await releaseSave.promise
+      const candidate = accounts.find((account) => account.id === acc.id)
+      if (candidate) persisted = { ...candidate }
+    })
+    const refresh = mock(async () => ({
+      ...authFor(acc, Date.now() + 3600000),
+      access: 'new-access-token',
+      refresh: encodeRefreshToken({
+        refreshToken: 'new-refresh-token',
+        clientId: acc.clientId,
+        clientSecret: acc.clientSecret,
+        authMethod: acc.authMethod
+      })
+    }))
+    const refresher = new TokenRefresher(
+      config,
+      mgr,
+      mock(async () => {}),
+      repo,
+      { refreshAccessToken: refresh }
+    )
+
+    let refreshSettled = false
+    const refreshPromise = refresher.refreshIfNeeded(acc, authFor(acc, Date.now() - 1000), noToast)
+    void refreshPromise.then(
+      () => {
+        refreshSettled = true
+      },
+      () => {
+        refreshSettled = true
+      }
+    )
+    await saveStarted.promise
+
+    try {
+      const pendingAccount = mgr.getAccounts().find((account) => account.id === acc.id)
+      expect(pendingAccount?.accessToken).toBe('old-access-token')
+      expect(pendingAccount?.refreshToken).toBe('old-refresh-token')
+      expect(refreshSettled).toBe(false)
+      expect(persisted).toBeUndefined()
+    } finally {
+      releaseSave.resolve()
+    }
+
+    await refreshPromise
+    const published = mgr.getAccounts().find((account) => account.id === acc.id)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(persisted?.accessToken).toBe('new-access-token')
+    expect(persisted?.refreshToken).toBe('new-refresh-token')
+    expect(published?.accessToken).toBe('new-access-token')
+    expect(published?.refreshToken).toBe('new-refresh-token')
+  })
+
+  test('transient save failure retries without a second network refresh', async () => {
+    const acc = makeAccount({ id: 'durable-retry' })
+    const mgr = new AccountManager([acc], 'sticky')
+    const repo = fakeRepo()
+    let saveCalls = 0
+    repo.save = mock(async () => {
+      saveCalls++
+      if (saveCalls === 1) throw new Error('SQLITE_BUSY: database is locked')
+      if (saveCalls === 2) throw new Error('Lock file is already being held')
+    })
+    repo.batchSave = mock(async () => {
+      throw new Error('SQLITE_BUSY: database is locked')
+    })
+    const refresh = mock(async () => ({
+      ...authFor(acc, Date.now() + 3600000),
+      access: 'retried-access-token',
+      refresh: encodeRefreshToken({
+        refreshToken: 'retried-refresh-token',
+        clientId: acc.clientId,
+        clientSecret: acc.clientSecret,
+        authMethod: acc.authMethod
+      })
+    }))
+    const refresher = new TokenRefresher(
+      config,
+      mgr,
+      mock(async () => {}),
+      repo,
+      { refreshAccessToken: refresh, sleep: async () => {}, random: () => 0 }
+    )
+
+    const result = await refresher.refreshIfNeeded(acc, authFor(acc, Date.now() - 1000), noToast)
+
+    expect(result.shouldContinue).toBe(false)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(repo.save).toHaveBeenCalledTimes(3)
+    expect(mgr.getAccounts().find((account) => account.id === acc.id)?.refreshToken).toBe(
+      'retried-refresh-token'
+    )
+  })
+
+  test('persistence exhaustion returns retry control without marking credentials dead', async () => {
+    const acc = makeAccount({ id: 'durable-exhaustion' })
+    const mgr = new AccountManager([acc], 'sticky')
+    const repo = fakeRepo()
+    repo.save = mock(async () => {
+      throw new Error('Lock file is already being held')
+    })
+    repo.batchSave = mock(async () => {
+      throw new Error('Lock file is already being held')
+    })
+    const sync = mock(async () => {})
+    const toastCalls: Array<[string, Variant]> = []
+    const refresh = mock(async () => ({
+      ...authFor(acc, Date.now() + 3600000),
+      access: 'unpersisted-access-token',
+      refresh: encodeRefreshToken({
+        refreshToken: 'unpersisted-refresh-token',
+        clientId: acc.clientId,
+        clientSecret: acc.clientSecret,
+        authMethod: acc.authMethod
+      })
+    }))
+    const refresher = new TokenRefresher(config, mgr, sync, repo, {
+      refreshAccessToken: refresh,
+      sleep: async () => {},
+      random: () => 0
+    })
+
+    const result = await refresher.refreshIfNeeded(
+      acc,
+      authFor(acc, Date.now() - 1000),
+      (message, variant) => toastCalls.push([message, variant])
+    )
+
+    const managed = mgr.getAccounts().find((account) => account.id === acc.id)
+    expect(result).toEqual({ account: acc, shouldContinue: true })
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(repo.save).toHaveBeenCalledTimes(3)
+    expect(sync).toHaveBeenCalledTimes(0)
+    expect(toastCalls).toHaveLength(0)
+    expect(managed?.accessToken).toBe(`access-${acc.id}`)
+    expect(managed?.refreshToken).toBe(`refresh-${acc.id}`)
+    expect(managed?.isHealthy).toBe(true)
+    expect(managed?.failCount).toBe(0)
+    expect(managed?.unhealthyReason).toBeUndefined()
+  })
+
+  test('persisted DB identity fields update the caller reference before candidate save completes', async () => {
+    const acc = makeAccount({
+      id: 'persisted-identity',
+      clientId: 'old-client-id',
+      clientSecret: 'old-client-secret',
+      profileArn: 'old-profile-arn',
+      oidcRegion: 'us-west-2'
+    })
+    const persisted = makeAccount({
+      id: acc.id,
+      clientId: 'db-client-id',
+      clientSecret: 'db-client-secret',
+      profileArn: undefined,
+      oidcRegion: undefined,
+      accessToken: 'db-stale-access-token',
+      refreshToken: 'db-refresh-token',
+      expiresAt: Date.now() - 1000
+    })
+    const mgr = new AccountManager([acc], 'sticky')
+    const repo = fakeRepo()
+    const saveStarted = deferred()
+    const releaseSave = deferred()
+    repo.findAll = mock(async () => [persisted])
+    repo.save = mock(async () => {
+      saveStarted.resolve()
+      await releaseSave.promise
+    })
+    const refresh = mock(async () => ({
+      ...authFor(persisted, Date.now() + 3600000),
+      access: 'candidate-access-token',
+      refresh: encodeRefreshToken({
+        refreshToken: 'candidate-refresh-token',
+        clientId: persisted.clientId,
+        clientSecret: persisted.clientSecret,
+        authMethod: persisted.authMethod
+      })
+    }))
+    const refresher = new TokenRefresher(
+      config,
+      mgr,
+      mock(async () => {}),
+      repo,
+      {
+        refreshAccessToken: refresh
+      }
+    )
+
+    const refreshPromise = refresher.refreshIfNeeded(acc, authFor(acc, Date.now() - 1000), noToast)
+    await saveStarted.promise
+
+    try {
+      expect(acc.clientId).toBe('db-client-id')
+      expect(acc.profileArn).toBeUndefined()
+      expect(acc.oidcRegion).toBeUndefined()
+      expect(acc.accessToken).toBe('db-stale-access-token')
+      expect(acc.refreshToken).toBe('db-refresh-token')
+    } finally {
+      releaseSave.resolve()
+    }
+
+    await refreshPromise
+    expect(acc.accessToken).toBe('candidate-access-token')
+    expect(acc.refreshToken).toBe('candidate-refresh-token')
+  })
+
+  test('refresh path issues exactly one durable write', async () => {
+    const acc = makeAccount({ id: 'single-durable-write' })
+    const mgr = new AccountManager([acc], 'sticky')
+    const repo = fakeRepo()
+    const directUpsert = spyOn(kiroDb, 'upsertAccount').mockResolvedValue()
+    const refresh = mock(async () => ({
+      ...authFor(acc, Date.now() + 3600000),
+      access: 'single-write-access-token',
+      refresh: encodeRefreshToken({
+        refreshToken: 'single-write-refresh-token',
+        clientId: acc.clientId,
+        clientSecret: acc.clientSecret,
+        authMethod: acc.authMethod
+      })
+    }))
+    const refresher = new TokenRefresher(
+      config,
+      mgr,
+      mock(async () => {}),
+      repo,
+      { refreshAccessToken: refresh }
+    )
+
+    try {
+      await refresher.refreshIfNeeded(acc, authFor(acc, Date.now() - 1000), noToast)
+      await Promise.resolve()
+
+      expect(refresh).toHaveBeenCalledTimes(1)
+      expect(repo.save).toHaveBeenCalledTimes(1)
+      expect(repo.batchSave).toHaveBeenCalledTimes(0)
+      expect(directUpsert).toHaveBeenCalledTimes(0)
+    } finally {
+      directUpsert.mockRestore()
+    }
   })
 })
 
@@ -240,7 +501,8 @@ describe('TokenRefresher.refreshIfNeeded - expired, DB stale but latest refresh 
     const managed = mgr.getAccounts().find((a) => a.id === 'A2-latest')
     expect(managed?.refreshToken).toBe('rotated-refresh-token')
     expect(managed?.accessToken).toBe('rotated-access-token')
-    expect(repo.batchSave).toHaveBeenCalledTimes(1)
+    expect(repo.save).toHaveBeenCalledTimes(1)
+    expect(repo.batchSave).toHaveBeenCalledTimes(0)
   })
 })
 
@@ -273,7 +535,8 @@ describe('TokenRefresher.refreshIfNeeded - expired, no DB row fallback', () => {
     expect(mgr.getAccounts().find((a) => a.id === 'A2-empty')?.accessToken).toBe(
       'fallback-access-token'
     )
-    expect(repo.batchSave).toHaveBeenCalledTimes(1)
+    expect(repo.save).toHaveBeenCalledTimes(1)
+    expect(repo.batchSave).toHaveBeenCalledTimes(0)
   })
 })
 
@@ -346,7 +609,8 @@ describe('TokenRefresher.refreshIfNeeded - in-process single-flight', () => {
     expect(mgr.getAccounts().find((a) => a.id === 'A3-single-flight')?.accessToken).toBe(
       'single-flight-access-token'
     )
-    expect(repo.batchSave).toHaveBeenCalledTimes(1)
+    expect(repo.save).toHaveBeenCalledTimes(1)
+    expect(repo.batchSave).toHaveBeenCalledTimes(0)
   })
 
   test('clears the single-flight entry after a failure so a later refresh can run', async () => {
@@ -688,7 +952,8 @@ describe('TokenRefresher.forceRefresh', () => {
     const result = await refresher.forceRefresh(acc, noToast)
     expect(result).toEqual({ ok: true, dead: false })
     expect(mgr.getAccounts().find((a) => a.id === 'A')!.accessToken).toBe('forced-access')
-    expect(repo.batchSave).toHaveBeenCalledTimes(1)
+    expect(repo.save).toHaveBeenCalledTimes(1)
+    expect(repo.batchSave).toHaveBeenCalledTimes(0)
   })
 
   test('returns false and warns when the refresh fails', async () => {
@@ -709,5 +974,47 @@ describe('TokenRefresher.forceRefresh', () => {
     expect(result.ok).toBe(false)
     expect(result.dead).toBe(true)
     expect(toastMsgs.some(([m, v]) => v === 'warning' && m.includes('403'))).toBe(true)
+  })
+
+  test('persistence exhaustion returns transient failure without throwing or marking dead', async () => {
+    const acc = makeAccount({ id: 'force-persistence' })
+    const mgr = new AccountManager([acc], 'sticky')
+    const repo = fakeRepo()
+    repo.save = mock(async () => {
+      throw new Error('SQLITE_BUSY: database is locked')
+    })
+    const refresh = mock(async () => ({
+      ...authFor(acc, Date.now() + 3600000),
+      access: 'unpersisted-force-access',
+      refresh: encodeRefreshToken({
+        refreshToken: 'unpersisted-force-refresh',
+        clientId: acc.clientId,
+        clientSecret: acc.clientSecret,
+        authMethod: acc.authMethod
+      })
+    }))
+    const refresher = new TokenRefresher(
+      config,
+      mgr,
+      mock(async () => {}),
+      repo,
+      {
+        refreshAccessToken: refresh,
+        sleep: async () => {},
+        random: () => 0
+      }
+    )
+    const toastMsgs: Array<[string, Variant]> = []
+
+    const result = await refresher.forceRefresh(acc, (message, variant) =>
+      toastMsgs.push([message, variant])
+    )
+
+    expect(result).toEqual({ ok: false, dead: false })
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(acc.isHealthy).toBe(true)
+    expect(acc.failCount).toBe(0)
+    expect(acc.accessToken).toBe(`access-${acc.id}`)
+    expect(toastMsgs).toHaveLength(0)
   })
 })

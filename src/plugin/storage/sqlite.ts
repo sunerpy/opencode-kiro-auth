@@ -4,13 +4,40 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ManagedAccount } from '../types'
-import {
-  deduplicateAccounts,
-  mergeAccounts,
-  withDatabaseLock,
-  withDatabaseLockSync
-} from './locked-operations'
+import { deduplicateAccounts, mergeAccounts, withDatabaseLockSync } from './locked-operations'
 import { runMigrations } from './migrations'
+
+const DATABASE_BUSY_TIMEOUT_MS = 5_000
+const WRITE_LOCK_DEADLINE_MS = 30_000
+const WRITE_LOCK_MIN_BACKOFF_MS = 25
+const WRITE_LOCK_MAX_BACKOFF_MS = 500
+
+class DatabaseWriteLockTimeoutError extends Error {
+  readonly name = 'DatabaseWriteLockTimeoutError'
+  readonly code = 'KIRO_DB_WRITE_LOCK_TIMEOUT'
+
+  constructor(cause: unknown) {
+    super(`Timed out after ${WRITE_LOCK_DEADLINE_MS}ms waiting for the database write lock`, {
+      cause
+    })
+  }
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false
+  return typeof error.code === 'string' && error.code.startsWith('SQLITE_BUSY')
+}
+
+function asyncBackoff(attempt: number, remainingMs: number): Promise<void> {
+  const ceiling = Math.min(
+    WRITE_LOCK_MIN_BACKOFF_MS * 2 ** Math.min(attempt, 5),
+    WRITE_LOCK_MAX_BACKOFF_MS,
+    remainingMs
+  )
+  const floor = Math.max(1, Math.floor(ceiling / 2))
+  const delay = floor + Math.floor(Math.random() * (ceiling - floor + 1))
+  return new Promise((resolve) => setTimeout(resolve, delay))
+}
 
 function getBaseDir(): string {
   const p = process.platform
@@ -30,9 +57,57 @@ export class KiroDatabase {
     const dir = join(path, '..')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     this.db = new Database(path)
-    this.db.pragma('busy_timeout = 5000')
+    this.db.pragma(`busy_timeout = ${DATABASE_BUSY_TIMEOUT_MS}`)
     withDatabaseLockSync(this.path, () => this.init())
   }
+
+  private async withImmediateTransaction<T>(fn: () => T): Promise<T> {
+    const deadline = Date.now() + WRITE_LOCK_DEADLINE_MS
+    let attempt = 0
+
+    for (;;) {
+      const busyTimeoutResult = this.db.pragma('busy_timeout', { simple: true })
+      const busyTimeout =
+        typeof busyTimeoutResult === 'number'
+          ? busyTimeoutResult
+          : typeof busyTimeoutResult === 'object' && busyTimeoutResult !== null
+            ? Reflect.get(busyTimeoutResult, 'timeout')
+            : undefined
+      if (typeof busyTimeout !== 'number') {
+        throw new TypeError('Expected numeric busy_timeout from libsql')
+      }
+
+      let begun = false
+      let beginError: unknown
+      try {
+        this.db.pragma('busy_timeout = 0')
+        this.db.exec('BEGIN IMMEDIATE')
+        begun = true
+      } catch (error) {
+        beginError = error
+      } finally {
+        this.db.pragma(`busy_timeout = ${busyTimeout}`)
+      }
+
+      if (!begun) {
+        if (!isSqliteBusy(beginError)) throw beginError
+        const remainingMs = deadline - Date.now()
+        if (remainingMs <= 0) throw new DatabaseWriteLockTimeoutError(beginError)
+        await asyncBackoff(attempt++, remainingMs)
+        continue
+      }
+
+      try {
+        const result = fn()
+        this.db.exec('COMMIT')
+        return result
+      } catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+    }
+  }
+
   private init() {
     this.db.pragma('journal_mode = WAL')
     this.db.exec(`
@@ -121,66 +196,45 @@ export class KiroDatabase {
   }
 
   async upsertAccount(acc: ManagedAccount): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
+    await this.withImmediateTransaction(() => {
       const existing = this.getAccounts().map(this.rowToAccount)
       const merged = mergeAccounts(existing, [acc])
       const deduplicated = deduplicateAccounts(merged)
       const writable = deduplicated.filter((a) => !this.isRemovedSync(a.id))
 
-      this.db.exec('BEGIN TRANSACTION')
-      try {
-        this.purgeRemovedAccountsSync()
-        for (const account of writable) {
-          this.upsertAccountInternal(account)
-        }
-        this.db.exec('COMMIT')
-      } catch (e) {
-        this.db.exec('ROLLBACK')
-        throw e
+      this.purgeRemovedAccountsSync()
+      for (const account of writable) {
+        this.upsertAccountInternal(account)
       }
     })
   }
 
   async batchUpsertAccounts(accounts: ManagedAccount[]): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
+    await this.withImmediateTransaction(() => {
       const existing = this.getAccounts().map(this.rowToAccount)
       const merged = mergeAccounts(existing, accounts)
       const deduplicated = deduplicateAccounts(merged)
       const writable = deduplicated.filter((a) => !this.isRemovedSync(a.id))
 
-      this.db.exec('BEGIN TRANSACTION')
-      try {
-        this.purgeRemovedAccountsSync()
-        for (const account of writable) {
-          this.upsertAccountInternal(account)
-        }
-        this.db.exec('COMMIT')
-      } catch (e) {
-        this.db.exec('ROLLBACK')
-        throw e
+      this.purgeRemovedAccountsSync()
+      for (const account of writable) {
+        this.upsertAccountInternal(account)
       }
     })
   }
 
   async deleteAccount(id: string): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
+    await this.withImmediateTransaction(() => {
       this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
     })
   }
 
   async removeAccountWithTombstone(id: string): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
-      this.db.exec('BEGIN TRANSACTION')
-      try {
-        this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
-        this.db
-          .prepare('INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)')
-          .run(id, Date.now())
-        this.db.exec('COMMIT')
-      } catch (e) {
-        this.db.exec('ROLLBACK')
-        throw e
-      }
+    await this.withImmediateTransaction(() => {
+      this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
+      this.db
+        .prepare('INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)')
+        .run(id, Date.now())
     })
   }
 
@@ -190,45 +244,36 @@ export class KiroDatabase {
     authMethod: string,
     profileArn: string | undefined
   ): Promise<string[]> {
-    const supersededIds: string[] = []
-
-    await withDatabaseLock(this.path, async () => {
-      this.db.exec('BEGIN TRANSACTION')
-      try {
-        const rows = this.db
-          .prepare(
-            'SELECT id FROM accounts WHERE email = ? AND auth_method = ? AND profile_arn IS ? AND id != ?'
-          )
-          .all(email, authMethod, profileArn ?? null, keepId)
-
-        for (const row of rows) {
-          if (typeof row === 'object' && row !== null && 'id' in row && typeof row.id === 'string')
-            supersededIds.push(row.id)
-        }
-
-        const deleteStmt = this.db.prepare('DELETE FROM accounts WHERE id = ?')
-        const tombstoneStmt = this.db.prepare(
-          'INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)'
+    return this.withImmediateTransaction(() => {
+      const supersededIds: string[] = []
+      const rows = this.db
+        .prepare(
+          'SELECT id FROM accounts WHERE email = ? AND auth_method = ? AND profile_arn IS ? AND id != ?'
         )
-        const removedAt = Date.now()
+        .all(email, authMethod, profileArn ?? null, keepId)
 
-        for (const id of supersededIds) {
-          deleteStmt.run(id)
-          tombstoneStmt.run(id, removedAt)
-        }
-
-        this.db.exec('COMMIT')
-      } catch (e) {
-        this.db.exec('ROLLBACK')
-        throw e
+      for (const row of rows) {
+        if (typeof row === 'object' && row !== null && 'id' in row && typeof row.id === 'string')
+          supersededIds.push(row.id)
       }
-    })
 
-    return supersededIds
+      const deleteStmt = this.db.prepare('DELETE FROM accounts WHERE id = ?')
+      const tombstoneStmt = this.db.prepare(
+        'INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)'
+      )
+      const removedAt = Date.now()
+
+      for (const id of supersededIds) {
+        deleteStmt.run(id)
+        tombstoneStmt.run(id, removedAt)
+      }
+
+      return supersededIds
+    })
   }
 
   async addRemovedAccount(id: string): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
+    await this.withImmediateTransaction(() => {
       this.db
         .prepare('INSERT OR REPLACE INTO removed_accounts (id, removed_at) VALUES (?, ?)')
         .run(id, Date.now())
@@ -240,7 +285,7 @@ export class KiroDatabase {
   }
 
   async clearRemovedAccount(id: string): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
+    await this.withImmediateTransaction(() => {
       this.db.prepare('DELETE FROM removed_accounts WHERE id = ?').run(id)
     })
   }
@@ -250,7 +295,7 @@ export class KiroDatabase {
   }
 
   async nextAssignmentIndex(): Promise<number> {
-    return withDatabaseLock(this.path, async () => {
+    return this.withImmediateTransaction(() => {
       const row = this.db
         .prepare(
           "INSERT INTO plugin_meta(key,value) VALUES('assignment_cursor',0) ON CONFLICT(key) DO UPDATE SET value=value+1 RETURNING value"
@@ -263,13 +308,11 @@ export class KiroDatabase {
   async markAccountsUnhealthy(ids: string[], reason: string): Promise<void> {
     if (ids.length === 0) return
 
-    await withDatabaseLock(this.path, async () => {
+    await this.withImmediateTransaction(() => {
       const now = Date.now()
 
-      this.db.exec('BEGIN TRANSACTION')
-      try {
-        const stmt = this.db.prepare(
-          `
+      const stmt = this.db.prepare(
+        `
             UPDATE accounts
             SET is_healthy = 0,
                 unhealthy_reason = ?,
@@ -279,16 +322,10 @@ export class KiroDatabase {
                 last_sync = ?
             WHERE id = ?
           `
-        )
+      )
 
-        for (const id of ids) {
-          stmt.run(reason, now, id)
-        }
-
-        this.db.exec('COMMIT')
-      } catch (e) {
-        this.db.exec('ROLLBACK')
-        throw e
+      for (const id of ids) {
+        stmt.run(reason, now, id)
       }
     })
   }

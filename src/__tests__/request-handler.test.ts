@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
+import { TokenRefresher } from '../core/auth/token-refresher.js'
 import { RequestHandler } from '../core/request/request-handler.js'
 import { ResponseHandler } from '../core/request/response-handler.js'
+import { encodeRefreshToken } from '../kiro/auth.js'
+import { AccountManager } from '../plugin/accounts.js'
 import * as logger from '../plugin/logger.js'
 import type { ManagedAccount, SdkPreparedRequest } from '../plugin/types.js'
 
@@ -1223,6 +1226,68 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
 })
 
 describe('RequestHandler.handle — error retry / switch', () => {
+  test('token persistence failure stays on the refresh retry path and never enters network handling', async () => {
+    const acc = makeAccount({
+      id: 'persistence',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      expiresAt: Date.now() - 1000
+    })
+    const manager = new AccountManager([acc], 'sticky')
+    let saveCalls = 0
+    const repository = {
+      invalidateCache: mock(() => {}),
+      findAll: mock(async () => [{ ...acc }]),
+      save: mock(async () => {
+        saveCalls++
+        if (saveCalls <= 3) {
+          throw new Error('SQLITE_BUSY: database is locked')
+        }
+      })
+    } as any
+    const refresh = mock(async () => ({
+      access: 'unpersisted-access',
+      refresh: encodeRefreshToken({
+        refreshToken: 'unpersisted-refresh',
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        authMethod: 'idc'
+      }),
+      expires: Date.now() + 3600000,
+      authMethod: 'idc' as const,
+      region: 'us-east-1' as const
+    }))
+    const realRefresher = new TokenRefresher(
+      baseConfig,
+      manager,
+      mock(async () => {}),
+      repository,
+      {
+        refreshAccessToken: refresh,
+        sleep: async () => {},
+        random: () => 0
+      }
+    )
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc, acc],
+      sdkResults: [{ generateAssistantResponseResponse: {} }]
+    })
+    const refreshBackoff = mock(async () => {})
+    const internals = handler as any
+    internals.tokenRefresher = realRefresher
+    internals.sleep = refreshBackoff
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    expect(response).toBeInstanceOf(Response)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(repository.save).toHaveBeenCalledTimes(4)
+    expect(refreshBackoff).toHaveBeenCalledWith(500, expect.any(AbortSignal))
+    expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+    expect(acc.accessToken).toBe('unpersisted-access')
+  })
+
   test('an HTTP error that requests switchAccount retries with a fresh account', async () => {
     const acc1 = makeAccount({ id: 'A' })
     const acc2 = makeAccount({ id: 'B' })

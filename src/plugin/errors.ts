@@ -10,6 +10,13 @@ export class KiroTokenRefreshError extends Error {
   }
 }
 
+export class TokenPersistenceError extends Error {
+  constructor() {
+    super('Failed to persist refreshed credentials')
+    this.name = 'TokenPersistenceError'
+  }
+}
+
 export class KiroQuotaExhaustedError extends Error {
   recoveryTime?: number
 

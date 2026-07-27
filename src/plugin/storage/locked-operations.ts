@@ -8,15 +8,6 @@ import type { ManagedAccount } from '../types'
 
 export { getKeepAliveLockPath, getRefreshLockPath } from '../paths.js'
 
-const DATABASE_LOCK_OPTIONS = {
-  stale: 10000,
-  retries: 0,
-  realpath: false
-}
-const DATABASE_LOCK_DEADLINE_MS = 10000
-const DATABASE_LOCK_MIN_BACKOFF_MS = 25
-const DATABASE_LOCK_MAX_BACKOFF_MS = 250
-
 const REFRESH_LOCK_OPTIONS = {
   stale: 15000,
   retries: 0,
@@ -41,8 +32,14 @@ function blockingBackoff(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-function isLockContention(e: unknown): boolean {
-  return typeof e === 'object' && e !== null && 'code' in e && e.code === 'ELOCKED'
+function isRetryableLockAcquisitionError(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null || !('code' in e)) return false
+
+  // proper-lockfile may surface ENOENT from mtimePrecision.probe() when another
+  // process removes the newly-created lock directory during stale takeover.
+  // Keep this scoped to the bounded lock-acquisition loops below so unrelated
+  // filesystem ENOENT errors still propagate immediately.
+  return e.code === 'ELOCKED' || e.code === 'ENOENT'
 }
 
 function asyncBackoff(
@@ -57,28 +54,6 @@ function asyncBackoff(
   return new Promise((resolve) => setTimeout(resolve, delay))
 }
 
-async function acquireDatabaseLock(dbPath: string): Promise<LockRelease> {
-  // A deadline avoids fixed retry-count starvation; jitter keeps contenders
-  // from repeatedly attempting the atomic mkdir in lockstep.
-  const deadline = Date.now() + DATABASE_LOCK_DEADLINE_MS
-  let attempt = 0
-
-  for (;;) {
-    try {
-      return await lockfile.lock(dbPath, DATABASE_LOCK_OPTIONS)
-    } catch (e) {
-      const remainingMs = deadline - Date.now()
-      if (!isLockContention(e) || remainingMs <= 0) throw e
-      await asyncBackoff(
-        attempt++,
-        remainingMs,
-        DATABASE_LOCK_MIN_BACKOFF_MS,
-        DATABASE_LOCK_MAX_BACKOFF_MS
-      )
-    }
-  }
-}
-
 async function acquireRefreshLock(lockPath: string): Promise<LockRelease> {
   // A deadline avoids fixed retry-count starvation; jitter keeps contenders
   // from repeatedly attempting the atomic mkdir in lockstep.
@@ -90,7 +65,7 @@ async function acquireRefreshLock(lockPath: string): Promise<LockRelease> {
       return await lockfile.lock(lockPath, REFRESH_LOCK_OPTIONS)
     } catch (e) {
       const remainingMs = deadline - Date.now()
-      if (!isLockContention(e) || remainingMs <= 0) throw e
+      if (!isRetryableLockAcquisitionError(e) || remainingMs <= 0) throw e
       await asyncBackoff(
         attempt++,
         remainingMs,
@@ -117,7 +92,7 @@ export function withDatabaseLockSync<T>(dbPath: string, fn: () => T): T {
       release = lockfile.lockSync(dbPath, SYNC_LOCK_OPTIONS)
       break
     } catch (e) {
-      if (!isLockContention(e) || Date.now() >= deadline) throw e
+      if (!isRetryableLockAcquisitionError(e) || Date.now() >= deadline) throw e
       blockingBackoff(Math.min(100 * 2 ** attempt++, 500))
     }
   }
@@ -129,27 +104,6 @@ export function withDatabaseLockSync<T>(dbPath: string, fn: () => T): T {
       release()
     } catch (e) {
       console.warn('Failed to release lock:', e)
-    }
-  }
-}
-
-export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
-  if (!existsSync(dbPath)) {
-    await fs.mkdir(dirname(dbPath), { recursive: true })
-    await fs.writeFile(dbPath, '')
-  }
-
-  let release: (() => Promise<void>) | null = null
-  try {
-    release = await acquireDatabaseLock(dbPath)
-    return await fn()
-  } finally {
-    if (release) {
-      try {
-        await release()
-      } catch (e) {
-        console.warn('Failed to release lock:', e)
-      }
     }
   }
 }

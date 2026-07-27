@@ -1,13 +1,61 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import Database from 'libsql'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runMigrations } from '../plugin/storage/migrations.js'
+import { KiroDatabase } from '../plugin/storage/sqlite.js'
+
+const REFRESH_TOKEN_DEDUP_MARKER = 'refresh_token_dedup_migration_version'
+
+function tempDbPath(): string {
+  return join(mkdtempSync(join(tmpdir(), 'kiro-mig-')), 'kiro.db')
+}
 
 function tempDb(): Database.Database {
-  const path = join(mkdtempSync(join(tmpdir(), 'kiro-mig-')), 'kiro.db')
-  return new Database(path)
+  return new Database(tempDbPath())
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function stringColumn(row: unknown, name: string): string {
+  if (!isRecord(row) || typeof row[name] !== 'string') {
+    throw new TypeError(`Expected ${name} to be a string`)
+  }
+  return row[name]
+}
+
+function numberColumn(row: unknown, name: string): number {
+  if (!isRecord(row) || typeof row[name] !== 'number') {
+    throw new TypeError(`Expected ${name} to be a number`)
+  }
+  return row[name]
+}
+
+function dataVersion(db: Database.Database): number {
+  const row = db.prepare('PRAGMA data_version').get()
+  return numberColumn(row, 'data_version')
+}
+
+function countBeginImmediateDuring(action: () => void): number {
+  const originalExec = Database.prototype.exec
+  let count = 0
+  const execSpy = spyOn(Database.prototype, 'exec').mockImplementation(function (
+    this: Database.Database,
+    sql: string
+  ) {
+    if (/^\s*BEGIN IMMEDIATE\b/i.test(sql)) count++
+    return originalExec.call(this, sql)
+  })
+
+  try {
+    action()
+  } finally {
+    execSpy.mockRestore()
+  }
+  return count
 }
 
 function columnNames(db: Database.Database): Set<string> {
@@ -139,6 +187,115 @@ describe('runMigrations on modern schema', () => {
   })
 })
 
+describe('refresh-token deduplication migration marker', () => {
+  test('reopening an already migrated database performs no writes', () => {
+    const path = tempDbPath()
+    const initial = new KiroDatabase(path)
+    initial.close()
+    const observer = new Database(path)
+    const before = dataVersion(observer)
+
+    const beginImmediateCount = countBeginImmediateDuring(() => {
+      const reopened = new KiroDatabase(path)
+      reopened.close()
+    })
+
+    expect(beginImmediateCount).toBe(0)
+    expect(dataVersion(observer)).toBe(before)
+    observer.close()
+  })
+
+  test('a legacy database with duplicate refresh tokens is deduplicated exactly once', () => {
+    const path = tempDbPath()
+    const legacy = new Database(path)
+    createModernSchema(legacy)
+    insertModernAccount(legacy, { id: 'legacy-dup-a', refresh_token: 'legacy-shared' })
+    insertModernAccount(legacy, { id: 'legacy-dup-b', refresh_token: 'legacy-shared' })
+    legacy.exec(
+      "UPDATE accounts SET used_count = 3, limit_count = 10, last_used = 100 WHERE id = 'legacy-dup-a'"
+    )
+    legacy.exec(
+      "UPDATE accounts SET used_count = 9, limit_count = 20, last_used = 50 WHERE id = 'legacy-dup-b'"
+    )
+    legacy.close()
+
+    const migrated = new KiroDatabase(path)
+    migrated.close()
+
+    const inspection = new Database(path)
+    const migratedRows = inspection
+      .prepare(
+        'SELECT id, used_count, limit_count FROM accounts WHERE refresh_token = ? ORDER BY id'
+      )
+      .all('legacy-shared')
+    expect(migratedRows).toHaveLength(1)
+    expect(stringColumn(migratedRows[0], 'id')).toBe('legacy-dup-a')
+    expect(numberColumn(migratedRows[0], 'used_count')).toBe(9)
+    expect(numberColumn(migratedRows[0], 'limit_count')).toBe(20)
+    const marker = inspection
+      .prepare('SELECT value FROM plugin_meta WHERE key = ?')
+      .get(REFRESH_TOKEN_DEDUP_MARKER)
+    expect(numberColumn(marker, 'value')).toBe(1)
+
+    insertModernAccount(inspection, {
+      id: 'post-marker-a',
+      email: 'post-a@example.com',
+      refresh_token: 'post-marker-shared'
+    })
+    insertModernAccount(inspection, {
+      id: 'post-marker-b',
+      email: 'post-b@example.com',
+      refresh_token: 'post-marker-shared'
+    })
+
+    const reopened = new KiroDatabase(path)
+    reopened.close()
+
+    const postMarkerRows = inspection
+      .prepare('SELECT id FROM accounts WHERE refresh_token = ? ORDER BY id')
+      .all('post-marker-shared')
+    expect(postMarkerRows.map((row) => stringColumn(row, 'id'))).toEqual([
+      'post-marker-a',
+      'post-marker-b'
+    ])
+    inspection.close()
+  })
+
+  test('marker and dedup commit atomically', () => {
+    const db = tempDb()
+    createModernSchema(db)
+    db.exec('CREATE TABLE plugin_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)')
+    insertModernAccount(db, { id: 'atomic-a', refresh_token: 'atomic-shared' })
+    insertModernAccount(db, { id: 'atomic-b', refresh_token: 'atomic-shared' })
+
+    const originalExec = db.exec.bind(db)
+    const execSpy = spyOn(db, 'exec').mockImplementation((sql: string) => {
+      const marker = db
+        .prepare('SELECT value FROM plugin_meta WHERE key = ?')
+        .get(REFRESH_TOKEN_DEDUP_MARKER)
+      if (/^\s*COMMIT\s*$/i.test(sql) && marker) {
+        throw new Error('injected failure before migration commit')
+      }
+      return originalExec(sql)
+    })
+
+    try {
+      expect(() => runMigrations(db)).toThrow('injected failure before migration commit')
+    } finally {
+      execSpy.mockRestore()
+    }
+
+    expect(
+      db.prepare('SELECT value FROM plugin_meta WHERE key = ?').get(REFRESH_TOKEN_DEDUP_MARKER)
+    ).toBeUndefined()
+    const rows = db
+      .prepare('SELECT id FROM accounts WHERE refresh_token = ? ORDER BY id')
+      .all('atomic-shared')
+    expect(rows.map((row) => stringColumn(row, 'id'))).toEqual(['atomic-a', 'atomic-b'])
+    db.close()
+  })
+})
+
 describe('migrateToUniqueRefreshToken duplicate merge (index-absent branch)', () => {
   test('rows sharing a refresh_token are merged to one, keeping max usage counters', () => {
     const db = tempDb()
@@ -266,8 +423,8 @@ describe('migrateUsageTable folds a legacy usage table into accounts', () => {
   })
 })
 
-describe('migrateToUniqueRefreshToken index-present early return', () => {
-  test('when the unique index already exists, the merge step is skipped but the index is still dropped at the end', () => {
+describe('migrateToUniqueRefreshToken legacy index compatibility', () => {
+  test('when the unique index already exists, marker migration succeeds and the index is still dropped', () => {
     const db = tempDb()
     createModernSchema(db)
     db.exec('CREATE UNIQUE INDEX idx_refresh_token_unique ON accounts(refresh_token)')
@@ -275,7 +432,6 @@ describe('migrateToUniqueRefreshToken index-present early return', () => {
 
     runMigrations(db)
 
-    // The row is untouched by the (skipped) merge.
     const rows = db.prepare('SELECT id FROM accounts').all() as any[]
     expect(rows).toHaveLength(1)
     expect(rows[0].id).toBe('solo')

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import type { ForceRefreshResult } from '../core/auth/token-refresher.js'
+import { TokenRefresher, type ForceRefreshResult } from '../core/auth/token-refresher.js'
 import { ErrorHandler } from '../core/request/error-handler.js'
+import { encodeRefreshToken } from '../kiro/auth.js'
+import { AccountManager } from '../plugin/accounts.js'
 import type { ManagedAccount } from '../plugin/types.js'
 
 type ToastFn = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -86,6 +88,7 @@ describe('invalid-bearer 403 force-refresh + retry (per-account bound)', () => {
 
     expect(result.shouldRetry).toBe(true)
     expect(result.newContext?.retry).toBe(1)
+    expect(result.newContext?.forcedRefreshAccountIds?.has(account.id)).not.toBe(true)
     expect(account.failCount).toBe(0)
     expect(manager.markUnhealthy).toHaveBeenCalledTimes(0)
   })
@@ -179,6 +182,65 @@ describe('invalid-bearer 403 force-refresh + retry (per-account bound)', () => {
     expect(result.newContext?.retry).toBe(1)
     expect(manager.markUnhealthy).toHaveBeenCalledTimes(0)
     expect(account.failCount).toBe(0)
+  })
+
+  test('real forceRefresh persistence failure stays transient and never marks credentials dead', async () => {
+    const account = makeAccount()
+    account.clientId = 'client-id'
+    account.clientSecret = 'client-secret'
+    account.expiresAt = Date.now() - 1000
+    const manager = new AccountManager([account], 'sticky')
+    const repository = {
+      invalidateCache: mock(() => {}),
+      findAll: mock(async () => [{ ...account }]),
+      save: mock(async () => {
+        throw new Error('Lock file is already being held')
+      }),
+      batchSave: mock(async () => {})
+    } as any
+    const refresh = mock(async () => ({
+      access: 'unpersisted-access-token',
+      refresh: encodeRefreshToken({
+        refreshToken: 'unpersisted-refresh-token',
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
+        authMethod: 'idc'
+      }),
+      expires: Date.now() + 3600000,
+      authMethod: 'idc' as const,
+      region: 'us-east-1' as const
+    }))
+    const refresher = new TokenRefresher(
+      {
+        token_expiry_buffer_ms: 120000,
+        auto_sync_kiro_cli: false,
+        account_selection_strategy: 'sticky'
+      },
+      manager,
+      mock(async () => {}),
+      repository,
+      { refreshAccessToken: refresh, sleep: async () => {}, random: () => 0 }
+    )
+    const handler = new ErrorHandler(CONFIG, manager, repository, (acc, toast) =>
+      refresher.forceRefresh(acc, toast)
+    )
+
+    const result = await handler.handle(
+      new Error('bearer'),
+      bearerResponse(),
+      account,
+      { retry: 0 },
+      noopToast
+    )
+
+    expect(result.shouldRetry).toBe(true)
+    expect(result.newContext?.retry).toBe(1)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(repository.save).toHaveBeenCalledTimes(3)
+    expect(repository.batchSave).toHaveBeenCalledTimes(0)
+    expect(account.isHealthy).toBe(true)
+    expect(account.failCount).toBe(0)
+    expect(account.unhealthyReason).toBeUndefined()
   })
 
   test('regression: TEMPORARILY_SUSPENDED -> NO refresh, NO retry, permanent immediately', async () => {

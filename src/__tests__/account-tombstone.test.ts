@@ -118,12 +118,16 @@ describe('account tombstone: storage roundtrip', () => {
   })
 
   test('listRemovedAccounts returns every tombstoned id', async () => {
-    await kiroDb.addRemovedAccount('id-a')
-    await kiroDb.addRemovedAccount('id-b')
+    const idPrefix = 'account-tombstone-list-every-id-'
+    const idA = `${idPrefix}a`
+    const idB = `${idPrefix}b`
+
+    await kiroDb.addRemovedAccount(idA)
+    await kiroDb.addRemovedAccount(idB)
     const list = await kiroDb.listRemovedAccounts()
-    expect(list).toContain('id-a')
-    expect(list).toContain('id-b')
-    expect(list).toHaveLength(2)
+    const matchingIds = list.filter((id) => id.startsWith(idPrefix)).sort()
+
+    expect(matchingIds).toEqual([idA, idB])
   })
 })
 

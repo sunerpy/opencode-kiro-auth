@@ -2,7 +2,64 @@ import type Libsql from 'libsql'
 
 type Database = Libsql.Database
 
+const REFRESH_TOKEN_DEDUP_MARKER = 'refresh_token_dedup_migration_version'
+const REFRESH_TOKEN_DEDUP_VERSION = 1
+const MIGRATION_LOCK_DEADLINE_MS = 30_000
+const MIGRATION_LOCK_MIN_BACKOFF_MS = 25
+const MIGRATION_LOCK_MAX_BACKOFF_MS = 500
+
+class MigrationLockTimeoutError extends Error {
+  readonly name = 'MigrationLockTimeoutError'
+  readonly code = 'KIRO_DB_MIGRATION_LOCK_TIMEOUT'
+
+  constructor(cause: unknown) {
+    super(`Timed out after ${MIGRATION_LOCK_DEADLINE_MS}ms waiting for the migration write lock`, {
+      cause
+    })
+  }
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false
+  return typeof error.code === 'string' && error.code.startsWith('SQLITE_BUSY')
+}
+
+function blockingBackoff(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function beginImmediateWithRetry(db: Database): void {
+  const deadline = Date.now() + MIGRATION_LOCK_DEADLINE_MS
+  let backoffMs = MIGRATION_LOCK_MIN_BACKOFF_MS
+
+  for (;;) {
+    try {
+      db.exec('BEGIN IMMEDIATE')
+      return
+    } catch (error) {
+      if (!isSqliteBusy(error)) throw error
+
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) throw new MigrationLockTimeoutError(error)
+
+      const jitterMs = Math.floor(Math.random() * Math.max(1, backoffMs / 4))
+      blockingBackoff(Math.min(backoffMs + jitterMs, remainingMs))
+      backoffMs = Math.min(backoffMs * 2, MIGRATION_LOCK_MAX_BACKOFF_MS)
+    }
+  }
+}
+
+function hasRefreshTokenDedupMarker(db: Database): boolean {
+  const marker = db
+    .prepare('SELECT value FROM plugin_meta WHERE key = ?')
+    .get(REFRESH_TOKEN_DEDUP_MARKER)
+  if (typeof marker !== 'object' || marker === null) return false
+  const value = 'value' in marker ? marker.value : undefined
+  return typeof value === 'number' && value >= REFRESH_TOKEN_DEDUP_VERSION
+}
+
 export function runMigrations(db: Database): void {
+  migratePluginMetaTable(db)
   migrateToUniqueRefreshToken(db)
   migrateRealEmailColumn(db)
   migrateUsageTable(db)
@@ -11,23 +68,22 @@ export function runMigrations(db: Database): void {
   migrateDropRefreshTokenUniqueIndex(db)
   migrateRemovedAccountsTable(db)
   migrateOverageColumn(db)
-  migratePluginMetaTable(db)
 }
 
 function migrateToUniqueRefreshToken(db: Database): void {
+  if (hasRefreshTokenDedupMarker(db)) return
+
   const indexProbe = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_refresh_token_unique'"
   )
-
-  if (indexProbe.get()) return
 
   // BEGIN IMMEDIATE (not deferred BEGIN): a deferred read-then-write txn raises unrecoverable
   // SQLITE_BUSY_SNAPSHOT (busy_timeout cannot retry it) if another connection writes after the
   // read snapshot. Taking the write lock at BEGIN makes concurrent processes serialize via
   // busy_timeout instead of racing into a snapshot conflict.
-  db.exec('BEGIN IMMEDIATE')
+  beginImmediateWithRetry(db)
   try {
-    if (indexProbe.get()) {
+    if (hasRefreshTokenDedupMarker(db)) {
       db.exec('COMMIT')
       return
     }
@@ -76,7 +132,14 @@ function migrateToUniqueRefreshToken(db: Database): void {
       }
     }
 
-    db.exec('CREATE UNIQUE INDEX idx_refresh_token_unique ON accounts(refresh_token)')
+    if (!indexProbe.get()) {
+      db.exec('CREATE UNIQUE INDEX idx_refresh_token_unique ON accounts(refresh_token)')
+    }
+
+    db.prepare(
+      `INSERT INTO plugin_meta(key, value) VALUES(?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(REFRESH_TOKEN_DEDUP_MARKER, REFRESH_TOKEN_DEDUP_VERSION)
     db.exec('COMMIT')
   } catch (e) {
     db.exec('ROLLBACK')
@@ -157,7 +220,14 @@ function migrateOidcRegionColumn(db: Database): void {
     db.exec('ALTER TABLE accounts ADD COLUMN oidc_region TEXT')
   }
   // Backfill: historically `region` was used for both service + OIDC.
-  db.exec("UPDATE accounts SET oidc_region = region WHERE oidc_region IS NULL OR oidc_region = ''")
+  const needsBackfill = db
+    .prepare("SELECT 1 FROM accounts WHERE oidc_region IS NULL OR oidc_region = '' LIMIT 1")
+    .get()
+  if (needsBackfill) {
+    db.exec(
+      "UPDATE accounts SET oidc_region = region WHERE oidc_region IS NULL OR oidc_region = ''"
+    )
+  }
 }
 
 function migrateDropRefreshTokenUniqueIndex(db: Database): void {
@@ -165,7 +235,12 @@ function migrateDropRefreshTokenUniqueIndex(db: Database): void {
   // upsert mechanics. Now that we use ON CONFLICT(id), this index is unnecessary and actively
   // harmful: duplicate rows (same account, different legacy vs hash id) share the same
   // refresh_token, causing UNIQUE constraint violations on every upsert.
-  db.exec('DROP INDEX IF EXISTS idx_refresh_token_unique')
+  const hasUniqueIndex = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_refresh_token_unique'"
+    )
+    .get()
+  if (hasUniqueIndex) db.exec('DROP INDEX IF EXISTS idx_refresh_token_unique')
 
   // Clean up duplicate rows: same email + same refresh_token but different ids.
   // Keep the deterministic hash id (64-char hex), delete legacy kiro-cli-sync-* rows.
@@ -211,5 +286,19 @@ function migrateOverageColumn(db: Database): void {
 }
 
 function migratePluginMetaTable(db: Database): void {
-  db.exec('CREATE TABLE IF NOT EXISTS plugin_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)')
+  const tableProbe = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_meta'"
+  )
+  if (tableProbe.get()) return
+
+  beginImmediateWithRetry(db)
+  try {
+    if (!tableProbe.get()) {
+      db.exec('CREATE TABLE plugin_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)')
+    }
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
 }
