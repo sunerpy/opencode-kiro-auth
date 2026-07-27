@@ -163,6 +163,11 @@ export class ErrorHandler {
               showToast
             )
           }
+          // Record this account as already force-refreshed even on a transient
+          // failure: the at-most-once-per-request force-refresh invariant bounds
+          // the retry loop. A candidate that was refreshed but not yet persisted
+          // is retried by TokenRefresher's pendingPersistence path, which does
+          // not re-call AWS, so dropping nextForced here is unnecessary.
           return this.transientForbidden(
             errorReason,
             response.status,

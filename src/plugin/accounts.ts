@@ -334,35 +334,55 @@ export class AccountManager {
     else if (removedIndex <= this.cursor && this.cursor > 0) this.cursor--
   }
   updateFromAuth(a: ManagedAccount, auth: KiroAuthDetails): void {
-    const acc = this.accounts.find((x) => x.id === a.id)
-    if (acc) {
-      acc.accessToken = auth.access
-      acc.expiresAt = auth.expires
-      acc.lastUsed = Date.now()
-      if (auth.email) acc.email = auth.email
-      const p = decodeRefreshToken(auth.refresh)
-      acc.refreshToken = p.refreshToken
-      if (p.profileArn) acc.profileArn = p.profileArn
-      if (p.clientId) acc.clientId = p.clientId
-      acc.failCount = 0
-      acc.isHealthy = true
-      delete acc.unhealthyReason
-      delete acc.recoveryTime
-      kiroDb.upsertAccount(acc).catch((e) =>
-        logger.warn('DB write failed', {
-          method: 'updateFromAuth',
-          email: acc.email,
-          error: e instanceof Error ? e.message : String(e)
-        })
-      )
-      writeToKiroCli(acc).catch((e) =>
-        logger.warn('CLI write failed', {
-          method: 'updateFromAuth',
-          email: acc.email,
-          error: e instanceof Error ? e.message : String(e)
-        })
-      )
-    }
+    const account = this.accounts.find((item) => item.id === a.id)
+    if (!account) return
+
+    const candidate = this.createAuthCandidate(account, auth)
+    this.publishAuthCandidate(candidate, false)
+    kiroDb.upsertAccount(candidate).catch((e) =>
+      logger.warn('DB write failed', {
+        method: 'updateFromAuth',
+        email: candidate.email,
+        error: e instanceof Error ? e.message : String(e)
+      })
+    )
+    this.writeAuthCandidateToKiroCli(candidate)
+  }
+  createAuthCandidate(a: ManagedAccount, auth: KiroAuthDetails): ManagedAccount {
+    const candidate = { ...a }
+    candidate.accessToken = auth.access
+    candidate.expiresAt = auth.expires
+    candidate.lastUsed = Date.now()
+    if (auth.email) candidate.email = auth.email
+    const p = decodeRefreshToken(auth.refresh)
+    candidate.refreshToken = p.refreshToken
+    if (p.profileArn) candidate.profileArn = p.profileArn
+    if (p.clientId) candidate.clientId = p.clientId
+    candidate.failCount = 0
+    candidate.isHealthy = true
+    delete candidate.unhealthyReason
+    delete candidate.recoveryTime
+    return candidate
+  }
+  publishAuthCandidate(candidate: ManagedAccount, syncKiroCli = true): void {
+    const account = this.accounts.find((item) => item.id === candidate.id)
+    if (!account) return
+
+    Object.assign(account, candidate)
+    if (candidate.unhealthyReason === undefined) delete account.unhealthyReason
+    if (candidate.recoveryTime === undefined) delete account.recoveryTime
+    if (!syncKiroCli) return
+
+    this.writeAuthCandidateToKiroCli(account)
+  }
+  private writeAuthCandidateToKiroCli(account: ManagedAccount): void {
+    writeToKiroCli(account).catch((e) =>
+      logger.warn('CLI write failed', {
+        method: 'updateFromAuth',
+        email: account.email,
+        error: e instanceof Error ? e.message : String(e)
+      })
+    )
   }
   markRateLimited(a: ManagedAccount, ms: number): void {
     const acc = this.accounts.find((x) => x.id === a.id)

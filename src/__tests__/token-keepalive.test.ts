@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { rmSync } from 'node:fs'
 import { KeepAliveController, type KeepAliveConfig } from '../core/auth/token-keepalive.js'
 import { TokenRefresher } from '../core/auth/token-refresher.js'
 import { AccountCache } from '../infrastructure/database/account-cache.js'
 import { AccountRepository } from '../infrastructure/database/account-repository.js'
 import { AccountManager } from '../plugin/accounts.js'
+import * as logger from '../plugin/logger.js'
 import {
   getKeepAliveLockPath,
   tryAcquireKeepAliveLock
@@ -296,5 +297,63 @@ describe('KeepAliveController.runOnceForTest', () => {
     await controller.runOnceForTest()
 
     expect(refreshIfNeeded).toHaveBeenCalledTimes(1)
+  })
+
+  test('persistence failure is handled by TokenRefresher and the scan continues to later accounts', async () => {
+    const first = makeAccount({ id: 'persistence-first', expiresAt: Date.now() - 1000 })
+    const second = makeAccount({ id: 'persistence-second', expiresAt: Date.now() - 1000 })
+    const manager = new AccountManager([first, second], 'sticky')
+    const repository = {
+      invalidateCache: mock(() => {}),
+      findAll: mock(async () => [{ ...first }, { ...second }]),
+      save: mock(async (candidate: ManagedAccount) => {
+        if (candidate.id === first.id) {
+          throw new Error('SQLITE_BUSY: database is locked')
+        }
+      })
+    } as any
+    const refreshedIds: string[] = []
+    const refresh = mock(async (auth: KiroAuthDetails) => {
+      const id = auth.email?.replace('@example.com', '') ?? 'unknown'
+      refreshedIds.push(id)
+      return {
+        ...auth,
+        access: `fresh-access-${id}`,
+        expires: Date.now() + 3600000
+      }
+    })
+    const refresher = new TokenRefresher(
+      refresherConfig,
+      manager,
+      mock(async () => {}),
+      repository,
+      {
+        refreshAccessToken: refresh,
+        sleep: async () => {},
+        random: () => 0
+      }
+    )
+    const accountFailureLog = spyOn(logger, 'error').mockImplementation(() => {})
+    const controller = new KeepAliveController(
+      keepAliveEnabledConfig,
+      manager,
+      refresher,
+      repository
+    )
+    controllers.push(controller)
+
+    try {
+      await controller.runOnceForTest()
+
+      expect(refreshedIds).toEqual([first.id, second.id])
+      expect(second.accessToken).toBe(`fresh-access-${second.id}`)
+      expect(
+        accountFailureLog.mock.calls.some(
+          (call) => call[0] === 'Kiro token keep-alive account refresh failed'
+        )
+      ).toBe(false)
+    } finally {
+      accountFailureLog.mockRestore()
+    }
   })
 })
