@@ -214,6 +214,37 @@ describe('withDatabaseLockSync', () => {
 })
 
 describe('withRefreshLock', () => {
+  test('waits through sustained contention until the refresh lock is released within the deadline', async () => {
+    const accountId = 'refresh-sustained-contention'
+    removeRefreshLock(accountId)
+    const firstEntered = deferred()
+    const releaseFirst = deferred()
+
+    try {
+      const first = withRefreshLock(accountId, async () => {
+        firstEntered.resolve()
+        await releaseFirst.promise
+      })
+      await firstEntered.promise
+
+      const second = withRefreshLock(accountId, async () => 'second')
+      const secondOutcome = second.then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (error: unknown) => ({ status: 'rejected' as const, error })
+      )
+      await new Promise((resolve) => setTimeout(resolve, 8500))
+      releaseFirst.resolve()
+
+      await first
+      const outcome = await secondOutcome
+      if (outcome.status === 'rejected') throw outcome.error
+      expect(outcome.value).toBe('second')
+    } finally {
+      releaseFirst.resolve()
+      removeRefreshLock(accountId)
+    }
+  }, 12000)
+
   test('runs the callback, returns its value, and releases for a second acquisition', async () => {
     const accountId = 'refresh-return-value'
     removeRefreshLock(accountId)
