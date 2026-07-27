@@ -110,10 +110,13 @@ function expectWholeTokenTripleFromOneInput(
 describe('withDatabaseLock', () => {
   test('retries a transient lock-directory ENOENT, then runs and releases exactly once', async () => {
     const path = tempDbPath()
+    const originalLock = lockfile.lock
     let lockAttempts = 0
     let callbackCalls = 0
     let releaseCalls = 0
-    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath) => {
+    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath, options) => {
+      if (lockPath !== path) return originalLock(lockPath, options)
+
       lockAttempts++
       if (lockAttempts === 1) {
         throw lockStatEnoent(`${lockPath}.lock`)
@@ -140,15 +143,22 @@ describe('withDatabaseLock', () => {
 
   test('stops retrying a persistent lock-directory ENOENT when the deadline expires', async () => {
     const path = tempDbPath()
+    const originalLock = lockfile.lock
+    const startedAt = Date.now()
     const error = lockStatEnoent(`${path}.lock`)
     let lockAttempts = 0
     let callbackCalls = 0
-    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async () => {
+    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath, options) => {
+      if (lockPath !== path) return originalLock(lockPath, options)
+
       lockAttempts++
       throw error
     })
-    const nowValues = [0, 9999, 10000]
-    const nowSpy = spyOn(Date, 'now').mockImplementation(() => nowValues.shift() ?? 10000)
+    const nowSpy = spyOn(Date, 'now').mockImplementation(() => {
+      if (lockAttempts === 0) return startedAt
+      if (lockAttempts === 1) return startedAt + 9999
+      return startedAt + 10000
+    })
 
     try {
       await expect(
@@ -266,10 +276,13 @@ describe('withDatabaseLock', () => {
 describe('withDatabaseLockSync', () => {
   test('retries a transient lock-directory ENOENT, then runs and releases exactly once', () => {
     const path = tempDbPath()
+    const originalLockSync = lockfile.lockSync
     let lockAttempts = 0
     let callbackCalls = 0
     let releaseCalls = 0
-    const lockSpy = spyOn(lockfile, 'lockSync').mockImplementation((lockPath) => {
+    const lockSpy = spyOn(lockfile, 'lockSync').mockImplementation((lockPath, options) => {
+      if (lockPath !== path) return originalLockSync(lockPath, options)
+
       lockAttempts++
       if (lockAttempts === 1) {
         throw lockStatEnoent(`${lockPath}.lock`)
@@ -328,11 +341,15 @@ describe('withDatabaseLockSync', () => {
 describe('withRefreshLock', () => {
   test('retries a transient lock-directory ENOENT, then runs and releases exactly once', async () => {
     const accountId = 'refresh-enoent-retry'
+    const targetLockPath = getRefreshLockPath(accountId)
     removeRefreshLock(accountId)
+    const originalLock = lockfile.lock
     let lockAttempts = 0
     let callbackCalls = 0
     let releaseCalls = 0
-    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath) => {
+    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath, options) => {
+      if (lockPath !== targetLockPath) return originalLock(lockPath, options)
+
       lockAttempts++
       if (lockAttempts === 1) {
         throw lockStatEnoent(`${lockPath}.lock`)
