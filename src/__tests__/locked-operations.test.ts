@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import lockfile from 'proper-lockfile'
@@ -8,7 +8,6 @@ import {
   deduplicateAccounts,
   getRefreshLockPath,
   mergeAccounts,
-  withDatabaseLock,
   withDatabaseLockSync,
   withRefreshLock
 } from '../plugin/storage/locked-operations.js'
@@ -106,172 +105,6 @@ function expectWholeTokenTripleFromOneInput(
   const matchesIncoming = tokenTripleMatches(merged, incoming)
   expect(matchesExisting !== matchesIncoming).toBe(true)
 }
-
-describe('withDatabaseLock', () => {
-  test('retries a transient lock-directory ENOENT, then runs and releases exactly once', async () => {
-    const path = tempDbPath()
-    const originalLock = lockfile.lock
-    let lockAttempts = 0
-    let callbackCalls = 0
-    let releaseCalls = 0
-    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath, options) => {
-      if (lockPath !== path) return originalLock(lockPath, options)
-
-      lockAttempts++
-      if (lockAttempts === 1) {
-        throw lockStatEnoent(`${lockPath}.lock`)
-      }
-      return async () => {
-        releaseCalls++
-      }
-    })
-
-    try {
-      const result = await withDatabaseLock(path, async () => {
-        callbackCalls++
-        return 'ok'
-      })
-
-      expect(result).toBe('ok')
-      expect(lockAttempts).toBe(2)
-      expect(callbackCalls).toBe(1)
-      expect(releaseCalls).toBe(1)
-    } finally {
-      lockSpy.mockRestore()
-    }
-  })
-
-  test('stops retrying a persistent lock-directory ENOENT when the deadline expires', async () => {
-    const path = tempDbPath()
-    const originalLock = lockfile.lock
-    const startedAt = Date.now()
-    const error = lockStatEnoent(`${path}.lock`)
-    let lockAttempts = 0
-    let callbackCalls = 0
-    const lockSpy = spyOn(lockfile, 'lock').mockImplementation(async (lockPath, options) => {
-      if (lockPath !== path) return originalLock(lockPath, options)
-
-      lockAttempts++
-      throw error
-    })
-    const nowSpy = spyOn(Date, 'now').mockImplementation(() => {
-      if (lockAttempts === 0) return startedAt
-      if (lockAttempts === 1) return startedAt + 9999
-      return startedAt + 10000
-    })
-
-    try {
-      await expect(
-        withDatabaseLock(path, async () => {
-          callbackCalls++
-        })
-      ).rejects.toBe(error)
-      expect(lockAttempts).toBe(2)
-      expect(callbackCalls).toBe(0)
-    } finally {
-      nowSpy.mockRestore()
-      lockSpy.mockRestore()
-    }
-  })
-
-  test('does not retry an ENOENT thrown by the business callback', async () => {
-    const path = tempDbPath()
-    const error = lockStatEnoent('/missing/business-input')
-    let callbackCalls = 0
-
-    await expect(
-      withDatabaseLock(path, async () => {
-        callbackCalls++
-        throw error
-      })
-    ).rejects.toBe(error)
-    expect(callbackCalls).toBe(1)
-  })
-
-  test('creates the db file if missing, then runs the callback and returns its value', async () => {
-    const path = tempDbPath()
-    expect(existsSync(path)).toBe(false)
-
-    const result = await withDatabaseLock(path, async () => {
-      expect(existsSync(path)).toBe(true)
-      return 'ok'
-    })
-
-    expect(result).toBe('ok')
-    expect(existsSync(path)).toBe(true)
-  })
-
-  test('releases the lock so a second acquisition succeeds', async () => {
-    const path = tempDbPath()
-    await withDatabaseLock(path, async () => 'first')
-    const second = await withDatabaseLock(path, async () => 'second')
-    expect(second).toBe('second')
-  })
-
-  test('serializes concurrent lock holders: no overlap of critical sections', async () => {
-    const path = tempDbPath()
-    let active = 0
-    let maxConcurrent = 0
-    const order: number[] = []
-
-    const worker = (n: number) =>
-      withDatabaseLock(path, async () => {
-        active++
-        maxConcurrent = Math.max(maxConcurrent, active)
-        await new Promise((r) => setTimeout(r, 20))
-        order.push(n)
-        active--
-      })
-
-    await Promise.all([worker(1), worker(2), worker(3)])
-
-    // proper-lockfile guarantees mutual exclusion: only one holder at a time.
-    expect(maxConcurrent).toBe(1)
-    expect(order.sort()).toEqual([1, 2, 3])
-  })
-
-  test('waits through sustained contention until the lock is released within the deadline', async () => {
-    const path = tempDbPath()
-    const firstEntered = deferred()
-    const releaseFirst = deferred()
-
-    const first = withDatabaseLock(path, async () => {
-      firstEntered.resolve()
-      await releaseFirst.promise
-    })
-    await firstEntered.promise
-
-    const second = withDatabaseLock(path, async () => 'second')
-    await new Promise((resolve) => setTimeout(resolve, 3000))
-    releaseFirst.resolve()
-
-    await first
-    await expect(second).resolves.toBe('second')
-  })
-
-  test('propagates the callback error but still releases the lock', async () => {
-    const path = tempDbPath()
-    await expect(
-      withDatabaseLock(path, async () => {
-        throw new Error('inner failure')
-      })
-    ).rejects.toThrow('inner failure')
-
-    // Lock was released despite the throw: a subsequent acquisition works.
-    const after = await withDatabaseLock(path, async () => 'recovered')
-    expect(after).toBe('recovered')
-  })
-
-  test('reuses an existing (non-empty) db file without truncating it', async () => {
-    const path = tempDbPath()
-    await withDatabaseLock(path, async () => {})
-    // Seed content, then lock again — the existsSync branch must NOT rewrite it.
-    const { writeFileSync } = await import('node:fs')
-    writeFileSync(path, 'SEEDED')
-    await withDatabaseLock(path, async () => {})
-    expect(readFileSync(path, 'utf8')).toBe('SEEDED')
-  })
-})
 
 describe('withDatabaseLockSync', () => {
   test('retries a transient lock-directory ENOENT, then runs and releases exactly once', () => {

@@ -8,15 +8,6 @@ import type { ManagedAccount } from '../types'
 
 export { getKeepAliveLockPath, getRefreshLockPath } from '../paths.js'
 
-const DATABASE_LOCK_OPTIONS = {
-  stale: 10000,
-  retries: 0,
-  realpath: false
-}
-const DATABASE_LOCK_DEADLINE_MS = 10000
-const DATABASE_LOCK_MIN_BACKOFF_MS = 25
-const DATABASE_LOCK_MAX_BACKOFF_MS = 250
-
 const REFRESH_LOCK_OPTIONS = {
   stale: 15000,
   retries: 0,
@@ -61,28 +52,6 @@ function asyncBackoff(
   const floor = Math.max(1, Math.floor(ceiling / 2))
   const delay = floor + Math.floor(Math.random() * (ceiling - floor + 1))
   return new Promise((resolve) => setTimeout(resolve, delay))
-}
-
-async function acquireDatabaseLock(dbPath: string): Promise<LockRelease> {
-  // A deadline avoids fixed retry-count starvation; jitter keeps contenders
-  // from repeatedly attempting the atomic mkdir in lockstep.
-  const deadline = Date.now() + DATABASE_LOCK_DEADLINE_MS
-  let attempt = 0
-
-  for (;;) {
-    try {
-      return await lockfile.lock(dbPath, DATABASE_LOCK_OPTIONS)
-    } catch (e) {
-      const remainingMs = deadline - Date.now()
-      if (!isRetryableLockAcquisitionError(e) || remainingMs <= 0) throw e
-      await asyncBackoff(
-        attempt++,
-        remainingMs,
-        DATABASE_LOCK_MIN_BACKOFF_MS,
-        DATABASE_LOCK_MAX_BACKOFF_MS
-      )
-    }
-  }
 }
 
 async function acquireRefreshLock(lockPath: string): Promise<LockRelease> {
@@ -135,27 +104,6 @@ export function withDatabaseLockSync<T>(dbPath: string, fn: () => T): T {
       release()
     } catch (e) {
       console.warn('Failed to release lock:', e)
-    }
-  }
-}
-
-export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
-  if (!existsSync(dbPath)) {
-    await fs.mkdir(dirname(dbPath), { recursive: true })
-    await fs.writeFile(dbPath, '')
-  }
-
-  let release: (() => Promise<void>) | null = null
-  try {
-    release = await acquireDatabaseLock(dbPath)
-    return await fn()
-  } finally {
-    if (release) {
-      try {
-        await release()
-      } catch (e) {
-        console.warn('Failed to release lock:', e)
-      }
     }
   }
 }
