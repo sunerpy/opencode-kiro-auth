@@ -24,6 +24,7 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
+const MAX_STREAM_ATTEMPTS = 3
 type UpstreamWaitPhase = 'SDK response' | 'stream event'
 
 function describeError(error: unknown, depth = 0): unknown {
@@ -216,6 +217,20 @@ export class RequestHandler {
         }
 
         const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
+        const streamAttempt = streamFailureCount + 1
+        const streamLogDetails = (
+          details: Record<string, unknown> = {}
+        ): Record<string, unknown> => ({
+          conversationId: sdkPrep.conversationId,
+          model,
+          effectiveModel: sdkPrep.effectiveModel,
+          region: sdkPrep.region,
+          account: acc.email,
+          accountId: acc.id,
+          streamAttempt,
+          maxStreamAttempts: MAX_STREAM_ATTEMPTS,
+          ...details
+        })
 
         if (this.config.enable_log_effort_debug) {
           try {
@@ -267,6 +282,7 @@ export class RequestHandler {
             const messageContext =
               sdkPrep.conversationState.currentMessage?.userInputMessage?.userInputMessageContext
             beginUpstreamWait('SDK response', this.config.sdk_response_timeout_ms, {
+              conversationId: sdkPrep.conversationId,
               model,
               effectiveModel: sdkPrep.effectiveModel,
               effort: sdkPrep.effort,
@@ -301,6 +317,7 @@ export class RequestHandler {
                 }
                 if (!this.config.stream_event_timeout_enabled) return
                 beginUpstreamWait('stream event', this.config.request_timeout_ms, {
+                  conversationId: sdkPrep.conversationId,
                   model,
                   effectiveModel: sdkPrep.effectiveModel,
                   region: sdkPrep.region,
@@ -308,23 +325,42 @@ export class RequestHandler {
                 })
               },
               onUpstreamWaitEnd: endUpstreamWait,
-              onIterationError: (error, afterCompletionMetadata) =>
-                logger.warn('Kiro SDK event stream iteration failed', {
-                  model,
-                  effectiveModel: sdkPrep.effectiveModel,
-                  region: sdkPrep.region,
-                  platform: process.platform,
-                  afterCompletionMetadata,
-                  recovered: afterCompletionMetadata,
-                  error: describeError(error)
-                }),
+              onIterationError: (error, afterCompletionMetadata) => {
+                if (!afterCompletionMetadata) return
+                logger.log(
+                  'Kiro SDK event stream closed after completion metadata',
+                  streamLogDetails({
+                    outcome: 'ignored_after_completion_metadata',
+                    platform: process.platform,
+                    afterCompletionMetadata,
+                    error: describeError(error)
+                  })
+                )
+              },
               onComplete: completeRequest,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),
-              mapError: (error) => new UpstreamUnexpectedError(error, true)
+              mapError: (error) => {
+                logger.error(
+                  'Kiro SDK event stream iteration failed',
+                  streamLogDetails({
+                    outcome: 'terminated_after_output',
+                    platform: process.platform,
+                    emittedOutput: true,
+                    error: describeError(error)
+                  })
+                )
+                return new UpstreamUnexpectedError(error, true)
+              }
             }
           )
 
+          if (streamFailureCount > 0) {
+            logger.log(
+              'Kiro SDK event stream retry recovered',
+              streamLogDetails({ outcome: 'recovered', attempts: streamAttempt })
+            )
+          }
           if (sdkPrep.streaming) {
             responseOwnsLifecycle = true
           } else {
@@ -337,15 +373,38 @@ export class RequestHandler {
           if (e instanceof SdkEventStreamIterationError) {
             streamFailureCount++
             const streamError = new UpstreamUnexpectedError(e, false)
-            if (streamFailureCount >= 3) return streamError.toResponse()
+            if (streamFailureCount >= MAX_STREAM_ATTEMPTS) {
+              logger.error(
+                'Kiro SDK event stream iteration failed',
+                streamLogDetails({
+                  outcome: 'exhausted',
+                  platform: process.platform,
+                  attempts: streamFailureCount,
+                  error: describeError(e)
+                })
+              )
+              return streamError.toResponse()
+            }
 
-            await this.sleep(this.getStreamRetryDelay(streamFailureCount), signal)
+            const delayMs = this.getStreamRetryDelay(streamFailureCount)
+            await this.sleep(delayMs, signal)
             if (streamFailureCount === 1) {
               forcedStreamAccount = acc
             } else {
               forcedStreamAccount =
                 (await this.accountSelector.selectAlternativeAccount(new Set([acc.id]))) ?? acc
             }
+            logger.warn(
+              'Kiro SDK event stream iteration failed',
+              streamLogDetails({
+                outcome: 'retrying',
+                platform: process.platform,
+                nextAttempt: streamFailureCount + 1,
+                delayMs,
+                nextAccount: forcedStreamAccount.email,
+                error: describeError(e)
+              })
+            )
             continue
           }
 

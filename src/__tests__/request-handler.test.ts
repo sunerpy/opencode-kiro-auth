@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { RequestHandler } from '../core/request/request-handler.js'
 import { ResponseHandler } from '../core/request/response-handler.js'
+import * as logger from '../plugin/logger.js'
 import type { ManagedAccount, SdkPreparedRequest } from '../plugin/types.js'
 
 // RequestHandler is pure orchestration: handle() routes by KIRO_API_PATTERN
@@ -216,6 +217,22 @@ function installImmediateStreamBackoff(handler: RequestHandler): void {
   }
 }
 
+function captureLogger() {
+  const log = spyOn(logger, 'log').mockImplementation(() => {})
+  const warn = spyOn(logger, 'warn').mockImplementation(() => {})
+  const error = spyOn(logger, 'error').mockImplementation(() => {})
+  return {
+    log,
+    warn,
+    error,
+    restore() {
+      error.mockRestore()
+      warn.mockRestore()
+      log.mockRestore()
+    }
+  }
+}
+
 describe('RequestHandler.handle — routing', () => {
   test('non-Kiro URL passes straight through to global fetch untouched', async () => {
     const sentinel = new Response('passthrough', { status: 201 })
@@ -301,6 +318,181 @@ describe('RequestHandler.handle — Kiro success path', () => {
 })
 
 describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
+  test('logs retrying and recovered outcomes with request, account, and attempt correlation', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([], new Error('decode before output')),
+          sdkStream([{ assistantResponseEvent: { content: 'recovered response' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      expect(logs.warn).toHaveBeenCalledWith(
+        'Kiro SDK event stream iteration failed',
+        expect.objectContaining({
+          outcome: 'retrying',
+          conversationId: 'c1',
+          account: 'A@example.com',
+          accountId: 'A',
+          streamAttempt: 1,
+          maxStreamAttempts: 3,
+          nextAttempt: 2,
+          delayMs: 250,
+          nextAccount: 'A@example.com'
+        })
+      )
+      expect(logs.log).toHaveBeenCalledWith(
+        'Kiro SDK event stream retry recovered',
+        expect.objectContaining({
+          outcome: 'recovered',
+          conversationId: 'c1',
+          account: 'A@example.com',
+          accountId: 'A',
+          streamAttempt: 2,
+          maxStreamAttempts: 3,
+          attempts: 2
+        })
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('logs exhausted after three attempts without changing the structured 503 response', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const failure = new Error('persistent stream failure')
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream([], failure), sdkStream([], failure), sdkStream([], failure)],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      expect(logs.error).toHaveBeenCalledWith(
+        'Kiro SDK event stream iteration failed',
+        expect.objectContaining({
+          outcome: 'exhausted',
+          conversationId: 'c1',
+          account: 'A@example.com',
+          accountId: 'A',
+          streamAttempt: 3,
+          maxStreamAttempts: 3,
+          attempts: 3
+        })
+      )
+      expect(response.status).toBe(503)
+      expect(await response.json()).toEqual({
+        retryable: true,
+        phase: 'stream',
+        emittedOutput: false,
+        code: 'UPSTREAM_UNEXPECTED'
+      })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('logs terminated_after_output when reasoning output prevents replay', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [{ reasoningContentEvent: { text: 'visible reasoning' } }],
+            new Error('late stream failure')
+          )
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const reader = response.body!.getReader()
+      await reader.read()
+      await expect(reader.read()).rejects.toMatchObject({
+        name: 'UpstreamUnexpectedError',
+        emittedOutput: true
+      })
+
+      expect(logs.error).toHaveBeenCalledWith(
+        'Kiro SDK event stream iteration failed',
+        expect.objectContaining({
+          outcome: 'terminated_after_output',
+          conversationId: 'c1',
+          account: 'A@example.com',
+          accountId: 'A',
+          streamAttempt: 1,
+          maxStreamAttempts: 3,
+          emittedOutput: true
+        })
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('logs completion-metadata transport close as ignored without a failure message', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const terminated = new TypeError('terminated', {
+        cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+      })
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [
+              { assistantResponseEvent: { content: 'complete response' } },
+              { metadataEvent: { tokenUsage: { inputTokens: 4, outputTokens: 2 } } }
+            ],
+            terminated
+          )
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      expect(logs.log).toHaveBeenCalledWith(
+        'Kiro SDK event stream closed after completion metadata',
+        expect.objectContaining({
+          outcome: 'ignored_after_completion_metadata',
+          conversationId: 'c1',
+          account: 'A@example.com',
+          accountId: 'A',
+          streamAttempt: 1,
+          maxStreamAttempts: 3
+        })
+      )
+      expect(
+        [...logs.log.mock.calls, ...logs.warn.mock.calls, ...logs.error.mock.calls].some(
+          (call) => call[0] === 'Kiro SDK event stream iteration failed'
+        )
+      ).toBe(false)
+    } finally {
+      logs.restore()
+    }
+  })
+
   test('retries two pre-output failures and exposes only the successful attempt', async () => {
     const acc = makeAccount({ id: 'A' })
     const { handler, fakes } = buildHandler({
