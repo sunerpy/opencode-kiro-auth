@@ -23,6 +23,8 @@ const KIRO_ENV_KEYS = [
   'KIRO_MAX_REQUEST_ITERATIONS',
   'KIRO_REQUEST_TIMEOUT_MS',
   'KIRO_STREAM_EVENT_TIMEOUT_ENABLED',
+  'KIRO_STREAM_BUFFER_UNTIL_COMPLETE',
+  'KIRO_STREAM_MAX_ATTEMPTS',
   'KIRO_SDK_RESPONSE_TIMEOUT_ENABLED',
   'KIRO_SDK_RESPONSE_TIMEOUT_MS',
   'KIRO_TOKEN_EXPIRY_BUFFER_MS',
@@ -91,6 +93,8 @@ describe('loadConfig defaults', () => {
     expect(cfg.max_request_iterations).toBe(20)
     expect(cfg.request_timeout_ms).toBe(120000)
     expect(cfg.stream_event_timeout_enabled).toBe(false)
+    expect(cfg.stream_buffer_until_complete).toBe(false)
+    expect(cfg.stream_max_attempts).toBe(3)
     expect(cfg.sdk_response_timeout_enabled).toBe(false)
     expect(cfg.sdk_response_timeout_ms).toBe(300000)
     expect(cfg.token_expiry_buffer_ms).toBe(300000)
@@ -144,15 +148,22 @@ describe('loadConfig env overrides', () => {
     expect(loadConfig(projectDir).stream_event_timeout_enabled).toBe(true)
   })
 
+  test('KIRO_STREAM_BUFFER_UNTIL_COMPLETE opts into replay-safe stream delivery', () => {
+    process.env.KIRO_STREAM_BUFFER_UNTIL_COMPLETE = 'true'
+    expect(loadConfig(projectDir).stream_buffer_until_complete).toBe(true)
+  })
+
   test('number env overrides parse numerically', () => {
     process.env.KIRO_QUOTA_RESERVE_THRESHOLD = '0.5'
     process.env.KIRO_RATE_LIMIT_MAX_RETRIES = '7'
     process.env.KIRO_REQUEST_TIMEOUT_MS = '90000'
+    process.env.KIRO_STREAM_MAX_ATTEMPTS = '5'
     process.env.KIRO_SDK_RESPONSE_TIMEOUT_MS = '360000'
     const cfg = loadConfig(projectDir)
     expect(cfg.quota_reserve_threshold).toBe(0.5)
     expect(cfg.rate_limit_max_retries).toBe(7)
     expect(cfg.request_timeout_ms).toBe(90000)
+    expect(cfg.stream_max_attempts).toBe(5)
     expect(cfg.sdk_response_timeout_ms).toBe(360000)
   })
 

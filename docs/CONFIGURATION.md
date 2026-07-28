@@ -25,6 +25,8 @@ root [README](../README.md#configuration) for the short version.
   "sdk_response_timeout_ms": 300000,
   "stream_event_timeout_enabled": false,
   "request_timeout_ms": 120000,
+  "stream_buffer_until_complete": false,
+  "stream_max_attempts": 3,
   "token_expiry_buffer_ms": 300000,
   "token_keepalive_enabled": false,
   "token_keepalive_interval_ms": 600000,
@@ -111,6 +113,23 @@ because moving a live database during an upgrade is unsafe.
   `stream_event_timeout_enabled` is `true` (30000-600000ms, default: `120000`).
   It starts only after the first raw event and is paused while the downstream
   consumer is not pulling. Override with `KIRO_REQUEST_TIMEOUT_MS`.
+- `stream_buffer_until_complete`: Consume and validate the complete Kiro event
+  stream before exposing any output to OpenCode (default: `false`). Enable this
+  when long-running agent tasks are more important than live token display. If
+  the upstream connection resets after producing partial content or a partial
+  tool call, the failed attempt remains private to the plugin and can be safely
+  retried without duplicating downstream content or executing a tool twice.
+  Successful responses are still returned as OpenAI-compatible SSE, but their
+  chunks arrive only after Kiro finishes the complete response. Each failed
+  upstream attempt may still consume Kiro quota. Because the response is
+  validated before `RequestHandler.handle()` returns, this mode also holds the
+  process-local Kiro request queue until the upstream response completes.
+  Override with `KIRO_STREAM_BUFFER_UNTIL_COMPLETE`.
+- `stream_max_attempts`: Maximum complete event-stream attempts (`1`-`10`,
+  default: `3`). In normal live-stream mode, retries remain limited to failures
+  before semantic output. With `stream_buffer_until_complete` enabled, this
+  limit also covers failures after upstream output because none of that attempt
+  has reached OpenCode yet. Override with `KIRO_STREAM_MAX_ATTEMPTS`.
 - `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms, default:
   `300000`). An access token within this window of expiry is treated as expired
   and refreshed on next use.

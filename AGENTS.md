@@ -84,28 +84,35 @@ that typed error and:
   attempts. Attempt 1's retry reuses the current account; attempt 2 prefers a
   healthy alternative via `AccountSelector.selectAlternativeAccount`
   (account-selector.ts:73). Backoff is 250/500ms base + 0–25% jitter.
-- **After output has been emitted** — never re-calls the SDK (no replay of
-  content/tool calls). The stream ends and the failure surfaces as
+- **After output has been emitted in live-stream mode** — never re-calls the SDK
+  (no replay of content/tool calls). The stream ends and the failure surfaces as
   `UpstreamUnexpectedError` with `emittedOutput: true`.
+- **With `stream_buffer_until_complete` enabled** — consumes the entire
+  transformed SSE response before exposing any chunk to OpenCode. An iterator
+  failure at any point therefore remains a pre-delivery failure and can be
+  retried without duplicating content or tool calls. This deliberately trades
+  live token display for task continuity. `stream_max_attempts` (default 3,
+  range 1-10) controls the bounded retry count.
 - **On exhaustion** — returns a structured HTTP 503 via
   `UpstreamUnexpectedError.toResponse()`:
   `{"retryable":true,"phase":"stream","emittedOutput":false,"code":"UPSTREAM_UNEXPECTED"}`.
 
-Output uses a pull-driven `ReadableStream` with `highWaterMark: 0`; an empty
-stream still emits a terminal `finish_reason:"stop"` SSE chunk. Caller abort is
-threaded through the SDK send, iterator, stream-retry backoff, and every
-ErrorHandler/AccountSelector wait. The initial `client.send()` deadline is
-disabled by default; `sdk_response_timeout_enabled` opts into the
-`sdk_response_timeout_ms` fixed deadline, which continues through the first raw
-stream event. When that deadline is disabled, the first event has no plugin
-deadline but remains caller-cancellable. Stream-event inactivity deadlines are
-also disabled by default because a silent event gap can be valid model
-computation; `stream_event_timeout_enabled` opts into using
-`request_timeout_ms` (default 120s) for each post-first-event iterator `next()`
-wait, paused during downstream backpressure. Initial-response timeouts are not
-automatically retried because the server may already be generating, so replay
-could duplicate output and quota usage. All terminal paths release the static
-request queue.
+Live output uses a pull-driven `ReadableStream` with `highWaterMark: 0`; buffered
+recovery mode consumes that same transformed stream to completion and then
+returns a pull-driven in-memory SSE response. An empty stream still emits a
+terminal `finish_reason:"stop"` SSE chunk. Caller abort is threaded through the
+SDK send, iterator, stream-retry backoff, and every ErrorHandler/AccountSelector
+wait. The initial `client.send()` deadline is disabled by default;
+`sdk_response_timeout_enabled` opts into the `sdk_response_timeout_ms` fixed
+deadline, which continues through the first raw stream event. When that deadline
+is disabled, the first event has no plugin deadline but remains
+caller-cancellable. Stream-event inactivity deadlines are also disabled by
+default because a silent event gap can be valid model computation;
+`stream_event_timeout_enabled` opts into using `request_timeout_ms` (default
+120s) for each post-first-event iterator `next()` wait, paused during downstream
+backpressure. Initial-response timeouts are not automatically retried because
+the server may already be generating, so replay could duplicate output and
+quota usage. All terminal paths release the static request queue.
 A per-account **attempt epoch** plus `UsageTracker.syncUsage(..., isValid)`
 prevents a stale (superseded) stream from committing success or usage over a
 newer failure.

@@ -58,6 +58,8 @@ const baseConfig = {
   max_request_iterations: 20,
   request_timeout_ms: 60000,
   stream_event_timeout_enabled: false,
+  stream_buffer_until_complete: false,
+  stream_max_attempts: 3,
   sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
   rate_limit_max_retries: 3,
@@ -99,6 +101,8 @@ function buildHandler(opts: {
   alternativeAccount?: ManagedAccount | null
   requestTimeoutMs?: number
   streamEventTimeoutEnabled?: boolean
+  streamBufferUntilComplete?: boolean
+  streamMaxAttempts?: number
   sdkResponseTimeoutEnabled?: boolean
   sdkResponseTimeoutMs?: number
 }): { handler: RequestHandler; fakes: Fakes } {
@@ -170,6 +174,9 @@ function buildHandler(opts: {
       request_timeout_ms: opts.requestTimeoutMs ?? baseConfig.request_timeout_ms,
       stream_event_timeout_enabled:
         opts.streamEventTimeoutEnabled ?? baseConfig.stream_event_timeout_enabled,
+      stream_buffer_until_complete:
+        opts.streamBufferUntilComplete ?? baseConfig.stream_buffer_until_complete,
+      stream_max_attempts: opts.streamMaxAttempts ?? baseConfig.stream_max_attempts,
       sdk_response_timeout_enabled:
         opts.sdkResponseTimeoutEnabled ?? baseConfig.sdk_response_timeout_enabled,
       sdk_response_timeout_ms: opts.sdkResponseTimeoutMs ?? baseConfig.sdk_response_timeout_ms
@@ -610,6 +617,71 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     })
     expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
     expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+  })
+
+  test('buffered mode retries a post-output reset and exposes only the complete attempt', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const reset = Object.assign(new Error('socket reset after partial output'), {
+      code: 'ECONNRESET'
+    })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [
+            { reasoningContentEvent: { text: 'discarded partial reasoning' } },
+            {
+              toolUseEvent: {
+                name: 'discarded_tool',
+                toolUseId: 'discarded-tool-id',
+                input: '{"unsafe":true}',
+                stop: true
+              }
+            }
+          ],
+          reset
+        ),
+        sdkStream([
+          { reasoningContentEvent: { text: 'complete reasoning' } },
+          { assistantResponseEvent: { content: 'complete answer' } }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamBufferUntilComplete: true,
+      streamMaxAttempts: 5
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+    expect(body).toContain('complete reasoning')
+    expect(body).toContain('complete answer')
+    expect(body).not.toContain('discarded partial reasoning')
+    expect(body).not.toContain('discarded_tool')
+    expect(body).not.toContain('discarded-tool-id')
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+  })
+
+  test('stream retry exhaustion honors the configured maximum attempts', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const failure = new Error('persistent stream failure')
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkStream([], failure), sdkStream([], failure)],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamBufferUntilComplete: true,
+      streamMaxAttempts: 2
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    expect(response.status).toBe(503)
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
   })
 
   test('transport close after completion metadata finalizes the response successfully', async () => {

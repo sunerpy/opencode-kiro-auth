@@ -248,6 +248,113 @@ describe('handleSdkSuccess — streaming', () => {
     expect(emitted).toEqual([true])
   })
 
+  test('buffered delivery turns a post-output failure into a pre-delivery rejection', async () => {
+    const upstream = Object.assign(new Error('socket reset after output'), { code: 'ECONNRESET' })
+    const mapCalls: unknown[] = []
+
+    await expect(
+      new ResponseHandler().handleSdkSuccess(
+        makeFailingSdkResponse(
+          [{ reasoningContentEvent: { text: 'must remain private to failed attempt' } }],
+          upstream
+        ),
+        'auto',
+        'buffered-failure',
+        true,
+        {
+          bufferUntilComplete: true,
+          mapError(error) {
+            mapCalls.push(error)
+            return error
+          }
+        }
+      )
+    ).rejects.toMatchObject({
+      name: 'SdkEventStreamIterationError',
+      cause: upstream
+    })
+
+    expect(mapCalls).toEqual([])
+  })
+
+  test('buffered delivery returns the complete SSE sequence after upstream completion', async () => {
+    let completions = 0
+    const response = await new ResponseHandler().handleSdkSuccess(
+      makeSdkResponse([
+        { reasoningContentEvent: { text: 'thinking' } },
+        { assistantResponseEvent: { content: 'complete answer' } },
+        { metadataEvent: { tokenUsage: { inputTokens: 2, outputTokens: 3 } } }
+      ]),
+      'auto',
+      'buffered-success',
+      true,
+      {
+        bufferUntilComplete: true,
+        onComplete() {
+          completions++
+        }
+      }
+    )
+
+    expect(completions).toBe(1)
+    const chunks = await readSseChunks(response)
+    expect(
+      chunks
+        .map((chunk) => chunk.choices?.[0]?.delta?.content)
+        .filter((content) => content !== undefined)
+        .join('')
+    ).toBe('complete answer')
+  })
+
+  test('caller abort while buffering closes the raw iterator before any Response is exposed', async () => {
+    const controller = new AbortController()
+    let returnCalls = 0
+    let nextCalls = 0
+    let markSecondNextStarted!: () => void
+    const secondNextStarted = new Promise<void>((resolve) => {
+      markSecondNextStarted = resolve
+    })
+    const sdkResponse = {
+      generateAssistantResponseResponse: {
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              nextCalls++
+              if (nextCalls === 1) {
+                return {
+                  done: false,
+                  value: { reasoningContentEvent: { text: 'buffered output' } }
+                }
+              }
+              markSecondNextStarted()
+              return new Promise<IteratorResult<unknown>>(() => {})
+            },
+            async return() {
+              returnCalls++
+              return { done: true, value: undefined }
+            }
+          }
+        }
+      }
+    }
+
+    const responsePromise = new ResponseHandler().handleSdkSuccess(
+      sdkResponse,
+      'auto',
+      'buffered-abort',
+      true,
+      {
+        signal: controller.signal,
+        bufferUntilComplete: true
+      }
+    )
+    await secondNextStarted
+    controller.abort(new DOMException('request cancelled', 'AbortError'))
+
+    await expect(responsePromise).rejects.toMatchObject({ name: 'AbortError' })
+    expect(returnCalls).toBeGreaterThanOrEqual(1)
+  })
+
   test('normal completion invokes the lifecycle callback exactly once', async () => {
     let completions = 0
     const response = await new ResponseHandler().handleSdkSuccess(

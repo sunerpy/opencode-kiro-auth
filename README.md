@@ -109,6 +109,14 @@ multi-account or long-idle setups, enable
 (`token_keepalive_enabled: true`) to keep idle accounts' tokens fresh while
 OpenCode is running.
 
+For long-running agent tasks that are frequently interrupted by upstream
+`ECONNRESET` event-stream failures, enable
+`"stream_buffer_until_complete": true`. The plugin then withholds a failed
+attempt from OpenCode and safely retries it instead of exposing a partial
+assistant response or partial tool call. See
+[stream recovery configuration](docs/CONFIGURATION.md#options) for the latency
+and quota tradeoffs.
+
 Paid-overage protection is on by default; see
 [Overage protection](docs/CONFIGURATION.md#overage-protection) before disabling
 `stop_on_overage`.
@@ -230,6 +238,12 @@ Common issues — 403/AccessDeniedException with IAM Identity Center, "No
 accounts", `/connect` vs `opencode auth login`, and Kiro CLI OAuth users whose
 sync doesn't start — are covered in
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+`Kiro upstream event stream failed unexpectedly` means the upstream HTTP 200
+event stream ended before completion metadata. Live-stream mode cannot safely
+replay after output because that could duplicate text or execute a tool twice.
+Enable `stream_buffer_until_complete` when task continuity is more important
+than seeing tokens arrive live.
 
 ## Migration
 
