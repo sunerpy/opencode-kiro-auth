@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.2...v0.15.3) (2026-07-28)
+
+
+### Bug Fixes
+
+* **streaming:** 增加完整缓冲重试模式 ([#75](https://github.com/sunerpy/opencode-kiro-auth/issues/75)) ([aaf51dc](https://github.com/sunerpy/opencode-kiro-auth/commit/aaf51dc7cde4ca1f540abbf94bd3349dc4e85bfa))
+
 ## [0.15.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.1...v0.15.2) (2026-07-27)
 
 
