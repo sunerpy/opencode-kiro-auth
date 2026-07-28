@@ -194,6 +194,13 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
 
     request_timeout_ms: parseNumberEnv(env.KIRO_REQUEST_TIMEOUT_MS, config.request_timeout_ms),
 
+    stream_buffer_until_complete: parseBooleanEnv(
+      env.KIRO_STREAM_BUFFER_UNTIL_COMPLETE,
+      config.stream_buffer_until_complete
+    ),
+
+    stream_max_attempts: parseNumberEnv(env.KIRO_STREAM_MAX_ATTEMPTS, config.stream_max_attempts),
+
     token_expiry_buffer_ms: parseNumberEnv(
       env.KIRO_TOKEN_EXPIRY_BUFFER_MS,
       config.token_expiry_buffer_ms

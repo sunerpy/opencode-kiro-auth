@@ -24,7 +24,6 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
-const MAX_STREAM_ATTEMPTS = 3
 type UpstreamWaitPhase = 'SDK response' | 'stream event'
 
 function describeError(error: unknown, depth = 0): unknown {
@@ -228,7 +227,8 @@ export class RequestHandler {
           account: acc.email,
           accountId: acc.id,
           streamAttempt,
-          maxStreamAttempts: MAX_STREAM_ATTEMPTS,
+          maxStreamAttempts: this.config.stream_max_attempts,
+          streamDeliveryMode: this.config.stream_buffer_until_complete ? 'buffered' : 'live',
           ...details
         })
 
@@ -340,6 +340,7 @@ export class RequestHandler {
               onComplete: completeRequest,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),
+              bufferUntilComplete: this.config.stream_buffer_until_complete,
               mapError: (error) => {
                 logger.error(
                   'Kiro SDK event stream iteration failed',
@@ -373,7 +374,7 @@ export class RequestHandler {
           if (e instanceof SdkEventStreamIterationError) {
             streamFailureCount++
             const streamError = new UpstreamUnexpectedError(e, false)
-            if (streamFailureCount >= MAX_STREAM_ATTEMPTS) {
+            if (streamFailureCount >= this.config.stream_max_attempts) {
               logger.error(
                 'Kiro SDK event stream iteration failed',
                 streamLogDetails({

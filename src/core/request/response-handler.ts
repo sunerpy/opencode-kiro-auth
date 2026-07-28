@@ -12,6 +12,7 @@ export interface SdkResponseLifecycle {
   onTerminal?: () => void
   onCancel?: (reason: unknown) => void
   mapError?: (error: SdkEventStreamIterationError, emittedOutput: true) => unknown
+  bufferUntilComplete?: boolean
 }
 
 interface WrappedSdkStream {
@@ -146,6 +147,23 @@ function encodeSseChunk(chunk: unknown): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`)
 }
 
+function bufferedSseResponse(chunks: Uint8Array[]): Response {
+  let index = 0
+  return new Response(
+    new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          const chunk = chunks[index++]
+          if (chunk) controller.enqueue(chunk)
+          if (index >= chunks.length) controller.close()
+        }
+      },
+      { highWaterMark: 0 }
+    ),
+    { headers: { 'Content-Type': 'text/event-stream' } }
+  )
+}
+
 export class ResponseHandler {
   async handleSuccess(
     response: Response,
@@ -210,6 +228,27 @@ export class ResponseHandler {
     )
     const transformed = transformSdkStream(wrapped.response, model, conversationId)
     const buffered: Uint8Array[] = []
+
+    if (lifecycle.bufferUntilComplete) {
+      try {
+        while (true) {
+          const item = await transformed.next()
+          if (item.done) {
+            await lifecycle.onComplete?.()
+            lifecycle.onTerminal?.()
+            return bufferedSseResponse(buffered)
+          }
+          buffered.push(encodeSseChunk(item.value))
+        }
+      } catch (error) {
+        try {
+          await transformed.return(undefined)
+        } catch {}
+        await wrapped.closeRaw()
+        throw error
+      }
+    }
+
     let firstSemantic: Uint8Array | undefined
 
     while (true) {
@@ -217,20 +256,7 @@ export class ResponseHandler {
       if (item.done) {
         await lifecycle.onComplete?.()
         lifecycle.onTerminal?.()
-        let index = 0
-        return new Response(
-          new ReadableStream<Uint8Array>(
-            {
-              pull(controller) {
-                const chunk = buffered[index++]
-                if (chunk) controller.enqueue(chunk)
-                if (index >= buffered.length) controller.close()
-              }
-            },
-            { highWaterMark: 0 }
-          ),
-          { headers: { 'Content-Type': 'text/event-stream' } }
-        )
+        return bufferedSseResponse(buffered)
       }
 
       const encoded = encodeSseChunk(item.value)

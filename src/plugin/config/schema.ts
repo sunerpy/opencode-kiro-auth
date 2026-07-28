@@ -133,6 +133,19 @@ export const KiroConfigSchema = z.object({
    */
   request_timeout_ms: z.number().min(30000).max(600000).default(120000),
 
+  /**
+   * Consume the complete Kiro event stream before exposing any semantic output
+   * downstream. This trades live token display for safe retries after a
+   * mid-stream transport failure without duplicating content or tool calls.
+   */
+  stream_buffer_until_complete: z.boolean().default(false),
+
+  /**
+   * Maximum number of complete event-stream attempts. Buffered mode can safely
+   * use every attempt even when the failed upstream stream produced output.
+   */
+  stream_max_attempts: z.number().int().min(1).max(10).default(3),
+
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
 
   /**
@@ -198,6 +211,8 @@ export const DEFAULT_CONFIG: KiroConfig = {
   sdk_response_timeout_ms: 300000,
   stream_event_timeout_enabled: false,
   request_timeout_ms: 120000,
+  stream_buffer_until_complete: false,
+  stream_max_attempts: 3,
   token_expiry_buffer_ms: 300000,
   token_keepalive_enabled: false,
   token_keepalive_interval_ms: 600000,
