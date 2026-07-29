@@ -2,6 +2,7 @@ import { getContextWindowSize } from '../models.js'
 import { estimateTokens } from '../response.js'
 import { DialectGate } from './dialect-gate.js'
 import { convertToOpenAI } from './openai-converter.js'
+import type { ReasoningAccumulator, ReasoningContentEventLike } from './reasoning-accumulator.js'
 import { findRealTag } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
 import {
@@ -15,7 +16,8 @@ import {
 export async function* transformSdkStream(
   sdkResponse: any,
   model: string,
-  conversationId: string
+  conversationId: string,
+  reasoningAccumulator?: ReasoningAccumulator
 ): AsyncGenerator<any> {
   const thinkingRequested = true
 
@@ -52,7 +54,8 @@ export async function* transformSdkStream(
 
   // Probe (opus-4.8): reasoning streams via `reasoningContentEvent{text,signature}` as a
   // contiguous run BEFORE `assistantResponseEvent.content`; no `<thinking>` tags emitted.
-  // signature is metadata and ignored for rendering.
+  // `signature` and `redactedContent` are never rendered, but they ARE captured by the
+  // accumulator — a trailing signature-only event carries the token for the whole run.
   let reasoningStarted = false
   let reasoningClosed = false
 
@@ -62,19 +65,23 @@ export async function* transformSdkStream(
   }
 
   for await (const event of eventStream) {
-    if (event.reasoningContentEvent?.text) {
-      const reasoningText = event.reasoningContentEvent.text
+    if (event.reasoningContentEvent) {
+      const reasoningEvent = event.reasoningContentEvent as ReasoningContentEventLike
+      reasoningAccumulator?.observe(reasoningEvent)
 
-      if (reasoningClosed) {
-        // Defensive, normally unreached (probe: reasoning is contiguous-before-text).
-        // The stopped thinking index cannot be reused, so open a fresh one.
-        streamState.thinkingBlockIndex = null
-        reasoningClosed = false
-      }
-      reasoningStarted = true
-      for (const ev of createThinkingDeltaEvents(reasoningText, streamState)) {
-        const _c = convertToOpenAI(ev, conversationId, model)
-        if (_c !== null) yield _c
+      const reasoningText = typeof reasoningEvent.text === 'string' ? reasoningEvent.text : ''
+      if (reasoningText) {
+        if (reasoningClosed) {
+          // Defensive, normally unreached (probe: reasoning is contiguous-before-text).
+          // The stopped thinking index cannot be reused, so open a fresh one.
+          streamState.thinkingBlockIndex = null
+          reasoningClosed = false
+        }
+        reasoningStarted = true
+        for (const ev of createThinkingDeltaEvents(reasoningText, streamState)) {
+          const _c = convertToOpenAI(ev, conversationId, model)
+          if (_c !== null) yield _c
+        }
       }
       continue
     }

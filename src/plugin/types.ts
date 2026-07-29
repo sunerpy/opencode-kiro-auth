@@ -51,6 +51,13 @@ export interface ManagedAccount {
   lastUsed?: number
 }
 
+// `signature` is required, not optional: Kiro rejects an unsigned reasoning block with a
+// hard 400 (`thinking.signature: Field required`), so an unsigned envelope must have no
+// representable form.
+export type KiroReasoningContent =
+  | { kind: 'reasoningText'; text: string; signature: string }
+  | { kind: 'redactedContent'; bytes: Uint8Array }
+
 export interface CodeWhispererMessage {
   userInputMessage?: {
     content: string
@@ -79,6 +86,9 @@ export interface CodeWhispererMessage {
       name: string
       toolUseId: string
     }>
+    reasoningContent?:
+      | { reasoningText: { text: string; signature?: string }; redactedContent?: never }
+      | { reasoningText?: never; redactedContent: Uint8Array }
   }
 }
 
