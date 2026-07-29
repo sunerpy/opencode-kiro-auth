@@ -8,9 +8,11 @@ import {
   injectSystemPrompt
 } from '../infrastructure/transformers/history-builder.js'
 import {
+  applyThinkingToContent,
   findOriginalToolCall,
   getContentText,
-  mergeAdjacentMessages
+  mergeAdjacentMessages,
+  parseAssistantMessage
 } from '../infrastructure/transformers/message-transformer.js'
 import {
   convertToolsToCodeWhisperer,
@@ -134,35 +136,9 @@ function buildCodeWhispererRequest(
   const curImgs: any[] = []
 
   if (curMsg.role === 'assistant') {
-    const arm: any = { content: '' }
-    let th = ''
-    if (Array.isArray(curMsg.content)) {
-      for (const p of curMsg.content) {
-        if (p.type === 'text') arm.content += p.text || ''
-        else if (p.type === 'thinking') th += p.thinking || p.text || ''
-        else if (p.type === 'tool_use') {
-          if (!arm.toolUses) arm.toolUses = []
-          arm.toolUses.push({ input: p.input, name: p.name, toolUseId: p.id })
-        }
-      }
-    } else arm.content = getContentText(curMsg)
-    if ((curMsg as any).tool_calls && Array.isArray((curMsg as any).tool_calls)) {
-      if (!arm.toolUses) arm.toolUses = []
-      for (const tc of (curMsg as any).tool_calls) {
-        arm.toolUses.push({
-          input:
-            typeof tc.function?.arguments === 'string'
-              ? JSON.parse(tc.function.arguments)
-              : tc.function?.arguments,
-          name: tc.function?.name,
-          toolUseId: tc.id
-        })
-      }
-    }
-    if (th)
-      arm.content = arm.content
-        ? `<thinking>${th}</thinking>\n\n${arm.content}`
-        : `<thinking>${th}</thinking>`
+    const parsedCur = parseAssistantMessage(curMsg, { recoverReasoning: true })
+    const arm: any = { content: applyThinkingToContent(parsedCur.content, parsedCur.thinking) }
+    if (parsedCur.toolUses.length) arm.toolUses = parsedCur.toolUses
 
     if (arm.content || arm.toolUses) {
       history.push({ assistantResponseMessage: arm })

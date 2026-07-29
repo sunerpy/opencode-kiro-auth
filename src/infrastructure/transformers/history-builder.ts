@@ -5,7 +5,12 @@ import {
   extractTextFromParts
 } from '../../plugin/image-handler.js'
 import type { CodeWhispererMessage } from '../../plugin/types'
-import { getContentText } from './message-transformer.js'
+import {
+  applyThinkingToContent,
+  findActiveToolLoopStart,
+  getContentText,
+  parseAssistantMessage
+} from './message-transformer.js'
 import { deduplicateToolResults } from './tool-transformer.js'
 
 /**
@@ -81,6 +86,7 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
 
 export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessage[] {
   let history: CodeWhispererMessage[] = []
+  const loopStart = findActiveToolLoopStart(msgs)
   for (let i = 0; i < msgs.length - 1; i++) {
     const m = msgs[i]
     if (!m) continue
@@ -146,34 +152,9 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
         }
       })
     } else if (m.role === 'assistant') {
-      const arm: any = { content: '' }
-      const tus: any[] = []
-      let th = ''
-      if (Array.isArray(m.content)) {
-        for (const p of m.content) {
-          if (p.type === 'text') arm.content += p.text || ''
-          else if (p.type === 'thinking') th += p.thinking || p.text || ''
-          else if (p.type === 'tool_use')
-            tus.push({ input: p.input, name: p.name, toolUseId: p.id })
-        }
-      } else arm.content = getContentText(m)
-      if (m.tool_calls && Array.isArray(m.tool_calls)) {
-        for (const tc of m.tool_calls) {
-          tus.push({
-            input:
-              typeof tc.function?.arguments === 'string'
-                ? JSON.parse(tc.function.arguments)
-                : tc.function?.arguments,
-            name: tc.function?.name,
-            toolUseId: tc.id
-          })
-        }
-      }
-      if (th)
-        arm.content = arm.content
-          ? `<thinking>${th}</thinking>\n\n${arm.content}`
-          : `<thinking>${th}</thinking>`
-      if (tus.length) arm.toolUses = tus
+      const parsed = parseAssistantMessage(m, { recoverReasoning: i >= loopStart })
+      const arm: any = { content: applyThinkingToContent(parsed.content, parsed.thinking) }
+      if (parsed.toolUses.length) arm.toolUses = parsed.toolUses
 
       if (!arm.content && !arm.toolUses) {
         continue
