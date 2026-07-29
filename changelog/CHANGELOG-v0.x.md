@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.4](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.3...v0.15.4) (2026-07-29)
+
+
+### Bug Fixes
+
+* **logging:** bound and compress plugin logs ([#77](https://github.com/sunerpy/opencode-kiro-auth/issues/77)) ([8f06d5c](https://github.com/sunerpy/opencode-kiro-auth/commit/8f06d5c8ae8cccdea3a5a79b84620adfc34d6fb1))
+
 ## [0.15.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.2...v0.15.3) (2026-07-28)
 
 
