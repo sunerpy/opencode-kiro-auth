@@ -32,7 +32,11 @@ const KIRO_ENV_KEYS = [
   'KIRO_AUTH_SERVER_PORT_START',
   'KIRO_AUTH_SERVER_PORT_RANGE',
   'KIRO_USAGE_TRACKING_ENABLED',
-  'KIRO_ENABLE_LOG_API_REQUEST'
+  'KIRO_ENABLE_LOG_API_REQUEST',
+  'KIRO_LOG_RETENTION_DAYS',
+  'KIRO_LOG_MAX_TOTAL_SIZE_MB',
+  'KIRO_LOG_COMPRESS_AFTER_DAYS',
+  'KIRO_LOG_SEGMENT_SIZE_MB'
 ]
 
 let configHome: string
@@ -101,6 +105,10 @@ describe('loadConfig defaults', () => {
     expect(cfg.usage_tracking_enabled).toBe(true)
     expect(cfg.auto_sync_kiro_cli).toBe(false)
     expect(cfg.enable_log_api_request).toBe(false)
+    expect(cfg.log_retention_days).toBe(7)
+    expect(cfg.log_max_total_size_mb).toBe(512)
+    expect(cfg.log_compress_after_days).toBe(1)
+    expect(cfg.log_segment_size_mb).toBe(16)
   })
 })
 
@@ -159,18 +167,38 @@ describe('loadConfig env overrides', () => {
     process.env.KIRO_REQUEST_TIMEOUT_MS = '90000'
     process.env.KIRO_STREAM_MAX_ATTEMPTS = '5'
     process.env.KIRO_SDK_RESPONSE_TIMEOUT_MS = '360000'
+    process.env.KIRO_LOG_RETENTION_DAYS = '14'
+    process.env.KIRO_LOG_MAX_TOTAL_SIZE_MB = '1024'
+    process.env.KIRO_LOG_COMPRESS_AFTER_DAYS = '2'
+    process.env.KIRO_LOG_SEGMENT_SIZE_MB = '32'
     const cfg = loadConfig(projectDir)
     expect(cfg.quota_reserve_threshold).toBe(0.5)
     expect(cfg.rate_limit_max_retries).toBe(7)
     expect(cfg.request_timeout_ms).toBe(90000)
     expect(cfg.stream_max_attempts).toBe(5)
     expect(cfg.sdk_response_timeout_ms).toBe(360000)
+    expect(cfg.log_retention_days).toBe(14)
+    expect(cfg.log_max_total_size_mb).toBe(1024)
+    expect(cfg.log_compress_after_days).toBe(2)
+    expect(cfg.log_segment_size_mb).toBe(32)
   })
 
   test('non-numeric number env falls back to the base value', () => {
     process.env.KIRO_RATE_LIMIT_MAX_RETRIES = 'not-a-number'
     // base is DEFAULT_CONFIG.rate_limit_max_retries = 3
     expect(loadConfig(projectDir).rate_limit_max_retries).toBe(3)
+  })
+
+  test('out-of-range log env values fall back to safe defaults', () => {
+    process.env.KIRO_LOG_RETENTION_DAYS = '0'
+    process.env.KIRO_LOG_MAX_TOTAL_SIZE_MB = '-1'
+    process.env.KIRO_LOG_COMPRESS_AFTER_DAYS = '1.5'
+    process.env.KIRO_LOG_SEGMENT_SIZE_MB = '999'
+    const cfg = loadConfig(projectDir)
+    expect(cfg.log_retention_days).toBe(7)
+    expect(cfg.log_max_total_size_mb).toBe(512)
+    expect(cfg.log_compress_after_days).toBe(1)
+    expect(cfg.log_segment_size_mb).toBe(16)
   })
 })
 

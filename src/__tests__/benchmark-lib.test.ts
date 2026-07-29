@@ -12,6 +12,7 @@ import {
   classifyPromptResult,
   evaluateRunOutcome,
   parseArgs,
+  parseRequestLogEntries,
   percentile,
   summarizeEmails,
   validateArgs
@@ -149,6 +150,25 @@ describe('benchmark summarizeEmails', () => {
 
   test('Given no emails When summarized Then empty object', () => {
     expect(summarizeEmails([{}, { email: '' }])).toEqual({})
+  })
+})
+
+describe('benchmark parseRequestLogEntries', () => {
+  test('parses legacy request JSON files', () => {
+    expect(
+      parseRequestLogEntries('{"email":"legacy@example.com"}', '2024-01-01_request.json')
+    ).toEqual([{ email: 'legacy@example.com' }])
+  })
+
+  test('extracts only request records from segmented NDJSON', () => {
+    const content = [
+      JSON.stringify({ timestamp: 'a', type: 'request', data: { email: 'a@example.com' } }),
+      JSON.stringify({ timestamp: 'a', type: 'response', data: { status: 200 } }),
+      '{incomplete'
+    ].join('\n')
+    expect(parseRequestLogEntries(content, 'api-2024-01-01-p1.ndjson')).toEqual([
+      { email: 'a@example.com' }
+    ])
   })
 })
 

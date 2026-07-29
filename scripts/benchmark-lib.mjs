@@ -28,7 +28,7 @@ export const RESULT_MARKER = '__BENCH_RESULT__'
 /**
  * Build the kiro.json fragment for a mode. `sticky` is the shared base strategy
  * across all three so the only variables are the two distribution flags.
- * enable_log_api_request is forced on so the plugin emits a per-request log we
+ * enable_log_api_request is forced on so the plugin emits request records we
  * can mine for the actually-selected account (email only, never tokens).
  * usage_tracking_enabled is off to avoid extra usage-API calls contaminating
  * the measured window.
@@ -118,7 +118,9 @@ function checkModeCompletion(reasons, mode, r) {
     reasons.push(`mode ${mode}: ${r.rateLimited} rate-limited (429) request(s)`)
   }
   if (r.success !== r.totalReqs) {
-    reasons.push(`mode ${mode}: ${r.success}/${r.totalReqs} succeeded (expected exactly ${r.totalReqs})`)
+    reasons.push(
+      `mode ${mode}: ${r.success}/${r.totalReqs} succeeded (expected exactly ${r.totalReqs})`
+    )
   }
   const logTotal = accountLogTotal(r.perAccount)
   if (logTotal !== r.totalReqs) {
@@ -248,6 +250,35 @@ export function summarizeEmails(logEntries) {
     }
   }
   return counts
+}
+
+/**
+ * Parse request records from either the legacy one-JSON-per-event format or
+ * the segmented NDJSON format. Malformed/incomplete lines are ignored because
+ * a benchmark may inspect a segment immediately after a worker exits.
+ */
+export function parseRequestLogEntries(content, filename) {
+  if (filename.endsWith('_request.json')) {
+    try {
+      const entry = JSON.parse(content)
+      return entry && typeof entry === 'object' ? [entry] : []
+    } catch {
+      return []
+    }
+  }
+
+  if (!filename.includes('.ndjson')) return []
+  const entries = []
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const record = JSON.parse(line)
+      if (record?.type === 'request' && record.data && typeof record.data === 'object') {
+        entries.push(record.data)
+      }
+    } catch {}
+  }
+  return entries
 }
 
 /**

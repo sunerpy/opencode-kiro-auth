@@ -136,6 +136,18 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
   return parsed
 }
 
+function parseBoundedIntegerEnv(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback
+  return parsed
+}
+
 function applyEnvOverrides(config: KiroConfig): KiroConfig {
   const env = process.env
 
@@ -229,6 +241,34 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
     enable_log_api_request: parseBooleanEnv(
       env.KIRO_ENABLE_LOG_API_REQUEST,
       config.enable_log_api_request
+    ),
+
+    log_retention_days: parseBoundedIntegerEnv(
+      env.KIRO_LOG_RETENTION_DAYS,
+      config.log_retention_days,
+      1,
+      365
+    ),
+
+    log_max_total_size_mb: parseBoundedIntegerEnv(
+      env.KIRO_LOG_MAX_TOTAL_SIZE_MB,
+      config.log_max_total_size_mb,
+      16,
+      102400
+    ),
+
+    log_compress_after_days: parseBoundedIntegerEnv(
+      env.KIRO_LOG_COMPRESS_AFTER_DAYS,
+      config.log_compress_after_days,
+      1,
+      30
+    ),
+
+    log_segment_size_mb: parseBoundedIntegerEnv(
+      env.KIRO_LOG_SEGMENT_SIZE_MB,
+      config.log_segment_size_mb,
+      1,
+      256
     )
   }
 }
@@ -257,6 +297,7 @@ export function loadConfig(directory: string): KiroConfig {
   }
 
   config = applyEnvOverrides(config)
+  logger.configureLogging(config)
 
   return config
 }
