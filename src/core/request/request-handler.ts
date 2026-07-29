@@ -163,6 +163,7 @@ export class RequestHandler {
     let consecutiveNullAccounts = 0
     let streamFailureCount = 0
     let forcedStreamAccount: ManagedAccount | null = null
+    let pinnedAccount: ManagedAccount | null = null
     const retryContext = this.retryStrategy.createContext()
 
     try {
@@ -181,8 +182,9 @@ export class RequestHandler {
           continue
         }
 
-        let acc: ManagedAccount | null = forcedStreamAccount
+        let acc: ManagedAccount | null = forcedStreamAccount ?? pinnedAccount
         forcedStreamAccount = null
+        pinnedAccount = null
         if (!acc) {
           acc = await this.accountSelector
             .selectHealthyAccount(showToast, signal)
@@ -215,7 +217,15 @@ export class RequestHandler {
           continue
         }
 
-        const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
+        const sdkPrep = this.prepareSdkRequest(
+          init?.body,
+          model,
+          auth,
+          think,
+          budget,
+          showToast,
+          handlerContext.disableReasoningReplay === true
+        )
         const streamAttempt = streamFailureCount + 1
         const streamLogDetails = (
           details: Record<string, unknown> = {}
@@ -418,7 +428,15 @@ export class RequestHandler {
               this.logSdkError(sdkPrep, e, acc, apiTimestamp)
             }
 
-            const errorBody = JSON.stringify({ message: e.message, __type: e.name })
+            // ErrorHandler branches on `errorData.reason` (INVALID_MODEL_ID,
+            // TEMPORARILY_SUSPENDED, THINKING_SIGNATURE_INVALID), so the modeled
+            // exception's reason code must survive into the synthetic body.
+            const errorReasonCode = typeof e?.reason === 'string' ? e.reason : undefined
+            const errorBody = JSON.stringify({
+              message: e.message,
+              __type: e.name,
+              ...(errorReasonCode !== undefined ? { reason: errorReasonCode } : {})
+            })
             const errorStatusText = e.name || 'Error'
             const jsonHeaders = { 'Content-Type': 'application/json' }
 
@@ -438,6 +456,9 @@ export class RequestHandler {
             if (errorResult.shouldRetry) {
               if (errorResult.newContext) {
                 handlerContext = errorResult.newContext
+              }
+              if (errorResult.pinAccount) {
+                pinnedAccount = acc
               }
               continue
             }
@@ -498,11 +519,13 @@ export class RequestHandler {
     auth: KiroAuthDetails,
     think: boolean,
     budget: number,
-    showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
+    showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void,
+    disableReasoningReplay = false
   ): SdkPreparedRequest {
     return transformToSdkRequest(body, model, auth, think, budget, showToast, {
       effort: this.config.effort,
-      autoEffortMapping: this.config.auto_effort_mapping
+      autoEffortMapping: this.config.auto_effort_mapping,
+      disableReasoningReplay
     })
   }
 

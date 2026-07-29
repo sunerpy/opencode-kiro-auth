@@ -15,6 +15,8 @@ export function isKiroContextOverflowBody(text: string): boolean {
   return KIRO_CONTEXT_OVERFLOW_PATTERNS.some((p) => p.test(text))
 }
 
+export const THINKING_SIGNATURE_INVALID_REASON = 'THINKING_SIGNATURE_INVALID'
+
 export interface RequestContext {
   retry: number
   // Loop-bound invariant: account ids already force-refreshed this request.
@@ -22,6 +24,21 @@ export interface RequestContext {
   // each account force-refreshes at most once, bounding the loop with the
   // RetryStrategy iteration cap.
   forcedRefreshAccountIds?: Set<string>
+  // At-most-once bound for THINKING_SIGNATURE_INVALID recovery, mirroring
+  // forcedRefreshAccountIds: a second rejection must terminate, not loop.
+  signatureRecoveryAttempted?: boolean
+  // Survives the retry loop rebuilding the request from the original body, so
+  // the "replay disabled" decision reaches prepareSdkRequest on every iteration.
+  disableReasoningReplay?: boolean
+}
+
+export interface ErrorHandlerResult {
+  shouldRetry: boolean
+  newContext?: RequestContext
+  switchAccount?: boolean
+  // Reuse the current account for the retry: a request-level rejection is not
+  // evidence the account is bad, so it must not consume a rotation slot.
+  pinAccount?: boolean
 }
 
 type ForceRefreshFn = (
@@ -49,7 +66,7 @@ export class ErrorHandler {
     context: RequestContext,
     showToast: ToastFunction,
     signal?: AbortSignal
-  ): Promise<{ shouldRetry: boolean; newContext?: RequestContext; switchAccount?: boolean }> {
+  ): Promise<ErrorHandlerResult> {
     const readBody = async (): Promise<string> => {
       try {
         const body = JSON.parse(await response.clone().text())
@@ -60,8 +77,46 @@ export class ErrorHandler {
     }
 
     if (response.status === 400) {
-      const reason = await readBody()
-      showToast(`400: ${reason || 'unknown'}`, 'error')
+      const rawBody = await response
+        .clone()
+        .text()
+        .catch(() => '')
+      const errorData = (() => {
+        try {
+          return JSON.parse(rawBody) as Record<string, unknown>
+        } catch {
+          return null
+        }
+      })()
+      const message =
+        (typeof errorData?.message === 'string' && errorData.message) ||
+        (typeof errorData?.Message === 'string' && errorData.Message) ||
+        (typeof errorData?.__type === 'string' && errorData.__type) ||
+        (errorData ? JSON.stringify(errorData) : '')
+
+      // Ordered first on purpose: a size-overflow 400 must stay terminal so
+      // RequestHandler remaps it to 413 and OpenCode auto-compacts. Signature
+      // recovery must never intercept that path.
+      const isOverflow = isKiroContextOverflowBody(rawBody) || isKiroContextOverflowBody(message)
+
+      if (
+        !isOverflow &&
+        errorData?.reason === THINKING_SIGNATURE_INVALID_REASON &&
+        !context.signatureRecoveryAttempted
+      ) {
+        showToast('400: Replayed reasoning signature rejected. Retrying without it...', 'warning')
+        return {
+          shouldRetry: true,
+          pinAccount: true,
+          newContext: {
+            ...context,
+            signatureRecoveryAttempted: true,
+            disableReasoningReplay: true
+          }
+        }
+      }
+
+      showToast(`400: ${message || 'unknown'}`, 'error')
       return { shouldRetry: false }
     }
 
@@ -222,7 +277,7 @@ export class ErrorHandler {
     context: RequestContext,
     forced: Set<string>,
     showToast: ToastFunction
-  ): Promise<{ shouldRetry: boolean; newContext?: RequestContext; switchAccount?: boolean }> {
+  ): Promise<ErrorHandlerResult> {
     const deadReason = toDeadReason(errorReason)
     this.accountManager.markUnhealthy(account, deadReason)
     await this.repository.batchSave(this.accountManager.getAccounts())

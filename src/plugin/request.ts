@@ -26,6 +26,7 @@ import {
 } from './image-handler.js'
 import { resolveModelVariant } from './models.js'
 import type {
+  CodeWhispererMessage,
   CodeWhispererRequest,
   Effort,
   KiroAuthDetails,
@@ -40,9 +41,10 @@ interface TransformResult {
   variantEffort?: Effort
 }
 
-interface EffortConfig {
+interface SdkRequestOptions {
   effort?: Effort
   autoEffortMapping?: boolean
+  disableReasoningReplay?: boolean
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -319,6 +321,21 @@ export function transformToCodeWhisperer(
   }
 }
 
+// A partially-stripped history is still a 400: Kiro validates every replayed
+// signature, so signature-rejection recovery must remove ALL of them, including
+// the current turn's.
+export function stripReasoningContent(
+  conversationState: CodeWhispererRequest['conversationState']
+): void {
+  const strip = (message?: CodeWhispererMessage): void => {
+    if (message?.assistantResponseMessage) {
+      delete message.assistantResponseMessage.reasoningContent
+    }
+  }
+  for (const entry of conversationState.history ?? []) strip(entry)
+  strip(conversationState.currentMessage)
+}
+
 export function transformToSdkRequest(
   body: any,
   model: string,
@@ -326,7 +343,7 @@ export function transformToSdkRequest(
   think = false,
   budget = 20000,
   showToast?: ToastFunction,
-  effortConfig?: EffortConfig
+  options?: SdkRequestOptions
 ): SdkPreparedRequest {
   const { request, resolved, convId, variantEffort } = buildCodeWhispererRequest(
     body,
@@ -337,14 +354,18 @@ export function transformToSdkRequest(
     showToast
   )
 
+  if (options?.disableReasoningReplay) {
+    stripReasoningContent(request.conversationState)
+  }
+
   const effort = variantEffort
     ? resolveEffort(resolved, variantEffort)
     : getEffectiveEffort(
         resolved,
         think,
         budget,
-        effortConfig?.effort,
-        effortConfig?.autoEffortMapping ?? true
+        options?.effort,
+        options?.autoEffortMapping ?? true
       )
 
   return {
