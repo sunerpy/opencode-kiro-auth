@@ -33,7 +33,11 @@ root [README](../README.md#configuration) for the short version.
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
   "auto_effort_mapping": true,
-  "enable_log_api_request": false
+  "enable_log_api_request": false,
+  "log_retention_days": 7,
+  "log_max_total_size_mb": 512,
+  "log_compress_after_days": 1,
+  "log_segment_size_mb": 16
 }
 ```
 
@@ -155,10 +159,47 @@ because moving a live database during an upgrade is unsafe.
 - `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
   levels for supported models (default: `true`). See [docs/MODELS.md](MODELS.md)
   for the budget-to-effort table.
-- `enable_log_api_request`: Enable detailed API request logging.
+- `enable_log_api_request`: Enable detailed API request logging (default:
+  `false`). Keep this off unless you are actively diagnosing a request because
+  records may contain prompt and tool payloads.
+- `log_retention_days`: Delete archived and detailed logs older than this many
+  days (1-365, default: `7`).
+- `log_max_total_size_mb`: Maximum combined size of managed logs
+  (16-102400 MiB, default: `512`). The oldest closed logs are removed first;
+  active files are protected and bounded by rotation.
+- `log_compress_after_days`: Gzip an inactive API log segment after this many
+  days (1-30, default: `1`). Segments closed by size or date rotation are
+  compressed immediately.
+- `log_segment_size_mb`: Rotate `plugin.log` and detailed API log segments at
+  this size (1-256 MiB, default: `16`).
 - `enable_log_effort_debug`: Log each request's inbound body shape (top-level
   keys and reasoning-related fields only, no message content) and the resolved
   Kiro effort (default: `false`). Independent from `enable_log_api_request`.
+
+## Log retention and compression
+
+Detailed API logging no longer creates a request and response JSON file for
+every call. Records are appended as compact NDJSON to a process-specific
+segment. Closed segments and rotated `plugin.log` files are gzip-compressed in
+the background. Maintenance normally runs after startup/log activity and then
+at most once every 15 minutes; a large legacy backlog is drained through
+bounded follow-up batches.
+
+Three independent limits prevent unbounded growth:
+
+- closed logs older than `log_retention_days` are deleted;
+- oldest closed logs are deleted when the directory exceeds
+  `log_max_total_size_mb`;
+- a hard 1000-file safety limit gradually removes legacy per-request JSON files
+  in batches, so upgrading a directory with hundreds of thousands of files does
+  not block streaming.
+
+`enable_log_api_request` remains off by default. When it is off, routine
+successful request payloads are not recorded, but `plugin.log` and detailed
+records for failed upstream requests are still retained for diagnosis. All log
+settings can also be overridden with `KIRO_LOG_RETENTION_DAYS`,
+`KIRO_LOG_MAX_TOTAL_SIZE_MB`, `KIRO_LOG_COMPRESS_AFTER_DAYS`, and
+`KIRO_LOG_SEGMENT_SIZE_MB`.
 
 ## Account distribution across processes
 

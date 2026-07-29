@@ -38,19 +38,21 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gunzipSync } from 'node:zlib'
+import { realConfigDir, seedModeEnv } from './benchmark-env.mjs'
 import {
   MODES,
   RESULT_MARKER,
   aggregateWorkerResults,
   assessModeCEvidence,
-  buildModelReport,
   buildModeConfig,
+  buildModelReport,
   evaluateRunOutcome,
   parseArgs,
+  parseRequestLogEntries,
   summarizeEmails,
   validateArgs
 } from './benchmark-lib.mjs'
-import { realConfigDir, seedModeEnv } from './benchmark-env.mjs'
 import { runWorkerEntry } from './benchmark-runtime.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -112,11 +114,15 @@ function mineEmailCounts(opencodeConfigDir) {
   if (!existsSync(logsDir)) return {}
   const entries = []
   for (const f of readdirSync(logsDir)) {
-    if (!f.endsWith('_request.json')) continue
+    if (!f.endsWith('_request.json') && !f.includes('.ndjson')) continue
     try {
-      entries.push(JSON.parse(readFileSync(join(logsDir, f), 'utf-8')))
+      const raw = readFileSync(join(logsDir, f))
+      const content = f.endsWith('.gz') ? gunzipSync(raw).toString('utf-8') : raw.toString('utf-8')
+      entries.push(...parseRequestLogEntries(content, f))
     } catch (readErr) {
-      console.warn(`  skipped unreadable request log ${f}: ${(readErr?.message || String(readErr)).slice(0, 160)}`)
+      console.warn(
+        `  skipped unreadable request log ${f}: ${(readErr?.message || String(readErr)).slice(0, 160)}`
+      )
     }
   }
   return summarizeEmails(entries)

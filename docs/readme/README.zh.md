@@ -89,6 +89,14 @@
 `~/.config/opencode/kiro-auth-plugin/kiro.json`。完整示例和全部选项见
 [docs/CONFIGURATION.md](../CONFIGURATION.md)。
 
+`enable_log_api_request` 默认关闭，只建议在短期排障时开启。日志按 16 MiB
+分段写入紧凑 NDJSON，后台自动 gzip；默认保留 7 天且总量不超过 512 MiB。
+保留期、容量和分段大小可通过 `log_retention_days`、
+`log_max_total_size_mb`、`log_compress_after_days` 和
+`log_segment_size_mb` 调整。即使关闭请求明细日志，`plugin.log` 和失败请求的
+诊断记录仍会保留。详见
+[日志保留与压缩](../CONFIGURATION.md#log-retention-and-compression)。
+
 ## 多账号与轮换
 
 你可以注册多个 Kiro 账号，让插件在这些账号之间分配请求，从而合并额度并获得
@@ -273,6 +281,7 @@ Agent 贡献者请参阅 [AGENTS.md](../../AGENTS.md)，其中包含代码库架
 
 旧版配置、日志和根目录锁文件会在首次启动时自动迁移，无需手动操作。
 为避免升级时移动正在使用的数据库，`kiro.db` 保持在原有根目录路径。
+日志会根据 `kiro.json` 中的保留策略自动轮转、gzip 压缩和清理。
 
 ## 致谢
 

@@ -171,6 +171,27 @@ export const KiroConfigSchema = z.object({
   enable_log_api_request: z.boolean().default(false),
 
   /**
+   * Delete archived and detailed logs after this many days.
+   */
+  log_retention_days: z.number().int().min(1).max(365).default(7),
+
+  /**
+   * Maximum combined size of managed log files. Oldest archived logs are
+   * removed first; active files are rotated separately.
+   */
+  log_max_total_size_mb: z.number().int().min(16).max(102400).default(512),
+
+  /**
+   * Compress inactive API log segments after this many days.
+   */
+  log_compress_after_days: z.number().int().min(1).max(30).default(1),
+
+  /**
+   * Rotate plugin.log and detailed API NDJSON files at this size.
+   */
+  log_segment_size_mb: z.number().int().min(1).max(256).default(16),
+
+  /**
    * Enable config-gated debug logging that records the inbound
    * OpenAI-compatible request body shape (top-level keys, reasoning-related
    * fields only — no message content) and the resolved Kiro effort for each
@@ -222,6 +243,10 @@ export const DEFAULT_CONFIG: KiroConfig = {
   usage_tracking_enabled: true,
   auto_sync_kiro_cli: false,
   enable_log_api_request: false,
+  log_retention_days: 7,
+  log_max_total_size_mb: 512,
+  log_compress_after_days: 1,
+  log_segment_size_mb: 16,
   enable_log_effort_debug: false,
   auto_effort_mapping: true
 }

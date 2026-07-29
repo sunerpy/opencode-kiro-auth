@@ -103,6 +103,7 @@ export function percentile(sorted: number[], p: number): number
 export function aggregateLatencies(latencies: number[]): LatencyStats
 export function classifyPromptResult(result: unknown): PromptClassification
 export function summarizeEmails(logEntries: unknown[]): Record<string, number>
+export function parseRequestLogEntries(content: string, filename: string): unknown[]
 export function buildModelReport(
   displayModel: string,
   resolveVariant: (model: string) => { wireId: string; effort?: string }

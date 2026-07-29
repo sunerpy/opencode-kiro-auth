@@ -126,6 +126,11 @@ Running multiple OpenCode processes at once? `distribute_across_processes`
 spreads across accounts — see
 [Account distribution across processes](docs/CONFIGURATION.md#account-distribution-across-processes).
 
+Detailed API request logging is off by default. Logs now rotate into compact
+NDJSON segments, gzip in the background, and are bounded to 7 days / 512 MiB by
+default. See
+[log retention and compression](docs/CONFIGURATION.md#log-retention-and-compression).
+
 ## Multiple accounts & rotation
 
 You can register more than one Kiro account and let the plugin spread
@@ -317,7 +322,8 @@ Releases are automated with
 Existing config, logs, and stale flat lock files are migrated automatically on
 first startup; no action is needed. The SQLite database deliberately remains at
 the flat `opencode/kiro.db` path because moving a live database during an upgrade
-is unsafe.
+is unsafe. Logs are automatically rotated, gzip-compressed, and pruned according
+to the retention settings in `kiro.json`.
 
 ## Acknowledgements
 
