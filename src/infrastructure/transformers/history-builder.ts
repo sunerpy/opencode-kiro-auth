@@ -4,13 +4,9 @@ import {
   extractAllImages,
   extractTextFromParts
 } from '../../plugin/image-handler.js'
+import { reconstructAssistantResponse } from '../../plugin/reasoning/request-replay.js'
 import type { CodeWhispererMessage } from '../../plugin/types'
-import {
-  applyThinkingToContent,
-  findActiveToolLoopStart,
-  getContentText,
-  parseAssistantMessage
-} from './message-transformer.js'
+import { findActiveToolLoopStart, getContentText } from './message-transformer.js'
 import { deduplicateToolResults } from './tool-transformer.js'
 
 /**
@@ -56,17 +52,24 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
           const asst = history[k]
           const user = history[k + 1]
 
+          if (!asst?.assistantResponseMessage || !user) continue
+          const assistantResponse = asst.assistantResponseMessage
+
           if (k === seqStart) {
-            result.push(asst!)
+            result.push(asst)
           } else {
+            if (!assistantResponse.toolUses) continue
             result.push({
               assistantResponseMessage: {
                 content: '[system: tool calling continues]',
-                toolUses: asst!.assistantResponseMessage!.toolUses
+                toolUses: assistantResponse.toolUses,
+                ...(assistantResponse.reasoningContent !== undefined
+                  ? { reasoningContent: assistantResponse.reasoningContent }
+                  : {})
               }
             })
           }
-          result.push(user!)
+          result.push(user)
         }
       } else {
         for (let k = seqStart; k < seqEnd; k++) {
@@ -86,6 +89,10 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
 
 export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessage[] {
   let history: CodeWhispererMessage[] = []
+  const fallbackByAssistant = new Map<
+    NonNullable<CodeWhispererMessage['assistantResponseMessage']>,
+    string
+  >()
   const loopStart = findActiveToolLoopStart(msgs)
   for (let i = 0; i < msgs.length - 1; i++) {
     const m = msgs[i]
@@ -152,11 +159,10 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
         }
       })
     } else if (m.role === 'assistant') {
-      const parsed = parseAssistantMessage(m, { recoverReasoning: i >= loopStart })
-      const arm: any = { content: applyThinkingToContent(parsed.content, parsed.thinking) }
-      if (parsed.toolUses.length) arm.toolUses = parsed.toolUses
+      const reconstructed = reconstructAssistantResponse(m, resolved, i >= loopStart)
+      const arm = reconstructed.response
 
-      if (!arm.content && !arm.toolUses) {
+      if (!arm.content && !arm.toolUses && !arm.reasoningContent) {
         continue
       }
 
@@ -164,14 +170,23 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
       if (prevMsg && prevMsg.assistantResponseMessage) {
         // Merge consecutive assistant messages instead of injecting synthetic user turn
         const prev = prevMsg.assistantResponseMessage
-        if (arm.content) {
-          prev.content = prev.content ? `${prev.content}\n\n${arm.content}` : arm.content
+        const previousFallback = fallbackByAssistant.get(prev)
+        if (previousFallback !== undefined) {
+          prev.content = previousFallback
+          fallbackByAssistant.delete(prev)
+        }
+        delete prev.reasoningContent
+        if (reconstructed.fallbackContent) {
+          prev.content = prev.content
+            ? `${prev.content}\n\n${reconstructed.fallbackContent}`
+            : reconstructed.fallbackContent
         }
         if (arm.toolUses) {
           prev.toolUses = [...(prev.toolUses || []), ...arm.toolUses]
         }
       } else {
         history.push({ assistantResponseMessage: arm })
+        fallbackByAssistant.set(arm, reconstructed.fallbackContent)
       }
     }
   }

@@ -18,7 +18,13 @@ import {
   normalizeToolArguments,
   resolveLoop
 } from '../plugin/reasoning/turn-identity.js'
-import type { KiroReasoningContent, ManagedAccount, SdkPreparedRequest } from '../plugin/types.js'
+import { transformToSdkRequest } from '../plugin/request.js'
+import type {
+  KiroAuthDetails,
+  KiroReasoningContent,
+  ManagedAccount,
+  SdkPreparedRequest
+} from '../plugin/types.js'
 
 const SIG_A = `sig-${'A'.repeat(320)}`
 const SIG_B = `sig-${'B'.repeat(320)}`
@@ -1191,29 +1197,49 @@ describe('RequestHandler → correlation cache publication', () => {
     expect(reasoningCorrelationCache.sizeForLoop('loop:root-1')).toBe(1)
   })
 
-  test('cache misses are silent — no reasoningContent is emitted on any outbound request yet', async () => {
-    const wired = wireHandler(makeAccount('acct-A'), toolLoopEvents(SIG_A))
-    const prepared: SdkPreparedRequest[] = []
-    ;(wired.handler as any).prepareSdkRequest = () => {
-      const prep = cannedPrep()
-      prepared.push(prep)
-      return prep
+  test('a cache miss emits nothing while an exact hit emits nested reasoningContent', () => {
+    const requestAuth: KiroAuthDetails = {
+      refresh: 'refresh-token',
+      access: 'access-token',
+      expires: Date.now() + 3_600_000,
+      authMethod: 'idc',
+      region: 'us-east-1'
     }
-    await drain(
-      await wired.handler.handle(
-        KIRO_URL,
+    const body = {
+      messages: [
+        { role: 'user', content: 'go' },
         {
-          body: inboundBody([
-            { role: 'user', content: 'go' },
-            { role: 'assistant', tool_calls: [{ id: 'root-1' }] },
-            { role: 'tool', tool_call_id: 'root-1', content: 'r' }
-          ])
-        },
-        noToast
-      )
-    )
-    for (const prep of prepared) {
-      expect(JSON.stringify(prep.conversationState)).not.toContain('reasoningContent')
+          role: 'assistant',
+          content: 'calling the tool now',
+          reasoning_content: 'step one, then call the tool',
+          tool_calls: [
+            {
+              id: 'tu-root-1',
+              function: { name: 'read_file', arguments: '{ "path": "a.ts" }' }
+            }
+          ]
+        }
+      ]
     }
+
+    const miss = transformToSdkRequest(body, 'claude-opus-5', requestAuth)
+    expect(JSON.stringify(miss.conversationState)).not.toContain('reasoningContent')
+
+    reasoningCorrelationCache.publish({
+      reasoningText: 'step one, then call the tool',
+      visibleText: 'calling the tool now',
+      toolUses: [{ toolUseId: 'tu-root-1', name: 'read_file', argumentsJson: '{"path":"a.ts"}' }],
+      effectiveModel: 'claude-opus-5',
+      envelope: textEnvelope('step one, then call the tool', SIG_A),
+      loopId: 'loop:tu-root-1',
+      accountId: 'acct-A',
+      attemptId: 'attempt-A'
+    })
+
+    const hit = transformToSdkRequest(body, 'claude-opus-5', requestAuth)
+    const serialized = JSON.stringify(hit.conversationState)
+    expect(serialized).toContain('reasoningContent')
+    expect(serialized).toContain('reasoningText')
+    expect(serialized).not.toContain('reasoningSignature')
   })
 })

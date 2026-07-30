@@ -1,5 +1,10 @@
 import type { CodeWhispererMessage } from '../../plugin/types'
 
+// Object identity is sufficient for the refusal path: mergeAdjacentMessages
+// creates the exact post-merge object later consumed by request/history builders.
+// No source envelope is carried or selected across this boundary.
+const multiSourceAssistantMessages = new WeakSet<object>()
+
 export function sanitizeHistory(history: CodeWhispererMessage[]): CodeWhispererMessage[] {
   const result: CodeWhispererMessage[] = []
   for (let i = 0; i < history.length; i++) {
@@ -56,6 +61,7 @@ export function mergeAdjacentMessages(msgs: any[]): any[] {
     else {
       const last = merged[merged.length - 1]
       if (last && m.role === last.role) {
+        if (m.role === 'assistant') multiSourceAssistantMessages.add(last)
         if (Array.isArray(last.content) && Array.isArray(m.content)) last.content.push(...m.content)
         else if (typeof last.content === 'string' && typeof m.content === 'string')
           last.content += '\n' + m.content
@@ -76,6 +82,13 @@ export function mergeAdjacentMessages(msgs: any[]): any[] {
     }
   }
   return merged
+}
+
+/** True when normalization combined two or more inbound assistant turns. */
+export function spansMultipleAssistantSourceTurns(message: unknown): boolean {
+  return (
+    typeof message === 'object' && message !== null && multiSourceAssistantMessages.has(message)
+  )
 }
 
 export interface ParsedAssistantMessage {
@@ -181,7 +194,12 @@ export function parseAssistantMessage(
   return { content, thinking, toolUses }
 }
 
-export function applyThinkingToContent(content: string, thinking: string): string {
+export function applyThinkingToContent(
+  content: string,
+  thinking: string,
+  hasNativeReasoning = false
+): string {
+  if (hasNativeReasoning) return content
   if (!thinking) return content
   return content
     ? `<thinking>${thinking}</thinking>\n\n${content}`

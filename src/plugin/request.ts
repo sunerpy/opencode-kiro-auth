@@ -8,11 +8,9 @@ import {
   injectSystemPrompt
 } from '../infrastructure/transformers/history-builder.js'
 import {
-  applyThinkingToContent,
   findOriginalToolCall,
   getContentText,
-  mergeAdjacentMessages,
-  parseAssistantMessage
+  mergeAdjacentMessages
 } from '../infrastructure/transformers/message-transformer.js'
 import {
   convertToolsToCodeWhisperer,
@@ -25,6 +23,7 @@ import {
   extractTextFromParts
 } from './image-handler.js'
 import { resolveModelVariant } from './models.js'
+import { reconstructAssistantResponse } from './reasoning/request-replay.js'
 import type {
   CodeWhispererMessage,
   CodeWhispererRequest,
@@ -119,14 +118,10 @@ function buildCodeWhispererRequest(
       const lastHistEntry = history[history.length - 1]
       const historyEndsWithUser = lastHistEntry?.userInputMessage
       if (historyEndsWithUser) {
-        let prevText = ''
-        if (Array.isArray(prevMsg.content)) {
-          for (const p of prevMsg.content) {
-            if (p.type === 'text') prevText += p.text || ''
-          }
-        } else prevText = getContentText(prevMsg)
-        if (prevText) {
-          history.push({ assistantResponseMessage: { content: prevText } })
+        const reconstructed = reconstructAssistantResponse(prevMsg, resolved, false)
+        const arm = reconstructed.response
+        if (arm.content || arm.toolUses || arm.reasoningContent) {
+          history.push({ assistantResponseMessage: arm })
         }
       }
     }
@@ -138,11 +133,9 @@ function buildCodeWhispererRequest(
   const curImgs: any[] = []
 
   if (curMsg.role === 'assistant') {
-    const parsedCur = parseAssistantMessage(curMsg, { recoverReasoning: true })
-    const arm: any = { content: applyThinkingToContent(parsedCur.content, parsedCur.thinking) }
-    if (parsedCur.toolUses.length) arm.toolUses = parsedCur.toolUses
+    const arm = reconstructAssistantResponse(curMsg, resolved, true).response
 
-    if (arm.content || arm.toolUses) {
+    if (arm.content || arm.toolUses || arm.reasoningContent) {
       history.push({ assistantResponseMessage: arm })
     }
     curContent = '[system: conversation continues]'
@@ -284,7 +277,7 @@ function buildCodeWhispererRequest(
 }
 
 export function transformToCodeWhisperer(
-  url: string,
+  _url: string,
   body: any,
   model: string,
   auth: KiroAuthDetails,
