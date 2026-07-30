@@ -8,6 +8,8 @@ import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
 import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
+import { reasoningCorrelationCache } from '../../plugin/reasoning/correlation-cache'
+import { deriveInheritedLoopId, normalizeToolArguments } from '../../plugin/reasoning/turn-identity'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
@@ -16,7 +18,7 @@ import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
 import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler, isKiroContextOverflowBody, type RequestContext } from './error-handler'
-import { ResponseHandler } from './response-handler'
+import { ResponseHandler, type SdkCompletionPayload } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 import { SdkEventStreamIterationError, UpstreamUnexpectedError } from './stream-error'
 
@@ -164,6 +166,8 @@ export class RequestHandler {
     let streamFailureCount = 0
     let forcedStreamAccount: ManagedAccount | null = null
     let pinnedAccount: ManagedAccount | null = null
+    let currentAttemptId = ''
+    const inheritedLoopId = deriveInheritedLoopId(body.messages)
     const retryContext = this.retryStrategy.createContext()
 
     try {
@@ -278,6 +282,11 @@ export class RequestHandler {
           const attemptEpoch = this.nextAccountAttemptEpoch(acc.id)
           const isCurrentAttempt = (): boolean =>
             this.accountAttemptEpochs.get(acc.id) === attemptEpoch
+          // Request-scoped, deliberately NOT the per-account epoch: an unrelated
+          // request selecting the same account bumps that epoch and would discard
+          // a healthy concurrent stream's envelope.
+          const attemptId = crypto.randomUUID()
+          currentAttemptId = attemptId
           let completionDone = false
           const completeRequest = async (): Promise<void> => {
             if (completionDone) return
@@ -285,6 +294,11 @@ export class RequestHandler {
             if (!isCurrentAttempt()) return
             this.handleSuccessfulRequest(acc)
             await this.usageTracker.syncUsage(acc, auth, isCurrentAttempt)
+          }
+          const accountId = acc.id
+          const onStreamComplete = async (completed?: SdkCompletionPayload): Promise<void> => {
+            await completeRequest()
+            this.commitReasoningCorrelation(completed, accountId, currentAttemptId)
           }
 
           let sdkResponse: GenerateAssistantResponseCommandOutput
@@ -347,7 +361,10 @@ export class RequestHandler {
                   })
                 )
               },
-              onComplete: completeRequest,
+              onComplete: onStreamComplete,
+              attemptId,
+              ...(inheritedLoopId !== undefined ? { inheritedLoopId } : {}),
+              effectiveModel: sdkPrep.effectiveModel,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),
               bufferUntilComplete: this.config.stream_buffer_until_complete,
@@ -681,6 +698,39 @@ export class RequestHandler {
       return false
     }
     return accounts.every((acc) => !acc.isHealthy && isPermanentError(acc.unhealthyReason))
+  }
+
+  private commitReasoningCorrelation(
+    completed: SdkCompletionPayload | undefined,
+    accountId: string,
+    owningAttemptId: string
+  ): void {
+    if (!completed || completed.loopId === undefined) return
+    if (completed.attemptId === '' || completed.attemptId !== owningAttemptId) return
+
+    // A final answer ends the loop, so its entries are torn down. A tool-emitting
+    // turn that produced no signed envelope merely skips publication — the loop
+    // continues and its other turns' envelopes must survive.
+    if (completed.toolUses.length === 0) {
+      reasoningCorrelationCache.clearLoop(completed.loopId)
+      return
+    }
+    if (!completed.envelope) return
+
+    reasoningCorrelationCache.publish({
+      envelope: completed.envelope,
+      reasoningText: completed.reasoningText,
+      visibleText: completed.visibleText,
+      toolUses: completed.toolUses.map((tool) => ({
+        toolUseId: tool.toolUseId,
+        name: tool.name,
+        argumentsJson: normalizeToolArguments(tool.argumentsJson)
+      })),
+      effectiveModel: completed.effectiveModel,
+      loopId: completed.loopId,
+      accountId,
+      attemptId: completed.attemptId
+    })
   }
 
   private nextAccountAttemptEpoch(accountId: string): number {
