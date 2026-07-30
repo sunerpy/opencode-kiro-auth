@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.4...v0.16.0) (2026-07-30)
+
+
+### Features
+
+* **request:** 恢复被丢弃的推理签名并在工具循环中回放 ([#79](https://github.com/sunerpy/opencode-kiro-auth/issues/79)) ([5d45121](https://github.com/sunerpy/opencode-kiro-auth/commit/5d45121c553bc605bdc09e8ed96a1a31eaa9c298))
+
+
+### Bug Fixes
+
+* **request:** 工具结果回合改用空 content 以避免模型提前结束回合 ([#81](https://github.com/sunerpy/opencode-kiro-auth/issues/81)) ([017e662](https://github.com/sunerpy/opencode-kiro-auth/commit/017e662f1bc65f85eed19bab4971a3aa6fd93feb))
+
 ## [0.15.4](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.3...v0.15.4) (2026-07-29)
 
 
