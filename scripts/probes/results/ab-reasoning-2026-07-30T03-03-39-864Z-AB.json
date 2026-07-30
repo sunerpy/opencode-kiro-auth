@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "probe": "ab-reasoning-probe",
+  "finishedAt": "2026-07-30T03:03:39.864Z",
+  "dry": false,
+  "order": "AB",
+  "model": "claude-opus-5",
+  "effort": "high",
+  "region": "us-east-1",
+  "turnsConfigured": 4,
+  "account": {
+    "masked": "sh************@163.com",
+    "headroomBefore": 500
+  },
+  "usage": {
+    "before": 9504,
+    "after": 9504
+  },
+  "realApiCalls": 9,
+  "arms": {
+    "A": {
+      "turns": [
+        {
+          "turn": 0,
+          "http": 200,
+          "reasoningFrames": 15,
+          "reasoningTextFrames": 14,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 112,
+          "signaturePresent": true,
+          "signatureLen": 376,
+          "signatureFingerprint": "376c sha256:c8648dbe257d",
+          "toolKeys": [
+            "step1"
+          ],
+          "textChars": 108,
+          "text": "No running total yet. The first record's op should be \"seed\", which sets the total outright. Fetching step1.",
+          "latencyMs": 3513,
+          "historyReasoningTurns": 0,
+          "requestId": "99825d0b-395a-4af7-b4f5-5cf52fc40191"
+        },
+        {
+          "turn": 1,
+          "http": 200,
+          "reasoningFrames": 12,
+          "reasoningTextFrames": 11,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 62,
+          "signaturePresent": true,
+          "signatureLen": 328,
+          "signatureFingerprint": "328c sha256:dfd2c988f2e1",
+          "toolKeys": [
+            "step2"
+          ],
+          "textChars": 58,
+          "text": "Ledger so far: step1 seed 17, so total = 17.\n\nNext: step2.",
+          "latencyMs": 3103,
+          "historyReasoningTurns": 1,
+          "requestId": "265645e1-2b7d-4943-bc1c-8193422d7c54"
+        },
+        {
+          "turn": 2,
+          "http": 200,
+          "reasoningFrames": 6,
+          "reasoningTextFrames": 5,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 44,
+          "signaturePresent": true,
+          "signatureLen": 308,
+          "signatureFingerprint": "308c sha256:a3867edca9a8",
+          "toolKeys": [
+            "step3"
+          ],
+          "textChars": 99,
+          "text": "Re-verifying from scratch: seed 17, then multiply by 23 → 17 × 23 = 391. Total = 391.\n\nNext: step3.",
+          "latencyMs": 4182,
+          "historyReasoningTurns": 2,
+          "requestId": "8676384e-1f5c-4a9d-94da-2c6e8803f377"
+        },
+        {
+          "turn": 3,
+          "http": 200,
+          "reasoningFrames": 14,
+          "reasoningTextFrames": 13,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 98,
+          "signaturePresent": true,
+          "signatureLen": 320,
+          "signatureFingerprint": "320c sha256:cf08f64ed5c7",
+          "toolKeys": [
+            "step4"
+          ],
+          "textChars": 69,
+          "text": "From scratch: 17 → ×23 = 391 → +149 = 540. Total = 540.\n\nNext: step4.",
+          "latencyMs": 2855,
+          "historyReasoningTurns": 3,
+          "requestId": "24b4cd42-9476-4d94-8052-820322d0b30c"
+        },
+        {
+          "turn": 4,
+          "http": 200,
+          "reasoningFrames": 18,
+          "reasoningTextFrames": 17,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 114,
+          "signaturePresent": true,
+          "signatureLen": 340,
+          "signatureFingerprint": "340c sha256:509ee1883750",
+          "toolKeys": [],
+          "textChars": 196,
+          "text": "Full recomputation: 17 (seed) → ×23 = 391 → +149 = 540 → ÷6 = 90.\n\nnext_key is null, so the walk ends. Final total: **90**.\n\nChain: step1 seed 17, step2 multiply 23, step3 add 149, step4 divide 6.",
+          "latencyMs": 5546,
+          "historyReasoningTurns": 4,
+          "requestId": "7314d82b-ee7e-4f1a-938d-8072387dab46"
+        }
+      ]
+    },
+    "B": {
+      "turns": [
+        {
+          "turn": 0,
+          "http": 200,
+          "reasoningFrames": 11,
+          "reasoningTextFrames": 10,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 68,
+          "signaturePresent": true,
+          "signatureLen": 368,
+          "signatureFingerprint": "368c sha256:ba538b1d004e",
+          "toolKeys": [
+            "step1"
+          ],
+          "textChars": 231,
+          "text": "Plan: fetch step1, seed the total from its value, then follow next_key one hop at a time, folding each op in and re-deriving the total from the full history at every step.\n\nCurrent state: no total yet, no records read. First fetch.",
+          "latencyMs": 4090,
+          "historyReasoningTurns": 0,
+          "requestId": "d01c5ff0-a3fd-4eb0-a902-c3eb208393af"
+        },
+        {
+          "turn": 1,
+          "http": 200,
+          "reasoningFrames": 9,
+          "reasoningTextFrames": 8,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 63,
+          "signaturePresent": true,
+          "signatureLen": 344,
+          "signatureFingerprint": "344c sha256:1eae694d9d44",
+          "toolKeys": [
+            "step2"
+          ],
+          "textChars": 95,
+          "text": "Fold: op=\"seed\", so total = 17.\n\nVerification from scratch: seed 17 → 17.\n\nNext key is \"step2\".",
+          "latencyMs": 8561,
+          "historyReasoningTurns": 0,
+          "requestId": "699a7bed-cee4-412d-a434-fb97e07196a3"
+        },
+        {
+          "turn": 2,
+          "http": 200,
+          "reasoningFrames": 7,
+          "reasoningTextFrames": 6,
+          "reasoningSigFrames": 1,
+          "reasoningChars": 44,
+          "signaturePresent": true,
+          "signatureLen": 308,
+          "signatureFingerprint": "308c sha256:f48325d757c2",
+          "toolKeys": [
+            "step3"
+          ],
+          "textChars": 121,
+          "text": "Fold: op=\"multiply\" with 23, so 17 × 23 = 391.\n\nVerification from scratch: seed 17 → 17; ×23 → 391.\n\nNext key is \"step3\".",
+          "latencyMs": 5873,
+          "historyReasoningTurns": 0,
+          "requestId": "8c3d1b9b-2ca2-46d4-a3ba-a55ecc0ee63c"
+        },
+        {
+          "turn": 3,
+          "http": 200,
+          "reasoningFrames": 0,
+          "reasoningTextFrames": 0,
+          "reasoningSigFrames": 0,
+          "reasoningChars": 0,
+          "signaturePresent": false,
+          "signatureLen": 0,
+          "toolKeys": [],
+          "textChars": 0,
+          "text": "",
+          "latencyMs": 3162,
+          "historyReasoningTurns": 0,
+          "requestId": "351ebbf9-ef51-4c7e-b36d-7992ce97db0c"
+        }
+      ]
+    }
+  }
+}
