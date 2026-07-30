@@ -31,6 +31,10 @@
 > 错，但它测的是一个没有任何客户端会发出的中间态** —— 只清空当前消息、history 里还留着整句
 > 英文。把一致性补上，turn 5 的 7.8% 就消失了（C5 vs V1：p < 1e-4）。和解过程见 §13.6。
 > 生产代码本批仍然一行未改。**
+> 📎 **官方客户端行为的一手证据补录见
+> [§15](#15-官方客户端行为的一手证据补录)**：Kiro CLI 2.12.0 的实时 trace 与 Kiro IDE 的连续请求体
+> 证实 `content` 在当前回合和沉入历史后都保持 `""`，Smithy 模型本身也不要求非空。该节同时说明
+> 它**只**独立佐证官方行为，因果数字仍来自本文自己的测量。
 
 同时有两个同样重要的否证结论：
 
@@ -1009,3 +1013,122 @@ C5 调研、原始产物与实施方案的真实证据提交是 **`0fd3c1e`**；
 
 本修复的精确边界是：移除工具循环续跑时由填充句子诱发的提前停止。它不声称消除所有提前停止，
 不处理独立的「HTTP 200 但 0 frame / 0 char」失败，也不属于 reasoning-signature 修复。
+
+---
+
+## 15. 官方客户端行为的一手证据补录
+
+本节记录一批**新获得的一手证据**：一次独立的并行调查抓到了真实官方客户端（Kiro CLI 2.12.0
+与 Kiro IDE）的实时报文，本文作者已逐条亲自复核后才收录。本节**不改动任何生产代码、测试或
+探针脚本**，也不消耗任何真实额度。
+
+原始捕获产物位于 `/tmp/kiro-content-capture-20260730/`（CLI `tracing` 日志，约 15 MB）与
+`/tmp/kiro-ide-request-capture-20260730/`（IDE 请求体）。**这两个目录刻意不入库**：其中含有
+可识别组织的 SSO start URL、会话与会话轮次 UUID、用户的真实提问、绝对工作目录路径，以及本仓库
+`AGENTS.md` 被作为上下文内联的全文。下文引用一律只给路径与描述，摘录也只取短片段并对
+SSO start URL、所有 session/conversation UUID、tool-use id、绝对路径与账号标识做 `<redacted>` 脱敏。
+
+### 15.1 Smithy 模型本身允许空串——这不是「传输层必须填点什么」
+
+`node_modules/@aws/codewhisperer-streaming-client/dist-types/models/models_0.d.ts` 的
+`interface UserInputMessage`：
+
+```ts
+export interface UserInputMessage {
+    /**
+     * The content of the chat message.
+     */
+    content: string | undefined;
+    userInputMessageContext?: UserInputMessageContext | undefined;
+    ...
+}
+```
+
+`content` 是**必填字段**（没有 `?`），类型是 `string`，**没有非空约束**。所以 `""` 是一个
+类型合法、模型合法的取值。这直接否掉了旧表述赖以成立的「我们必须往里放点东西」的前提，
+同时说明：`toolResults` 才是工具输出的正式通道，`content` 是用户**话语**通道。往话语通道里塞
+一句英文陈述句，等于给了模型可以真实回应的用户语义——这正是 §4/§5 测到的机制。
+
+### 15.2 Kiro CLI 2.12.0 实时 trace：工具结果续跑发的是 `content: ""`
+
+一次真实 `chat_cli_v2` 会话的 15 MB `tracing` 日志。在续跑处，trace 摘录：
+
+```
+chat_cli_v2::api_client: Sending conversation: ConversationState {
+    conversation_id: Some("<redacted>"),
+    user_input_message: UserInputMessage {
+        content: "",
+```
+
+它紧跟在
+`AgentLoopEvent { kind: LoopStateChange { from: PendingToolUseResults, to: SendingRequest } }` 之后。
+
+**本条证据最强的形态（由本文作者自行建立）：** 整份 trace 里 `content: "",` 出现 **2** 次，
+`from: PendingToolUseResults, to: SendingRequest` 出现 **2** 次——**1:1 对应**，即该会话中
+*每一次*工具结果续跑都发了空串。而字符串 `Tool results provided` 在整个 15 MB 里出现 **0** 次。
+这两个计数才是把单点观察变成规律的关键。
+
+### 15.3 Kiro IDE：`""` 会随回合沉入历史并保持为空
+
+同一次 IDE 会话中相隔 16 秒的两份捕获请求体，均由本文作者亲自解析：
+
+| 捕获 | history 中携带 `toolResults` 的回合 | 当前消息 |
+| --- | --- | --- |
+| 第一份 | 无 | `content=''`，1 个 toolResult，29 个工具 |
+| 第二份（+16s） | **1 个，且其 `content` 仍为 `''`** | `content=''`，1 个 toolResult，29 个工具 |
+
+这是决定性的一条：它证明真实客户端在该回合**沉入历史之后**依然保持空值，而不只是在当前回合
+为空。这就是对本项目两处修复（§13.7 / §14）所依据推理的一手确认——*今天的当前消息就是明天的
+历史条目*——此前我们只是推断。另外注意 IDE 每次续跑都会重发完整的 29 个工具列表。
+
+### 15.4 这解释了为什么 C3 候选反而比基线更差
+
+§13.3 里把 Q CLI 的时间戳 `--- CONTEXT ENTRY BEGIN/END ---` 块当作工具结果填充值来测，得到
+**36.7%（11/30）**，比生产基线更差，当时无法解释。
+
+CLI 捕获给出了答案：那个块是 CLI 的**用户回合**格式。其开场请求的 `content` 是：
+
+```
+--- CONTEXT ENTRY BEGIN ---
+Current time: <RFC3339 local time>
+--- CONTEXT ENTRY END ---
+
+--- USER MESSAGE BEGIN ---
+<the user's actual prompt>
+--- USER MESSAGE END ---
+```
+
+我们把一个*用户话语包装器*放进了*工具结果*槽位——模型当然会读成「用户在说话」。记下这一点，
+整套结果就自洽了，而不是留着一个 36.7% 的离群值无法解释。
+
+### 15.5 V6 的零结果与真实客户端相容
+
+真实 CLI 请求**确实**携带 `agent_continuation_id`。而我们测过加上
+`agentTaskType` / `agentContinuationId`（V6）没有效应（p = 0.63）。所以「官方客户端会用这些字段」
+与「这些字段不是本症状的驱动因素」两件事同时为真，互不矛盾。
+
+### 15.6 上游迁移信号——仅备案，当前不做任何动作
+
+同一份 trace 里：`runtime.us-east-1.kiro.dev` 出现 **29** 次，`q.us-east-1.amazonaws.com` 出现
+**24** 次；操作名仍是 `GenerateAssistantResponse`（**334** 次），`SendMessage` 从未出现（**0** 次）。
+即官方 CLI 正在迁往新主机，但操作不变。这对今天没有任何影响——本插件冻结的
+`q.{region}.amazonaws.com` 仍然可用——但值得留档。
+
+### 15.7 必须如实声明的局限
+
+并行调查给出的**因果**数字（22.7% / 9.4% / 0/256）**就是本文自己的测量结果**——它引用的是本文
+`PREMATURE-STOP-INVESTIGATION.md`。所以这**不是对因果性的独立复现**；因果结论仍然只建立在本项目
+那一轮测量之上（该轮确有同批次对照，且每个格子做了两批次复现）。真正独立、真正新增的贡献是
+§15.1–§15.6 的**官方行为**证据。这两本账必须分开记，并且明确说出来——不要让本文读起来像是
+因果发现被独立复现过。
+
+同时记录：两次调查**各自独立地收敛到了同一个根因、同一个取值、同一对责任点**
+（`src/plugin/request.ts` 的当前消息构造与
+`src/infrastructure/transformers/history-builder.ts` 的历史重建）；并行调查也独立地指出
+「只改一处会造成更危险的跨回合协议不一致」——这与本文测到的 9.4% 混合状态结果一致。
+
+### 15.8 仍然敞开的问题
+
+深层回合的混合状态效应究竟主要由**新近性（recency）**、**累积剂量（cumulative dose）**还是
+**一致性（consistency）**驱动，两次调查都没有解决。这不阻塞任何事情，因为已落地的修复直接消除了
+混合状态本身。记作**敞开的问题**，而不是修复的缺口。
