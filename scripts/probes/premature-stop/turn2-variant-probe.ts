@@ -27,7 +27,7 @@
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
 import { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { extractRegionFromArn } from '../../../src/constants.js'
@@ -53,6 +53,14 @@ interface Options {
   readonly capturePath: string
   readonly outDir: string
   readonly turn: number
+  /**
+   * Per-variant overrides of `--n`, so an in-batch control can carry a larger N than the
+   * candidates it controls **without leaving the batch**. Screening needs exactly that: n=30 is
+   * enough to reject a candidate (any single stop rejects it), but a V0 control at n=30 could not
+   * distinguish its established 10-25% band from noise, and a turn-5 V1 control at n=30 would
+   * miss its own 7.8% trap 9% of the time.
+   */
+  readonly perVariantTrials: ReadonlyMap<string, number>
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -62,11 +70,22 @@ function parseArgs(argv: readonly string[]): Options {
   let capturePath = join(import.meta.dir, 'captured-inbound.json')
   let outDir = join(import.meta.dir, 'results')
   let turn = 2
+  const perVariantTrials = new Map<string, number>()
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
     const value = argv[i + 1]
     if (flag === '--n' && value) {
       trials = Number(value)
+      i += 1
+    } else if (flag === '--n-for' && value) {
+      for (const pair of value.split(',')) {
+        const [name = '', count = ''] = pair.split('=')
+        const parsed = Number(count)
+        if (!name || !Number.isInteger(parsed) || parsed < 1) {
+          throw new Error(`--n-for expects NAME=N pairs, got ${JSON.stringify(pair)}`)
+        }
+        perVariantTrials.set(name, parsed)
+      }
       i += 1
     } else if (flag === '--concurrency' && value) {
       concurrency = Number(value)
@@ -88,7 +107,7 @@ function parseArgs(argv: readonly string[]): Options {
   if (!Number.isInteger(turn) || turn < 2) throw new Error('--turn must be an integer >= 2')
   if (!Number.isInteger(trials) || trials < 1) throw new Error(`--n must be a positive integer`)
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error(`--concurrency invalid`)
-  return { trials, concurrency, variants, capturePath, outDir, turn }
+  return { trials, concurrency, variants, capturePath, outDir, turn, perVariantTrials }
 }
 
 // Mirrors src/plugin/storage/sqlite.ts:getBaseDir. Deliberately NOT imported: importing that
@@ -199,12 +218,151 @@ interface PatchContext {
 }
 
 /**
- * The machine-tag filler measured as V2 and shipped as `KIRO_CONSTANTS.TOOL_RESULT_FILLER`.
+ * The machine-tag filler measured as V2/V10. It was **never shipped** — the replication batch
+ * recorded in `PREMATURE-STOP-INVESTIGATION.md` §11 measured 24/256 = 9.4% at turn 2 against its
+ * own 0/120, so production still sends `'Tool results provided.'`.
  *
  * Deliberately a literal rather than an import: this file is evidence of WHICH string was
- * measured, so it must not silently follow a later edit of the production constant.
+ * measured, so it must not silently follow a later edit of any production constant.
  */
 const MACHINE_TAG_FILLER = '[tool results]'
+
+/**
+ * The value the real Kiro IDE sends, and the value eight independent third-party Kiro proxies
+ * converge on: the **empty string**.
+ *
+ * Primary evidence: a captured real-client request body
+ * (`caidaoli/kiro2api` `doc/req2.json` @ `f794fdb`) whose tool-result continuation carries
+ * `currentMessage.userInputMessage.content === ""`. Provenance of that capture is verifiable
+ * from its own bytes — it contains `tooluse_fileTree`, the Kiro-only tool names
+ * `listDirectory` / `fsWrite` / `openFolders`, the `# Identity\nYou are Kiro` system prompt and
+ * `"I will follow these instructions."`, none of which appear in that proxy's source.
+ * Corroborated twice inside the official `aws/amazon-q-developer-cli` Rust client:
+ * `UserMessage::new_tool_use_results` yields no prompt text, and the newer `rts` backend's
+ * `Message::text()` filters `ContentBlock::Text` only, so a tool-result-only message serializes
+ * to `""`.
+ *
+ * Already measured here as `V1`: turn 2 = 0/120 then 0/128 (both replicate), but turn 5 =
+ * 6.7% then 7.8% (the trap replicates too). So `''` alone is NOT clean; the candidates below
+ * combine it with a structural change.
+ */
+const OFFICIAL_EMPTY_FILLER = ''
+
+/**
+ * `TsinHzl/kiro2cc-proxy`'s filler — the only NON-empty string a third party adopted
+ * specifically to address this symptom family. No quantified before/after was published, hence
+ * it is screened here rather than trusted.
+ *
+ * The same repo asserts the backend rejects empty content. Our own 248 successful turn-2 `V1`
+ * continuations falsify that assertion, so it is NOT re-tested.
+ */
+const TSINHZL_FILLER = '(tool result above)'
+
+/** RFC3339 with the machine's real local UTC offset, which is what Q CLI's context block carries. */
+function rfc3339Local(now: Date): string {
+  const pad = (value: number, width = 2): string => String(Math.abs(value)).padStart(width, '0')
+  const offsetMinutes = -now.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const offset =
+    offsetMinutes === 0
+      ? 'Z'
+      : `${sign}${pad(Math.trunc(Math.abs(offsetMinutes) / 60))}:${pad(Math.abs(offsetMinutes) % 60)}`
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}` +
+    `.${pad(now.getMilliseconds(), 3)}${offset}`
+  )
+}
+
+/**
+ * The context block `aws/amazon-q-developer-cli` sends as real, non-empty `content` on its
+ * tool-results-plus-images path. Delimiters are reproduced exactly; the timestamp is this
+ * machine's real local time, as it is in the official client.
+ */
+function qCliTimestampContext(now: Date): string {
+  return `--- CONTEXT ENTRY BEGIN ---\nCurrent time: ${rfc3339Local(now)}\n--- CONTEXT ENTRY END ---`
+}
+
+/**
+ * Kiro IDE's synthetic priming pair, transcribed from `doc/req2.json` history entries `[0..3]`:
+ *
+ *   [0] user      `# Identity\nYou are Kiro…`   (14143 chars in the capture)
+ *   [1] assistant content `""`  + toolUses `[{ listDirectory, toolUseId: 'tooluse_fileTree' }]`
+ *   [2] user      `You are operating in a workspace…<fileTree>…`
+ *                 + toolResults `[{ tooluse_fileTree, success, 'I will list the files…' }]`
+ *   [3] assistant `"I will follow these instructions."`
+ *
+ * DECLARED DEVIATION, so nobody reads this as byte-faithful: entry `[0]`'s content is truncated
+ * to its identity header. The captured 14143-char body is Kiro's OWN system prompt and it
+ * instructs the model to call `listDirectory` / `fsWrite` / `openFolders` — tools this request
+ * does not expose — so replaying it verbatim would inject a second, competing agent
+ * specification (a confound) and add ~14 kB to every request (a cost). Entries `[1]`–`[3]` are
+ * transcribed verbatim apart from the `<fileTree>` body, which lists this probe's real fixture
+ * workspace instead of the capture author's.
+ */
+const PRIMING_IDENTITY_HEADER =
+  '# Identity\nYou are Kiro, an AI assistant and IDE built to assist developers.'
+const PRIMING_TOOL_USE_ID = 'tooluse_fileTree'
+const PRIMING_TOOL_RESULT_TEXT = 'I will list the files in current directory.'
+const PRIMING_ACK = 'I will follow these instructions.'
+const PRIMING_WORKSPACE_PREFIX =
+  'You are operating in a workspace with files and folders. Below is the known structure of the ' +
+  "workspace. If a directory is marked closed, you can use the 'openFolders' tool to dig in " +
+  'deeper.'
+
+/**
+ * `<fileTree>` for the priming turn, built from the committed fixture directory that
+ * `capture-inbound.ts` copies into its scratch run dir — so the tree describes the workspace the
+ * captured conversation actually ran in, rather than a fabricated one.
+ */
+function primingFileTree(): string {
+  const ledger = join(import.meta.dir, '..', 'ab-opencode', 'fixture', 'ledger')
+  const files = readdirSync(ledger)
+    .filter((name) => name.endsWith('.json'))
+    .sort()
+  const lines = [
+    '<fileTree>',
+    "<folder name='ledger' >",
+    ...files.map((name) => `  <file name='ledger/${name}' />`),
+    '</folder>',
+    '</fileTree>'
+  ]
+  return lines.join('\n')
+}
+
+/** The four history entries Kiro IDE prepends, ready to splice in front of a real conversation. */
+function primingTurns(
+  identity: string,
+  modelId: string,
+  origin: string
+): NonNullable<ConversationState['history']> {
+  return [
+    { userInputMessage: { content: identity, modelId, origin } },
+    {
+      assistantResponseMessage: {
+        content: '',
+        toolUses: [{ toolUseId: PRIMING_TOOL_USE_ID, name: 'listDirectory', input: { path: '.' } }]
+      }
+    },
+    {
+      userInputMessage: {
+        content: `${PRIMING_WORKSPACE_PREFIX}\n\n${primingFileTree()}\n`,
+        modelId,
+        origin,
+        userInputMessageContext: {
+          toolResults: [
+            {
+              toolUseId: PRIMING_TOOL_USE_ID,
+              content: [{ text: PRIMING_TOOL_RESULT_TEXT }],
+              status: 'success'
+            }
+          ]
+        }
+      }
+    },
+    { assistantResponseMessage: { content: PRIMING_ACK } }
+  ]
+}
 
 /** Every history turn that carries tool results, i.e. every site `history-builder.ts` fills. */
 function historyToolResultTurns(
@@ -216,6 +374,31 @@ function historyToolResultTurns(
     if (uim?.userInputMessageContext?.toolResults?.length) turns.push(uim)
   }
   return turns
+}
+
+function setEveryToolResultFiller(state: ConversationState, filler: string): void {
+  const current = currentUser(state)
+  if (!current.userInputMessageContext?.toolResults?.length) {
+    throw new Error('current message carries no toolResults; not a tool-loop continuation')
+  }
+  current.content = filler
+  for (const uim of historyToolResultTurns(state)) uim.content = filler
+}
+
+function restoreCollapsedAssistantText(state: ConversationState, context: PatchContext): void {
+  let restored = 0
+  let index = 0
+  for (const entry of state.history ?? []) {
+    const arm = entry.assistantResponseMessage
+    if (!arm) continue
+    const original = context.assistantTexts[index]
+    index += 1
+    if (arm.content !== '[system: tool calling continues]') continue
+    if (original === undefined) throw new Error('no original text for a collapsed turn')
+    arm.content = original
+    restored += 1
+  }
+  if (restored === 0) throw new Error('no collapsed turn found; use --turn 4 or later')
 }
 
 interface Variant {
@@ -299,19 +482,7 @@ const VARIANTS: readonly Variant[] = [
       "undo collapseAgenticLoops: restore every assistant turn's real text that the plugin replaced with a placeholder",
     primingCall: false,
     patch: (state, context) => {
-      let restored = 0
-      let index = 0
-      for (const entry of state.history ?? []) {
-        const arm = entry.assistantResponseMessage
-        if (!arm) continue
-        const original = context.assistantTexts[index]
-        index += 1
-        if (arm.content !== '[system: tool calling continues]') continue
-        if (original === undefined) throw new Error('no original text for a collapsed turn')
-        arm.content = original
-        restored += 1
-      }
-      if (restored === 0) throw new Error('no collapsed turn found; use --turn 4 or later')
+      restoreCollapsedAssistantText(state, context)
     }
   },
   {
@@ -354,12 +525,84 @@ const VARIANTS: readonly Variant[] = [
       'current message), i.e. what the plugin sends after the fix',
     primingCall: false,
     patch: (state) => {
-      const current = currentUser(state)
-      if (!current.userInputMessageContext?.toolResults?.length) {
-        throw new Error('current message carries no toolResults; not a tool-loop continuation')
+      setEveryToolResultFiller(state, MACHINE_TAG_FILLER)
+    }
+  },
+  {
+    name: 'C1',
+    hypothesis:
+      "V1's empty content PLUS Kiro IDE's synthetic priming pair prepended to history " +
+      '(identity header truncated — see PRIMING_IDENTITY_HEADER)',
+    primingCall: false,
+    patch: (state) => {
+      const first = historyEntry(state, 0).userInputMessage
+      if (!first) throw new Error('history[0] is not a user message')
+      currentUser(state).content = OFFICIAL_EMPTY_FILLER
+      state.history = [
+        ...primingTurns(PRIMING_IDENTITY_HEADER, first.modelId, first.origin),
+        ...(state.history ?? [])
+      ]
+    }
+  },
+  {
+    name: 'C1b',
+    hypothesis:
+      "V1's empty content PLUS the priming pair in the real client's FULL turn layout: our own " +
+      'system prompt becomes history[0] and the user prompt follows the priming pair',
+    primingCall: false,
+    patch: (state, context) => {
+      const first = historyEntry(state, 0).userInputMessage
+      if (!first) throw new Error('history[0] is not a user message')
+      const glued = `${context.systemPrompt}\n\n${context.userPrompt}`
+      if (first.content !== glued) {
+        throw new Error('history[0] is not the glued system+user content injectSystemPrompt makes')
       }
-      current.content = MACHINE_TAG_FILLER
-      for (const uim of historyToolResultTurns(state)) uim.content = MACHINE_TAG_FILLER
+      first.content = context.userPrompt
+      currentUser(state).content = OFFICIAL_EMPTY_FILLER
+      state.history = [
+        ...primingTurns(context.systemPrompt, first.modelId, first.origin),
+        ...(state.history ?? [])
+      ]
+    }
+  },
+  {
+    name: 'C2',
+    hypothesis:
+      "V1's empty content PLUS undo collapseAgenticLoops (never tested as a combination; " +
+      'degenerates to V1 wherever no turn was collapsed, i.e. before turn 4)',
+    primingCall: false,
+    patch: (state, context) => {
+      restoreCollapsedAssistantText(state, context)
+      currentUser(state).content = OFFICIAL_EMPTY_FILLER
+    }
+  },
+  {
+    name: 'C3',
+    hypothesis:
+      'the Q CLI timestamp context block as content: non-empty, unambiguously not a user ' +
+      'utterance, and a string the service demonstrably receives from a first-party client',
+    primingCall: false,
+    patch: (state) => {
+      setEveryToolResultFiller(state, qCliTimestampContext(new Date()))
+    }
+  },
+  {
+    name: 'C4',
+    hypothesis: `third-party filler adopted for this symptom family: ${JSON.stringify(TSINHZL_FILLER)}`,
+    primingCall: false,
+    patch: (state) => {
+      setEveryToolResultFiller(state, TSINHZL_FILLER)
+    }
+  },
+  {
+    name: 'C5',
+    hypothesis:
+      'empty content at EVERY tool-result site, i.e. what a client that natively sends the ' +
+      'official value produces once earlier turns age into history (V1 empties only the current ' +
+      'message, so the two differ from turn 4 on)',
+    primingCall: false,
+    patch: (state) => {
+      setEveryToolResultFiller(state, OFFICIAL_EMPTY_FILLER)
     }
   }
 ]
@@ -595,8 +838,10 @@ async function main(): Promise<void> {
     account.limit_count !== null && account.used_count !== null
       ? account.limit_count - account.used_count
       : null
+  const trialsFor = (variant: Variant): number =>
+    options.perVariantTrials.get(variant.name) ?? options.trials
   const plannedCalls = selected.reduce(
-    (total, variant) => total + options.trials * (variant.primingCall ? 2 : 1),
+    (total, variant) => total + trialsFor(variant) * (variant.primingCall ? 2 : 1),
     0
   )
 
@@ -624,16 +869,22 @@ async function main(): Promise<void> {
   )
 
   if (DRY) {
+    const baseBytes = Buffer.byteLength(JSON.stringify(base), 'utf8')
+    console.log(`\nV0 serialized conversationState: ${baseBytes} bytes`)
     for (const variant of selected) {
       const state = structuredClone(base)
       variant.patch(state, context)
       const extended: Record<string, unknown> = state
+      const bytes = Buffer.byteLength(JSON.stringify(state), 'utf8')
+      const delta = bytes - baseBytes
       console.log(
         `\n[${variant.name}] ${variant.hypothesis}\n` +
           `  historyLength=${state.history?.length ?? 0} roles=${(state.history ?? [])
             .map((entry) => (entry.userInputMessage ? 'user' : 'assistant'))
             .join(',')}\n` +
           `  priming=${variant.primingCall} content=${JSON.stringify(currentUser(state).content)}\n` +
+          `  bytes=${bytes} deltaVsV0=${delta >= 0 ? '+' : ''}${delta} ` +
+          `(~${Math.round(delta / 4)} tokens at 4 bytes/token)\n` +
           `  history[0] head=${JSON.stringify(
             (historyEntry(state, 0).userInputMessage?.content ?? '').slice(0, 90)
           )}\n` +
@@ -680,8 +931,9 @@ async function main(): Promise<void> {
   const client: SdkClient = createSdkClient(auth, region, EFFORT)
   const all: Trial[] = []
   for (const variant of selected) {
-    console.log(`\n=== ${variant.name} (n=${options.trials}) ${variant.hypothesis} ===`)
-    const trials = await runPool(options.trials, options.concurrency, (index) =>
+    const variantTrials = trialsFor(variant)
+    console.log(`\n=== ${variant.name} (n=${variantTrials}) ${variant.hypothesis} ===`)
+    const trials = await runPool(variantTrials, options.concurrency, (index) =>
       runTrial(variant, index + 1, base, context, auth, client).then((trial) => {
         console.log(
           `  [${variant.name}] trial ${trial.trial}: ${trial.outcome} http=${trial.http} ` +
@@ -738,6 +990,7 @@ async function main(): Promise<void> {
     capturePath: options.capturePath,
     turn: options.turn,
     trialsPerVariant: options.trials,
+    trialsPerVariantOverrides: Object.fromEntries(options.perVariantTrials),
     concurrency: options.concurrency,
     account: { masked: maskEmail(account.email), headroomBefore: headroom },
     usage: { before: usageBefore, after: usageAfter },
@@ -754,7 +1007,8 @@ async function main(): Promise<void> {
     variants: selected.map((variant) => ({
       name: variant.name,
       hypothesis: variant.hypothesis,
-      primingCall: variant.primingCall
+      primingCall: variant.primingCall,
+      trials: trialsFor(variant)
     })),
     trials: all
   }

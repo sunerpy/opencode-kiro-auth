@@ -30,6 +30,17 @@ Contents:
   — it measured 24/256 = 9.4% there, in two independent batches of exactly 12/128. The fix was
   therefore NOT implemented; production still sends `'Tool results provided.'`.** Do not cite the
   "three replacements all reach 0%" sentence without §11.
+  **A third batch (1922 more real calls, investigation §12–§13) then found the answer by research
+  first: the real Kiro IDE, the official `aws/amazon-q-developer-cli`, and eight independent
+  third-party proxies all send the EMPTY STRING. Screening four research-backed candidates killed
+  the priming-pair hypothesis, the undo-collapse combination, the Q CLI timestamp block (36.7% at
+  turn 2 — WORSE than baseline) and `'(tool result above)'` (3/160 at turn 2). The single survivor
+  is emptying EVERY tool-result filler site — current message and history — confirmed 0/256 at
+  turn 2 and 0/256 at turn 5, each as two independent n=128 batches. That also dissolves §11's
+  apparent contradiction: `''` was only ever a trap when the current message was emptied while
+  history kept the English sentence (V1 = 12/128 at turn 5 vs C5 = 0/256, p < 1e-4) — an
+  inconsistent state no real client emits. Production is STILL unchanged; §13.7 is the reviewable
+  proposal.**
   `capture-inbound.ts` is worth knowing about on
   its own: it records the exact OpenAI-shaped body the plugin's custom `fetch` receives, for **zero**
   quota, by standing a local mock where the plugin normally sits — which is the only way to see the

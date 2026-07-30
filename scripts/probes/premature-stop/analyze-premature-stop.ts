@@ -17,9 +17,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function parseArgs(argv: readonly string[]): { phase1?: string; phase2?: string } {
+function parseArgs(argv: readonly string[]): {
+  phase1?: string
+  phase2?: string
+  baseline: string
+} {
   let phase1: string | undefined
   let phase2: string | undefined
+  let baseline = 'V0'
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
     const value = argv[i + 1]
@@ -29,9 +34,12 @@ function parseArgs(argv: readonly string[]): { phase1?: string; phase2?: string 
     } else if (flag === '--phase2' && value) {
       phase2 = value
       i += 1
+    } else if (flag === '--baseline' && value) {
+      baseline = value
+      i += 1
     }
   }
-  return { ...(phase1 ? { phase1 } : {}), ...(phase2 ? { phase2 } : {}) }
+  return { ...(phase1 ? { phase1 } : {}), ...(phase2 ? { phase2 } : {}), baseline }
 }
 
 const LOG_FACTORIAL_CACHE: number[] = [0, 0]
@@ -245,7 +253,7 @@ interface Phase2Trial {
   readonly outcome: string
 }
 
-function analysePhase2(paths: readonly string[]): void {
+function analysePhase2(paths: readonly string[], baselineName: string): void {
   const trials: Phase2Trial[] = []
   const hypotheses = new Map<string, string>()
   let realCalls = 0
@@ -293,13 +301,15 @@ function analysePhase2(paths: readonly string[]): void {
     )
   }
 
-  const baseline = stats.find((row) => row.name === 'V0')
+  const baseline = stats.find((row) => row.name === baselineName)
   if (!baseline) return
-  console.log('\n### Two-sided Fisher exact vs V0 (outcome: stopped, errors excluded)\n')
-  console.log('| variant | stops/n | V0 stops/n | p |')
+  console.log(
+    `\n### Two-sided Fisher exact vs ${baselineName} (outcome: stopped, errors excluded)\n`
+  )
+  console.log(`| variant | stops/n | ${baselineName} stops/n | p |`)
   console.log(`|${'---|'.repeat(4)}`)
   for (const row of stats) {
-    if (row.name === 'V0') continue
+    if (row.name === baselineName) continue
     const p = fisherExact(
       row.stopped,
       row.n - row.stopped,
@@ -313,8 +323,8 @@ function analysePhase2(paths: readonly string[]): void {
 
   console.log('\n### Detectable effect at this N (two-sided Fisher, alpha=0.05)\n')
   console.log(
-    `With V0 at ${baseline.stopped}/${baseline.n}, the smallest number of stops in an ` +
-      `n=${baseline.n} variant that would reach p<0.05 against V0 is reported below.`
+    `With ${baselineName} at ${baseline.stopped}/${baseline.n}, the smallest number of stops in an ` +
+      `n=${baseline.n} variant that would reach p<0.05 against ${baselineName} is reported below.`
   )
   for (const target of [baseline.n]) {
     let smallestSignificantDrop: number | null = null
@@ -347,7 +357,7 @@ function main(): void {
           .map((name) => join(target, name))
           .sort()
       : [target]
-    analysePhase2(paths)
+    analysePhase2(paths, options.baseline)
   }
 }
 

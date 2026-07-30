@@ -23,6 +23,14 @@
 > （复现成功）、`''` = 0/128（复现成功）、显式续跑指令 = 0/128（复现成功），而
 > `'[tool results]'` = **24/256 = 9.4%**（对自己先前的 0/120，Fisher p = 0.00013，**复现失败**）。
 > 本文 §4/§5 的机制结论不受影响；受影响的只有 §7.1 的**取值选择**。
+>
+> ✅ **答案在第三批 [§12 官方值调研](#12-官方值调研userinputmessagecontent-该填什么) 与
+> [§13 候选筛选](#13-两阶段候选筛选唯一存活者是所有填充点都置空)：官方客户端发的是空串 `""`，
+> 而唯一在两个位置都干净的取值是「**当前消息和 history 里每一个工具结果填充点都置空**」
+> （C5：turn 2 = 0/256、turn 5 = 0/256，各 2×128 两个独立批次）。**§11 说「`''` 是陷阱」并没有
+> 错，但它测的是一个没有任何客户端会发出的中间态** —— 只清空当前消息、history 里还留着整句
+> 英文。把一致性补上，turn 5 的 7.8% 就消失了（C5 vs V1：p < 1e-4）。和解过程见 §13.6。
+> 生产代码本批仍然一行未改。**
 
 同时有两个同样重要的否证结论：
 
@@ -293,7 +301,8 @@ V5 是机制实验，不是生产复现。任何把「V5 = 95%」直接说成「
 
 ## 7. 修复提案（本次任务**不实现**）
 
-> ⚠️ 本节写于调查当时。**其推荐取值已被 §11 的复现推翻，请连同 §11 一起读。**
+> ⚠️ 本节写于调查当时。**其推荐取值已被 §11 的复现推翻，且整节已被 §13.7 取代 —— 请连同
+> §11 与 §13 一起读，不要单独按本节决策。**
 
 ### 7.1 建议方案：把工具结果的填充文本改成非陈述句的机器标签
 
@@ -556,6 +565,10 @@ p < 0.05 的「下降」（analyzer 自己会打印这句话）。
 
 `V4`（补 `<thinking_mode>` 前缀）本批未重测，其副作用仍未评估（见 §10.4）。
 
+> ✅ **这张表在第三批里有了答案：见 §13。** 「再找新取值」那一行成立了 —— 官方值是空串，而且
+> 必须**在每一个填充点上都置空**（C5），两个位置各 2×128 全 0。`''` 那一行的「仍然不能用」是对
+> **只清空当前消息**这个中间态的正确判断，不是对官方形态的判断（§13.6）。
+
 ### 11.6 这一批的额度与卫生
 
 | 批次                          | 真实 Kiro 调用 |
@@ -609,3 +622,359 @@ KIRO_PROBE_ACCOUNT='you@example.com' CONFIRM=1 \
    回答这个问题，需要先找到一个 history 填充点存在、基线又非 0 的位置。
 4. **仍然只在一个 fixture 上测过**（§10.1 原样适用）。
 
+
+---
+
+## 12. 官方值调研：`userInputMessage.content` 该填什么
+
+本节与 §13 是**第三个批次**，与 §1–§10（调查）、§11（复现）都是独立批次。这一批先做文献/源码
+调研，再据此设计候选并实测。**生产代码依然一行未改**（`git diff cf4c55f..HEAD -- src/` 为空）。
+
+### 12.1 结论先说：官方值是空串 `""`
+
+三层一手证据，互相独立：
+
+1. **抓取到的真实 Kiro IDE 请求体** ——
+   [`caidaoli/kiro2api` `doc/req2.json` @ `f794fdb`](https://github.com/caidaoli/kiro2api/blob/f794fdb/doc/req2.json)。
+   它的工具结果续跑消息就是 `currentMessage.userInputMessage.content === ""`，
+   `origin: AI_EDITOR`、`chatTriggerType: MANUAL`。
+   **溯源可由它自己的字节验证**：文件里有 `tooluse_fileTree`、Kiro 独有的工具名
+   `listDirectory` / `fsWrite` / `openFolders`、`# Identity\nYou are Kiro` 系统提示词，以及
+   `"I will follow these instructions."` —— 这些都不出现在那个代理自己的源码里，所以代理不可能
+   凭空合成它。
+2. **官方 `aws/amazon-q-developer-cli`（Rust），两条互不相干的代码路径** ——
+   `chat-cli` 的 `UserMessage::new_tool_use_results`（`prompt()` → `None`，无时间戳、无附加
+   上下文 ⇒ `content == ""`）；以及更新的 `rts` 后端里 `Message::text()` 只过 `ContentBlock::Text`，
+   于是一条只带工具结果的消息序列化出来就是 `""`。
+3. **八个互相独立的三方实现都收敛到 `""`**（kiro2api、kirocc、kiro.rs、Kiro-account-manager、
+   kiro-anthropic、Kiro-Go 等，fork 血缘已去重）。三方 9router PR #2183 还跑过一次单变量
+   A/B：`""` 回答正确，`"continue"` 退化，`"."` 被当成用户提示词读。
+
+**本插件的 `'Tool results provided.'` 在整个生态里是独一份 —— 没有别人用一个句子。**
+
+### 12.2 官方客户端有、而本插件没有的两条结构性规则
+
+- **Kiro IDE 会在真实对话前面插一对合成的「预热」回合**（`req2.json` 的 `history[0..3]`）：
+
+  ```
+  [0] user      "# Identity\nYou are Kiro…"                       (14143 字符，Kiro 自己的系统提示词)
+  [1] assistant content=""  + toolUses=[listDirectory, id=tooluse_fileTree]
+  [2] user      "You are operating in a workspace…<fileTree>…"     (1112 字符)
+                + toolResults=[{tooluse_fileTree, success, "I will list the files in current directory."}]
+  [3] assistant "I will follow these instructions."
+  ```
+
+  `d-kuro/kirocc` 复刻了这个形态。注意一个常见误读：这对回合里带 `toolResults` 的那条用户
+  消息**内容并不短**（1112 字符的工作区上下文）；真正为空的是**助手**回合的 `content` 和
+  **当前**消息的 `content`。
+- **Q CLI 有一条条件规则**：当工具结果回合会成为历史里的第一条、或前一条助手回合不是
+  `tool_use` 时，它把工具结果**文本搬进 `content`**（`replace_content_with_tool_use_results`，
+  注释写的是 _"This is required to avoid validation errors."_），该路径的空内容兜底值是
+  `"<tool result redacted>"`。
+- **Q CLI 在「工具结果 + 图片」这条路上会发一个真正非空的 content**：一个时间戳上下文块
+
+  ```
+  --- CONTEXT ENTRY BEGIN ---
+  Current time: <RFC3339 本地时间>
+  --- CONTEXT ENTRY END ---
+  ```
+
+### 12.3 顺手结掉的一处生态争议（不要再测）
+
+`TsinHzl/kiro2cc-proxy` 断言后端拒绝空内容。**我们自己的数据已经否证它**：§4.1 与 §11.2 的
+`V1` 合计 248 次 turn-2 空内容续跑全部成功（本批又加了 30 次 + C5 的 512 次）。空内容**是**被
+接受的。这条记录在案，不要重测。
+
+---
+
+## 13. 两阶段候选筛选：唯一存活者是「所有填充点都置空」
+
+### 13.1 候选与设计
+
+每个变体都由**真实** `transformToSdkRequest` 生成 V0，再只改预期的那一个元素（`verify-v0.ts`
+立下的规矩；本批当天重跑 `verify-v0.ts`，V0 在每个可比字段上仍与生产一致）。
+
+| 候选    | 改了什么                                                                   | 相对谁只差一处 |
+| ------- | -------------------------------------------------------------------------- | -------------- |
+| **C1**  | `''`（当前消息）**+** Kiro 预热回合前插到 history                          | V1             |
+| **C1b** | `''` **+** 预热回合，且按真实客户端的**完整回合布局**（系统提示词单独成 history[0]，用户提示词跟在预热之后） | V1 |
+| **C2**  | `''` **+** 撤销 `collapseAgenticLoops`                                     | V1             |
+| **C3**  | Q CLI 时间戳上下文块（真实本地 RFC3339），当前消息与 history 填充点都用    | V0             |
+| **C4**  | `'(tool result above)'`（TsinHzl），两处都用                                | V0             |
+| **C5**  | **`''`，每一个工具结果填充点都置空**（当前消息 + history）                  | V1             |
+| V0 / V1 | 同批次对照：生产基线 / 只把**当前消息**置空                                | —              |
+
+**C5 是本批新增的候选，不在任务列的四个里，但它是必须加的**：`V1` 只清空当前消息，而一个
+原生发送官方值的客户端在历史里也是 `""`（今天的当前消息就是明天的历史条目）。不测 C5 就无法
+判断 §11 那个「turn 5 空串陷阱」到底是空串的性质，还是「当前消息空 + 历史里还在说整句英文」
+这个**混搭**的性质。C1b 同理，是解释 C1 所必需的对照（C1 只前插预热对、不动 `history[0]`；
+C1b 复刻真实布局但因此带上了 §5.2 已知更差的「系统提示词单独成回合」这个混淆项）。
+
+**两处刻意声明的偏离**（免得被当成逐字复刻）：
+
+1. 预热回合 `[0]` 的内容截断成 identity 首行。原文那 14143 字符是 Kiro **自己的**系统提示词，
+   而且它指示模型去调 `listDirectory` / `fsWrite` / `openFolders` —— 本请求根本没暴露这些
+   工具。逐字回放等于注入第二份互相竞争的 agent 规范（混淆项），还要给**每一个**请求加约 14 kB
+   （成本）。`[1]`–`[3]` 除 `<fileTree>` 内容换成本探针真实的 fixture 工作区外都是逐字转写。
+2. C3 的时间戳是每次试验取一次真实本地时间，所以该变体的 content 逐试验不同（与官方客户端
+   一致）。
+
+**C1 的额外成本**（`DRY=1` 直接读出）：turn 2 的 `conversationState` 从 51353 字节涨到 52582
+字节，**+1229 字节 ≈ +307 token**；C1b 是 +1148 字节 ≈ +287 token。这是**每个请求**都要付的。
+C3 在 turn 5 是 +308 字节（三个 history 填充点 + 当前消息各一份时间戳块），C4/C5 分别是
+−12 / −88 字节。
+
+**degenerate 关系，由 `DRY=1` 的字节数直接证明，因此不重复花额度**：turn 2 上 C5 与 V1 的
+payload **字节相同**（都是 51331 字节、content `""`、history 里 0 个工具结果填充点），C2 在
+turn 2 也退化成 V1（`pairCount > 1` 才折叠）。所以 Stage 1 的 turn 2 不跑 C2/C5，用同批次的
+V1 代表；Stage 2 仍然给 C5 单独跑满 turn 2 的 2×128，不靠这条等价性省事。
+
+### 13.2 判定规则与功效（先声明，再看数）
+
+- **Stage 1 筛选：n = 30 / 候选 / 位置，出现任何一次提前停止即淘汰。** 真实率为 0 时期望计数
+  为 0；真实率 9.4% 时被抓到的概率 `1 − 0.906^30 = 94.7%`，16% 时 `1 − 0.84^30 = 99.5%`。
+- **同批次对照**：V0 n=64（turn 2 必须落在既有的 10–25% 区间，turn 5 必须≈0），turn 5 再加
+  V1 n=64（必须复现约 7–8% 的陷阱）。**任一对照失灵则该批次作废。**
+  > 对照的 N 相对任务书的 n=30 上调过：turn-5 的 V1 若只跑 30 次，在真实率 7.8% 下有
+  > `0.922^30 = 9%` 的概率一次都不中，那这个「灵敏度对照」就形同虚设；n=64 时漏检概率降到
+  > 0.6%。为此给探针加了 `--n-for NAME=N`，让对照能带着更大的 N **留在同一批次里**。
+- **Stage 2 确认：存活者 n = 128 × 两个互相独立的批次 / 位置，两批都必须是 0。** 这正是当初
+  抓出 `'[tool results]'` 假阳性的那道纪律，没有缩水。两批之间同时换了账号与时间窗。
+
+### 13.3 Stage 1 —— 四个候选里三个当场淘汰
+
+turn 2（`results/screen-turn2/`，对照 **V0 = 12/64 = 18.8%，落在既有区间内 → 批次有效**）：
+
+| 变体      | n   | stopped | 速率      | 95% CI     | vs 本批 V0 的 Fisher p | 判定                        |
+| --------- | --- | ------- | --------- | ---------- | ---------------------- | --------------------------- |
+| V0 基线   | 64  | 12      | 18.8%     | 11.1–30.0% | —                      | 对照有效                    |
+| V1 对照   | 30  | 0       | 0.0%      | 0.0–11.4%  | 0.0083                 | 复现                        |
+| **C1**    | 30  | 0       | 0.0%      | 0.0–11.4%  | 0.0083                 | 过筛                        |
+| **C1b**   | 30  | 0       | 0.0%      | 0.0–11.4%  | 0.0083                 | 过筛                        |
+| **C3**    | 30  | **11**  | **36.7%** | 21.9–54.5% | 0.0742                 | **淘汰（比生产基线还差）**  |
+| **C4**    | 30  | 0       | 0.0%      | 0.0–11.4%  | 0.0083                 | 过筛（但见 §13.5 的冒烟记录） |
+
+turn 5（`results/screen-turn5/`，两批合并；对照 **V0 = 0/128、V1 = 7/128 = 5.5%（p = 0.0144）
+→ 批次能测到陷阱，有效**）：
+
+| 变体    | n   | stopped | 速率      | 95% CI    | vs 本批 V0 的 Fisher p | 判定                |
+| ------- | --- | ------- | --------- | --------- | ---------------------- | ------------------- |
+| V0 基线 | 128 | 0       | 0.0%      | 0.0–2.9%  | —                      | 对照有效            |
+| V1 对照 | 128 | 7       | 5.5%      | 2.7–10.9% | 0.0144（更差）         | **陷阱第三次复现**  |
+| **C1**  | 30  | **1**   | 3.3%      | 0.6–16.7% | 0.1899                 | **淘汰**            |
+| **C1b** | 30  | **3**   | **10.0%** | 3.5–25.6% | 0.0063                 | **淘汰**            |
+| **C2**  | 53  | **4**   | **7.5%**  | 3.0–17.9% | 0.0068                 | **淘汰**            |
+| **C3**  | 30  | **1**   | 3.3%      | 0.6–16.7% | 0.1899                 | **淘汰**（turn 2 已淘汰） |
+| **C4**  | 30  | 0       | 0.0%      | 0.0–11.4% | 1.0000                 | 过筛                |
+| **C5**  | 30  | 0       | 0.0%      | 0.0–11.4% | 1.0000                 | 过筛                |
+
+**所以「预热回合」这条最被看好的假设被否证了**：C1 与 C1b 都在 turn 5 掉了。前插一对示范
+性的工具结果回合**不能**救回空串在长任务上的不稳定。C2 也否证了「空串 × 撤销折叠」这个
+从未被测过的交互 —— 撤销折叠在 turn 5 单独看是 0/120（§4.3 的 V9），配上空串仍然是 7.5%。
+
+### 13.4 Stage 2 —— 唯一存活者 C5，两个位置各 2×128 全 0
+
+turn 2（`results/confirm-turn2/`，两批：账号 A 然后账号 B）：
+
+| 变体   | 批 1     | 批 2     | 合计    | 速率     | 95% CI    | vs 本批 V0 的 Fisher p |
+| ------ | -------- | -------- | ------- | -------- | --------- | ---------------------- |
+| V0     | 16/64    | 13/64    | 29/128  | 22.7%    | 16.3–30.6% | —                     |
+| **C5** | **0/128** | **0/128** | **0/256** | **0.0%** | 0.0–1.5% | **0.0000**            |
+| C4     | 2/128    | —        | 2/128   | 1.6%     | 0.4–5.5%  | 0.0000                |
+
+**C4 在这里死掉**：2/128。它确实是一个真实的大幅下降（22.7% → 1.6%，p < 1e-4），但按预先声明
+的「出现任何一次停止即淘汰」它不过关 —— 而这正是 §11 的教训：只减半的东西不能叫修好。
+
+turn 5（`results/confirm-turn5/`，两批：账号 B 然后账号 A）：
+
+| 变体   | 批 1     | 批 2     | 合计    | 速率     | 95% CI    | vs V0 的 p | vs V1 的 p |
+| ------ | -------- | -------- | ------- | -------- | --------- | ---------- | ---------- |
+| V0     | 0/64     | **1/64** | 1/128   | 0.8%     | 0.1–4.3%  | —          | 0.0027     |
+| V1     | 3/64     | 9/64     | 12/128  | **9.4%** | 5.4–15.7% | 0.0027（更差） | —      |
+| **C5** | **0/128** | **0/128** | **0/256** | **0.0%** | 0.0–1.5% | 0.3333（不更差） | **0.0000** |
+| C4     | 0/128    | —        | 0/128   | 0.0%     | 0.0–2.9%  | 1.0000     | 0.0004     |
+
+`empty200` 在本批全部 1922 次试验里仍然是 **0**。全部批次错误数为 0，唯一的例外是 §13.5 记的
+那个令牌过期批次。
+
+**顺手记一条以前没见过的观察：turn-5 的生产基线不是严格的 0。** 本批 4 个 V0 格子合计
+1/256（另加历史 248 次全 0，即累计 1/504）。这不改变任何结论（它让「C5 在 turn 5 不更差」这句话
+更弱而不是更强），但以后不要再把「turn 5 = 0%」当成硬事实来引用。
+
+### 13.5 必须如实记下的两件事
+
+1. **C4 在正式批次之前的冒烟里停过一次。** 为了在花掉整批额度之前排掉 400
+   ValidationException，先给每个新变体在两个位置各跑了 n=2（共 16 次真实调用，产物写在
+   `/tmp`，未提交）。那一轮 turn 2 上 C4 是 **1/2**、C3 是 1/2。冒烟没有同批次对照、N=2，
+   按预先声明的规则它不参与判定；但 C4 用自己的 payload 造成过一次提前停止这个**观察是真实
+   的**，而且与它后来 Stage 2 的 2/128 一致。合并起来 C4 的 turn-2 记录是 **3/160**。
+   **C4 不干净。**
+2. **turn-5 Stage 1 的第一批中途令牌过期。** 该批 C3/C4/C5 三格各 30 次全部返回
+   `403 AccessDeniedException: The bearer token included in the request is invalid.`，C2 有 7 次
+   命中同样错误。探针把 403 记为 `error` 并从速率分母里剔除（这正是分母口径的用途），所以
+   该批 V0/V1/C1/C1b 的数字有效、C2 的 23 次有效，而 C3/C4/C5 在 turn 5 是**未测**。补跑成第二
+   批（`results/screen-turn5/` 里的第二个文件），带上自己整套 V0 n=64 + V1 n=64 对照。探针只在
+   启动时检查过期时间，长批次会撞上这个坑 —— 记下来。
+
+### 13.6 与「官方用 `""`，我们却测到 7.8%」这个矛盾的正面和解
+
+这是本批最重要的一句话，必须写清楚：
+
+> **矛盾是假的，因为 `V1` 从来不是官方形态。** `V1` 只清空**当前消息**，把 history 里那三条
+> 带工具结果的用户回合留成 `'Tool results provided.'` 这句完整的英文陈述句。一个原生发送官方值的
+> 客户端在 history 里也是 `""` —— 今天的当前消息就是明天的历史条目。**turn 5 那个陷阱不是空串
+> 的性质，而是「混搭」的性质**：当前回合一言不发，紧挨着的同类历史回合却在说人话，这种自相
+> 矛盾的上下文才是不稳定的来源。
+
+同批次数据直接支持这个解释，而且是本批里最干净的一组对比：
+
+| turn 5，同两个批次内 | 当前消息 | history 填充点          | stopped   |
+| -------------------- | -------- | ----------------------- | --------- |
+| V0                   | 句子     | 句子                    | 1/128     |
+| **V1**               | **空**   | **句子（不一致）**      | **12/128 = 9.4%** |
+| **C5**               | **空**   | **空（一致，= 官方形态）** | **0/256** |
+
+`C5` vs `V1`：**p < 1e-4**（`--baseline V1` 可重算）。也就是说 §11 那条「`''` 是陷阱、不能用」的
+结论**在它自己的测量范围内仍然正确**，但它测的是一个**没有任何客户端会发出的中间态**。把
+一致性补上，陷阱就消失了。
+
+这同时解释了另外三个此前无法解释的现象，因此这不是一个只为救结论而编的说法：
+
+- **C3 在 turn 2 反而更差（36.7%）**：时间戳上下文块是一段结构化的机器文本，出现在「用户」
+  这一侧。它与 §5.1 的机制、与 V8（系统提示词单独成回合，34.2%）、与 V5（把助手可见文本换成
+  合成占位符，95.0%）同向 —— 在用户回合里塞一段不像自然对话的内容会让 turn 2 更不稳。
+  Q CLI 能用它，是因为 Q CLI 的整段上下文都是自洽的；抄一个片段过来不是。
+- **`'[tool results]'`（§11）只减半**：短机器标签是「说了点什么但不像话」的中间态，正好落在
+  「一致的句子」和「一致的空」之间。
+- **C1/C1b 失败**：光靠前面示范一次，压不过后面每一条历史回合都在说整句英文这个更近、更强的
+  反例。
+
+### 13.7 修复提案（本任务**不实现**）
+
+**唯一改动点：把两个填充点都改成空串**，也就是 C5。
+
+| 文件                                                     | 行  | 现状                                                                        | 改成                                                     |
+| -------------------------------------------------------- | --- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `src/infrastructure/transformers/history-builder.ts`     | 155 | `content: 'Tool results provided.',`                                        | `content: '',`                                           |
+| `src/plugin/request.ts`                                  | 184 | `curContent = curTrs.length ? 'Tool results provided.' : '[system: conversation continues]'` | `if (!curContent && !curTrs.length) curContent = '[system: conversation continues]'` |
+
+`request.ts` 那一行的写法要注意：现在是 `if (!curContent) curContent = curTrs.length ? A : B`。
+正确的改法是**把有工具结果的那一支整个去掉**（让 content 保持空），而不是给它赋一个 `''`——
+两者行为相同，但前者读起来就是「有工具结果时不填任何东西」。**`else` 分支
+（`'[system: conversation continues]'`，无工具结果的助手续跑）本次实验完全没有覆盖，不要一起改**
+（§7.2 的同一条约束依然成立）。
+
+**关于 `AGENTS.md` §6「AWS 字面量集中到 `src/constants.ts`」：建议这次不要加常量。** 空串不是
+AWS 期望的 wire 值，它是「不放填充文本」这件事本身；给它起个名字（`TOOL_RESULT_FILLER = ''`）
+只会让人以为存在一个可替换的取值。两处各加一行注释指向本文 §13 更诚实。同理，
+`'Tool results provided.'` 从来不在 `AGENTS.md` 的冻结清单里（它是本插件为填满必填字段自造的），
+所以这个改动是允许的 —— 这一点 §7.2 已经论证过，不变。
+
+**需要有意更新的既有测试（唯一允许改测试的理由，且必须是「跟随实现改期望值」）：**
+
+| 位置                                       | 性质                                                          | 处理                              |
+| ------------------------------------------ | ------------------------------------------------------------- | --------------------------------- |
+| `src/__tests__/history-builder.test.ts:100` | **真断言**：`expect(toolTurn?.content).toBe('Tool results provided.')` | 改成 `toBe('')`                   |
+| `src/__tests__/history-builder.test.ts:152` | 输入 fixture（`collapseAgenticLoops` 的入参），不断言填充文本  | 可不改；若为保持真实性一并改，属纯 cosmetic |
+| `src/__tests__/message-transformer.test.ts:202` | 输入 fixture（`sanitizeHistory` 的入参），不断言填充文本   | 同上                              |
+
+**已经查过、可以放心的一点**：没有任何清洗逻辑会因为 `content` 为空而丢掉一条
+`userInputMessage`。`history-builder.ts:165` 与 `request.ts:123/138` 的真值判断都只作用在
+`assistantResponseMessage` 上，`sanitizeHistory`（`message-transformer.ts:15/18/30`）只看
+`userInputMessageContext.toolResults`。所以 history 里的 `content: ''` 是安全的。
+
+**验证顺序**（沿用 §7.3，加一条）：
+
+1. 单元层：断言两条路径产出的 `content` 都是 `''`，且 `toolResults` / `tools` / `toolUseId` /
+   history 角色顺序完全不变；
+2. 翻译层（零额度）：重跑 `verify-v0.ts`。**注意它的 `FILLER` 常量必须继续保持生产值
+   `'Tool results provided.'`** —— 它记录的是修复前基线；修复落地后这一步会显示
+   `currentMessage.content` 一项不一致，**那正是预期结果**，用来证明改动的作用面只有这一个字段；
+3. 真机层：`--turn 2 --variants V0,C5 --n 128` **两个独立批次**，要求两批都是 0 且对同批次 V0
+   有 p < 0.05；
+4. 真机层安全性：`--turn 5 --variants V0,V1,C5 --n 128` 两个独立批次，要求 C5 不显著差于 V0，
+   且**同批次的 V1 仍能测出约 5–14% 的陷阱**（这是灵敏度对照，不能省）;
+5. 端到端 `run-ab.ts` 仅作补充证据，功效不足以当验收门槛（§3）。
+
+### 13.8 重算与重跑命令
+
+```bash
+# ── 零额度：从已提交的原始产物重算 §13 的四张表
+for d in screen-turn2 screen-turn5 confirm-turn2 confirm-turn5; do
+  bun run scripts/probes/premature-stop/analyze-premature-stop.ts \
+    --phase2 "scripts/probes/premature-stop/results/$d"
+done
+# §13.6 那张对比表里的 C5-vs-V1 需要换基线
+bun run scripts/probes/premature-stop/analyze-premature-stop.ts \
+  --phase2 scripts/probes/premature-stop/results/confirm-turn5 --baseline V1
+
+# ── 零额度：看每个候选到底改了什么、以及各自的字节成本
+DRY=1 bun run scripts/probes/premature-stop/turn2-variant-probe.ts \
+  --capture scripts/probes/premature-stop/captured-inbound.json \
+  --variants V0,V1,C1,C1b,C3,C4,C5
+DRY=1 bun run scripts/probes/premature-stop/turn2-variant-probe.ts \
+  --capture scripts/probes/premature-stop/captured-inbound-hop5.json --turn 5 \
+  --variants V0,V1,C1,C1b,C2,C3,C4,C5
+
+# ── 花真实额度（先按 §8 生成两个捕获文件；CONFIRM=1 强制）
+#    Stage 1 筛选：候选 n=30，对照带更大的 N 留在同批次里
+KIRO_PROBE_ACCOUNT='you@example.com' CONFIRM=1 \
+  bun run scripts/probes/premature-stop/turn2-variant-probe.ts \
+  --capture scripts/probes/premature-stop/captured-inbound.json \
+  --variants V0,V1,C1,C1b,C3,C4 --n 30 --n-for V0=64 --concurrency 6 --out <dir>
+KIRO_PROBE_ACCOUNT='you@example.com' CONFIRM=1 \
+  bun run scripts/probes/premature-stop/turn2-variant-probe.ts \
+  --capture scripts/probes/premature-stop/captured-inbound-hop5.json --turn 5 \
+  --variants V0,V1,C2,C3,C4,C5 --n 30 --n-for V0=64,V1=64 --concurrency 6 --out <dir>
+#    Stage 2 确认：每个位置跑两遍下面这条，换账号、换时间窗
+KIRO_PROBE_ACCOUNT='you@example.com' CONFIRM=1 \
+  bun run scripts/probes/premature-stop/turn2-variant-probe.ts \
+  --capture scripts/probes/premature-stop/captured-inbound.json \
+  --variants V0,C5 --n 128 --n-for V0=64 --concurrency 6 --out <dir>
+KIRO_PROBE_ACCOUNT='you@example.com' CONFIRM=1 \
+  bun run scripts/probes/premature-stop/turn2-variant-probe.ts \
+  --capture scripts/probes/premature-stop/captured-inbound-hop5.json --turn 5 \
+  --variants V0,V1,C5 --n 128 --n-for V0=64,V1=64 --concurrency 6 --out <dir>
+```
+
+### 13.9 本批的额度与卫生
+
+| 批次                                          | 真实 Kiro 调用 |
+| --------------------------------------------- | -------------- |
+| Stage 1 turn 2（`screen-turn2/`）             | 214            |
+| Stage 1 turn 5 第一批（令牌中途过期）         | 308            |
+| Stage 1 turn 5 补跑（`screen-turn5/` 第二个文件） | 248         |
+| Stage 2 turn 2 批 1 / 批 2                    | 320 / 192      |
+| Stage 2 turn 5 批 1 / 批 2                    | 384 / 256      |
+| 已提交批次小计                                | **1922**       |
+| 冒烟（n=2 × 8 格，产物在 `/tmp`，未提交）     | 16             |
+| 一次参数写错后立刻掐掉的启动（未落盘）        | 约 26（估计值，日志已被覆盖，无法精确点数） |
+| `capture-inbound.ts` × 2、`verify-v0.ts` × 1  | **0**          |
+| **合计**                                      | **约 1964**    |
+
+- 四个有余量的账号（headroom 9999 / 9947 / 500 / 293）全部**显式 pin 死**
+  （`KIRO_PROBE_ACCOUNT`），从不自动选号；探针的 headroom 拒绝与 `CONFIRM=1` 守卫都保留。
+  实际只用了 headroom 最大的两个。
+- `kiro.db` 全程只读（`Database(..., { readonly: true })`）。本批结束后库里 `used_count`
+  仍是 **1 / 53**，而 usage 接口在同期涨了约 214（约 1738 次已计数的调用）。
+  **`used_count` 滞后第五次确认，它不是计费证据**；本表的调用数来自探针自己的计数器。
+- 令牌刷新由正常的 OpenCode/插件路径完成，探针从不写 `kiro.db`、从不调刷新端点
+  （刷新令牌是一次性的）。
+- 探针写盘前的自检（未脱敏邮箱 / access token / refresh token / `profileArn`）在全部 7 个
+  结果文件上通过。
+- 原始产物刻意落在**新的**四个子目录（`screen-turn2/`、`screen-turn5/`、`confirm-turn2/`、
+  `confirm-turn5/`），好让 §4 与 §11 那几张表的重算命令结果一个字都不变。
+
+### 13.10 本节不要越读
+
+1. **没有证明 C5 是 0%。** 证明的是「在 turn 2 与 turn 5 各 2×128 次里一次都没出现」，
+   turn 2 的 95% 上界是 **1.5%**。turn 5 的 V0 自己是 1/128，所以那一侧只能读作**安全性**证据，
+   不是有效性证据（analyzer 自己会打印这句话）。
+2. **`C4` 没有被证明无效。** 它是真实的 22.7% → 1.6%。被否掉的是「它能清零」这个更强的断言。
+3. **`C1`/`C1b` 的失败不等于「预热回合无用」。** 它只说明：在**只改这一处**、且 history 里
+   仍留着不一致的句子填充文本时，预热回合救不回来。预热回合 + C5 的组合本批**没测**。
+4. **§13.6 的机制解释是解释，不是被单独实验过的命题。** 直接被测到的是那张三行表和
+   `C5` vs `V1` 的 p 值；「不一致的上下文才是病根」是对它、以及对 C3/V5/V8/`[tool results]`
+   四个已有观察的**最简自洽解释**，不是一条独立结论。
+5. **仍然只在一个 fixture 上测过**（§10.1 原样适用），而且 C1 的成本数字（+1229 字节）是这个
+   fixture 的，别外推。
