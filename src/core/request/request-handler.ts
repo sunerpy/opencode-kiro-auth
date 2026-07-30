@@ -20,6 +20,7 @@ import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler, isKiroContextOverflowBody, type RequestContext } from './error-handler'
 import { ResponseHandler, type SdkCompletionPayload } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
+import { buildSdkRequestLogPayload } from './sdk-log-payload'
 import { SdkEventStreamIterationError, UpstreamUnexpectedError } from './stream-error'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -559,26 +560,7 @@ export class RequestHandler {
   }
 
   private logSdkRequest(prep: SdkPreparedRequest, acc: ManagedAccount, timestamp: string): void {
-    logger.logApiRequest(
-      {
-        url: `https://q.${prep.region}.amazonaws.com/generateAssistantResponse`,
-        method: 'POST',
-        headers: { 'x-amzn-kiro-agent-mode': 'vibe' },
-        body: {
-          conversationState: {
-            chatTriggerType: prep.conversationState.chatTriggerType,
-            conversationId: prep.conversationState.conversationId,
-            historyLength: (prep.conversationState as any).history?.length || 0,
-            currentMessage: prep.conversationState.currentMessage
-          },
-          profileArn: prep.profileArn
-        },
-        conversationId: prep.conversationId,
-        model: prep.effectiveModel,
-        email: acc.email
-      },
-      timestamp
-    )
+    logger.logApiRequest(buildSdkRequestLogPayload(prep, acc), timestamp)
   }
 
   private logSdkResponse(prep: SdkPreparedRequest, timestamp: string): void {
