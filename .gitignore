@@ -10,3 +10,8 @@ package-lock.json
 .kiro
 .omo
 coverage/
+
+# Probe captures embed the local OpenCode system prompt, which carries this machine's
+# working directory, current date and installed-skill catalog. Regenerate for free with
+# scripts/probes/premature-stop/capture-inbound.ts; never commit it.
+scripts/probes/premature-stop/captured-inbound*.json

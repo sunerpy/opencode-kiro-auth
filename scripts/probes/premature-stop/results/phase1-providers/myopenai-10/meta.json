@@ -1,0 +1,16 @@
+{
+  "arm": "myopenai",
+  "variant": "baseline",
+  "armPluginSpec": "",
+  "armPlugins": [],
+  "index": 10,
+  "model": "myopenai/us.anthropic.claude-opus-5",
+  "startedAt": "2026-07-30T05:35:55.399Z",
+  "finishedAt": "2026-07-30T05:36:41.882Z",
+  "durationMs": 46483,
+  "exitCode": 0,
+  "timedOut": false,
+  "sessionId": "ses_04e7a50a7ffe53FxXm4Ao1Q29u",
+  "runDir": "/tmp/opencode/pstop-arms/runs/myopenai-10",
+  "streamBytes": 26310
+}

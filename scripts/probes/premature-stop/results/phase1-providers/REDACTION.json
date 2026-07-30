@@ -1,0 +1,1110 @@
+{
+  "generatedAt": "2026-07-30T06:29:43.754Z",
+  "replacements": {
+    "emails": 154,
+    "profileArns": 154,
+    "opaqueTokens": 34
+  },
+  "pseudonymCount": 2,
+  "note": "api-filtered.ndjson is a FILTERED derivative: per-request tool schemas were replaced by toolCount. Everything else is byte-preserved apart from the listed redactions.",
+  "files": [
+    {
+      "file": "kiro-01/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-01/stream.jsonl",
+      "bytesIn": 23580,
+      "bytesOut": 23580,
+      "filtered": false
+    },
+    {
+      "file": "kiro-01/export.json",
+      "bytesIn": 42668,
+      "bytesOut": 42668,
+      "filtered": false
+    },
+    {
+      "file": "kiro-01/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-01/api-filtered.ndjson",
+      "bytesIn": 245338,
+      "bytesOut": 16418,
+      "filtered": true
+    },
+    {
+      "file": "kiro-02/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-02/stream.jsonl",
+      "bytesIn": 23555,
+      "bytesOut": 23555,
+      "filtered": false
+    },
+    {
+      "file": "kiro-02/export.json",
+      "bytesIn": 42139,
+      "bytesOut": 42139,
+      "filtered": false
+    },
+    {
+      "file": "kiro-02/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-02/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-03/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-03/stream.jsonl",
+      "bytesIn": 23556,
+      "bytesOut": 23556,
+      "filtered": false
+    },
+    {
+      "file": "kiro-03/export.json",
+      "bytesIn": 41493,
+      "bytesOut": 41493,
+      "filtered": false
+    },
+    {
+      "file": "kiro-03/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-03/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-04/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-04/stream.jsonl",
+      "bytesIn": 23578,
+      "bytesOut": 23578,
+      "filtered": false
+    },
+    {
+      "file": "kiro-04/export.json",
+      "bytesIn": 42030,
+      "bytesOut": 42030,
+      "filtered": false
+    },
+    {
+      "file": "kiro-04/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-04/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-05/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-05/stream.jsonl",
+      "bytesIn": 23572,
+      "bytesOut": 23572,
+      "filtered": false
+    },
+    {
+      "file": "kiro-05/export.json",
+      "bytesIn": 42133,
+      "bytesOut": 42133,
+      "filtered": false
+    },
+    {
+      "file": "kiro-05/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-05/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-06/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-06/stream.jsonl",
+      "bytesIn": 23675,
+      "bytesOut": 23675,
+      "filtered": false
+    },
+    {
+      "file": "kiro-06/export.json",
+      "bytesIn": 42148,
+      "bytesOut": 42148,
+      "filtered": false
+    },
+    {
+      "file": "kiro-06/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-06/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-07/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-07/stream.jsonl",
+      "bytesIn": 23611,
+      "bytesOut": 23611,
+      "filtered": false
+    },
+    {
+      "file": "kiro-07/export.json",
+      "bytesIn": 41989,
+      "bytesOut": 41989,
+      "filtered": false
+    },
+    {
+      "file": "kiro-07/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-07/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-08/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-08/stream.jsonl",
+      "bytesIn": 23562,
+      "bytesOut": 23562,
+      "filtered": false
+    },
+    {
+      "file": "kiro-08/export.json",
+      "bytesIn": 42700,
+      "bytesOut": 42700,
+      "filtered": false
+    },
+    {
+      "file": "kiro-08/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-08/api-filtered.ndjson",
+      "bytesIn": 245565,
+      "bytesOut": 16644,
+      "filtered": true
+    },
+    {
+      "file": "kiro-09/meta.json",
+      "bytesIn": 641,
+      "bytesOut": 641,
+      "filtered": false
+    },
+    {
+      "file": "kiro-09/stream.jsonl",
+      "bytesIn": 23559,
+      "bytesOut": 23559,
+      "filtered": false
+    },
+    {
+      "file": "kiro-09/export.json",
+      "bytesIn": 41497,
+      "bytesOut": 41497,
+      "filtered": false
+    },
+    {
+      "file": "kiro-09/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-09/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-10/meta.json",
+      "bytesIn": 642,
+      "bytesOut": 642,
+      "filtered": false
+    },
+    {
+      "file": "kiro-10/stream.jsonl",
+      "bytesIn": 23712,
+      "bytesOut": 23712,
+      "filtered": false
+    },
+    {
+      "file": "kiro-10/export.json",
+      "bytesIn": 42363,
+      "bytesOut": 42363,
+      "filtered": false
+    },
+    {
+      "file": "kiro-10/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-10/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-11/meta.json",
+      "bytesIn": 642,
+      "bytesOut": 642,
+      "filtered": false
+    },
+    {
+      "file": "kiro-11/stream.jsonl",
+      "bytesIn": 23611,
+      "bytesOut": 23611,
+      "filtered": false
+    },
+    {
+      "file": "kiro-11/export.json",
+      "bytesIn": 42198,
+      "bytesOut": 42198,
+      "filtered": false
+    },
+    {
+      "file": "kiro-11/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-11/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-12/meta.json",
+      "bytesIn": 642,
+      "bytesOut": 642,
+      "filtered": false
+    },
+    {
+      "file": "kiro-12/stream.jsonl",
+      "bytesIn": 24054,
+      "bytesOut": 24054,
+      "filtered": false
+    },
+    {
+      "file": "kiro-12/export.json",
+      "bytesIn": 42385,
+      "bytesOut": 42385,
+      "filtered": false
+    },
+    {
+      "file": "kiro-12/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-12/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-13/meta.json",
+      "bytesIn": 642,
+      "bytesOut": 642,
+      "filtered": false
+    },
+    {
+      "file": "kiro-13/stream.jsonl",
+      "bytesIn": 23581,
+      "bytesOut": 23581,
+      "filtered": false
+    },
+    {
+      "file": "kiro-13/export.json",
+      "bytesIn": 41523,
+      "bytesOut": 41523,
+      "filtered": false
+    },
+    {
+      "file": "kiro-13/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-13/api-filtered.ndjson",
+      "bytesIn": 243531,
+      "bytesOut": 14610,
+      "filtered": true
+    },
+    {
+      "file": "kiro-14/meta.json",
+      "bytesIn": 642,
+      "bytesOut": 642,
+      "filtered": false
+    },
+    {
+      "file": "kiro-14/stream.jsonl",
+      "bytesIn": 23559,
+      "bytesOut": 23559,
+      "filtered": false
+    },
+    {
+      "file": "kiro-14/export.json",
+      "bytesIn": 42535,
+      "bytesOut": 42535,
+      "filtered": false
+    },
+    {
+      "file": "kiro-14/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "kiro-14/api-filtered.ndjson",
+      "bytesIn": 245339,
+      "bytesOut": 16418,
+      "filtered": true
+    },
+    {
+      "file": "myohigh-01/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-01/stream.jsonl",
+      "bytesIn": 24964,
+      "bytesOut": 24964,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-01/export.json",
+      "bytesIn": 46435,
+      "bytesOut": 45338,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-01/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-02/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-02/stream.jsonl",
+      "bytesIn": 24995,
+      "bytesOut": 24995,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-02/export.json",
+      "bytesIn": 46470,
+      "bytesOut": 45373,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-02/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-03/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-03/stream.jsonl",
+      "bytesIn": 25007,
+      "bytesOut": 25007,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-03/export.json",
+      "bytesIn": 44509,
+      "bytesOut": 44509,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-03/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-04/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-04/stream.jsonl",
+      "bytesIn": 26024,
+      "bytesOut": 26024,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-04/export.json",
+      "bytesIn": 45526,
+      "bytesOut": 45526,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-04/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-05/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-05/stream.jsonl",
+      "bytesIn": 25459,
+      "bytesOut": 25459,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-05/export.json",
+      "bytesIn": 46100,
+      "bytesOut": 45556,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-05/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-06/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-06/stream.jsonl",
+      "bytesIn": 25055,
+      "bytesOut": 25055,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-06/export.json",
+      "bytesIn": 46516,
+      "bytesOut": 45420,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-06/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-07/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-07/stream.jsonl",
+      "bytesIn": 26089,
+      "bytesOut": 26089,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-07/export.json",
+      "bytesIn": 45589,
+      "bytesOut": 45589,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-07/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-08/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-08/stream.jsonl",
+      "bytesIn": 25078,
+      "bytesOut": 25078,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-08/export.json",
+      "bytesIn": 44579,
+      "bytesOut": 44579,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-08/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-09/meta.json",
+      "bytesIn": 432,
+      "bytesOut": 432,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-09/stream.jsonl",
+      "bytesIn": 25006,
+      "bytesOut": 25006,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-09/export.json",
+      "bytesIn": 44506,
+      "bytesOut": 44506,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-09/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-10/meta.json",
+      "bytesIn": 433,
+      "bytesOut": 433,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-10/stream.jsonl",
+      "bytesIn": 24934,
+      "bytesOut": 24934,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-10/export.json",
+      "bytesIn": 44436,
+      "bytesOut": 44436,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-10/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-11/meta.json",
+      "bytesIn": 433,
+      "bytesOut": 433,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-11/stream.jsonl",
+      "bytesIn": 25972,
+      "bytesOut": 25972,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-11/export.json",
+      "bytesIn": 45474,
+      "bytesOut": 45474,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-11/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-12/meta.json",
+      "bytesIn": 433,
+      "bytesOut": 433,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-12/stream.jsonl",
+      "bytesIn": 24991,
+      "bytesOut": 24991,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-12/export.json",
+      "bytesIn": 46372,
+      "bytesOut": 45349,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-12/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-13/meta.json",
+      "bytesIn": 433,
+      "bytesOut": 433,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-13/stream.jsonl",
+      "bytesIn": 24960,
+      "bytesOut": 24960,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-13/export.json",
+      "bytesIn": 46332,
+      "bytesOut": 45307,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-13/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-14/meta.json",
+      "bytesIn": 433,
+      "bytesOut": 433,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-14/stream.jsonl",
+      "bytesIn": 25787,
+      "bytesOut": 25787,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-14/export.json",
+      "bytesIn": 45290,
+      "bytesOut": 45290,
+      "filtered": false
+    },
+    {
+      "file": "myohigh-14/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-01/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-01/stream.jsonl",
+      "bytesIn": 25798,
+      "bytesOut": 25798,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-01/export.json",
+      "bytesIn": 46758,
+      "bytesOut": 45992,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-01/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-02/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-02/stream.jsonl",
+      "bytesIn": 26423,
+      "bytesOut": 26423,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-02/export.json",
+      "bytesIn": 47837,
+      "bytesOut": 46720,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-02/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-03/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-03/stream.jsonl",
+      "bytesIn": 26357,
+      "bytesOut": 26357,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-03/export.json",
+      "bytesIn": 48047,
+      "bytesOut": 46707,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-03/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-04/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-04/stream.jsonl",
+      "bytesIn": 25995,
+      "bytesOut": 25995,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-04/export.json",
+      "bytesIn": 46779,
+      "bytesOut": 46129,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-04/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-05/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-05/stream.jsonl",
+      "bytesIn": 26417,
+      "bytesOut": 26417,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-05/export.json",
+      "bytesIn": 47826,
+      "bytesOut": 46670,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-05/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-06/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-06/stream.jsonl",
+      "bytesIn": 26300,
+      "bytesOut": 26300,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-06/export.json",
+      "bytesIn": 47906,
+      "bytesOut": 46618,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-06/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-07/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-07/stream.jsonl",
+      "bytesIn": 26184,
+      "bytesOut": 26184,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-07/export.json",
+      "bytesIn": 45699,
+      "bytesOut": 45699,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-07/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-08/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-08/stream.jsonl",
+      "bytesIn": 26126,
+      "bytesOut": 26126,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-08/export.json",
+      "bytesIn": 48084,
+      "bytesOut": 46878,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-08/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-09/meta.json",
+      "bytesIn": 434,
+      "bytesOut": 434,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-09/stream.jsonl",
+      "bytesIn": 26123,
+      "bytesOut": 26123,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-09/export.json",
+      "bytesIn": 48083,
+      "bytesOut": 46877,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-09/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-10/meta.json",
+      "bytesIn": 435,
+      "bytesOut": 435,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-10/stream.jsonl",
+      "bytesIn": 26310,
+      "bytesOut": 26310,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-10/export.json",
+      "bytesIn": 47291,
+      "bytesOut": 46507,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-10/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-11/meta.json",
+      "bytesIn": 435,
+      "bytesOut": 435,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-11/stream.jsonl",
+      "bytesIn": 26072,
+      "bytesOut": 26072,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-11/export.json",
+      "bytesIn": 52097,
+      "bytesOut": 48777,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-11/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-12/meta.json",
+      "bytesIn": 435,
+      "bytesOut": 435,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-12/stream.jsonl",
+      "bytesIn": 25534,
+      "bytesOut": 25534,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-12/export.json",
+      "bytesIn": 58549,
+      "bytesOut": 51580,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-12/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-13/meta.json",
+      "bytesIn": 435,
+      "bytesOut": 435,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-13/stream.jsonl",
+      "bytesIn": 26403,
+      "bytesOut": 26403,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-13/export.json",
+      "bytesIn": 47921,
+      "bytesOut": 46697,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-13/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-14/meta.json",
+      "bytesIn": 435,
+      "bytesOut": 435,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-14/stream.jsonl",
+      "bytesIn": 26139,
+      "bytesOut": 26139,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-14/export.json",
+      "bytesIn": 46890,
+      "bytesOut": 46253,
+      "filtered": false
+    },
+    {
+      "file": "myopenai-14/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "index.json",
+      "bytesIn": 24295,
+      "bytesOut": 24295,
+      "filtered": false
+    }
+  ]
+}

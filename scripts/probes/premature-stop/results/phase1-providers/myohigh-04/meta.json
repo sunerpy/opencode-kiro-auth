@@ -1,0 +1,16 @@
+{
+  "arm": "myohigh",
+  "variant": "baseline",
+  "armPluginSpec": "",
+  "armPlugins": [],
+  "index": 4,
+  "model": "myopenai/us.anthropic.claude-opus-5",
+  "startedAt": "2026-07-30T05:22:47.531Z",
+  "finishedAt": "2026-07-30T05:23:33.055Z",
+  "durationMs": 45524,
+  "exitCode": 0,
+  "timedOut": false,
+  "sessionId": "ses_04e865658ffehm8jbVmkEIGGvp",
+  "runDir": "/tmp/opencode/pstop-arms/runs/myohigh-04",
+  "streamBytes": 26024
+}

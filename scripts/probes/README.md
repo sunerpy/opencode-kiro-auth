@@ -18,6 +18,16 @@ Contents:
   different account? (plan §10 "multi-account rotation … including replay across a rotation")
 - [`results/`](#results--which-files-are-canonical) — the committed raw runs, and which of them
   is canonical for which claim.
+- **[`premature-stop/`](./premature-stop/) + [`PREMATURE-STOP-INVESTIGATION.md`](./PREMATURE-STOP-INVESTIGATION.md)** —
+  the root-cause investigation of "the agent announces its next step and then stops". It isolates the
+  turn-1 -> turn-2 transition so **one trial costs one request instead of a whole 10-hop run**, which is
+  what makes a decisive answer affordable: the plugin's `'Tool results provided.'` tool-result filler
+  causes premature stopping at 16.0% (23/144) on that transition, and three independent replacements
+  all drive it to 0/120 (Fisher p < 1e-5). It also **exonerates** `collapseAgenticLoops` (0/120 with and
+  without it at turn 5) and per-request `conversationId`. `capture-inbound.ts` is worth knowing about on
+  its own: it records the exact OpenAI-shaped body the plugin's custom `fetch` receives, for **zero**
+  quota, by standing a local mock where the plugin normally sits — which is the only way to see the
+  outbound `history`, since the plugin's api log deliberately reduces it to `historyLength`.
 - **[`ab-opencode/`](./ab-opencode/) + [`AB-OPENCODE-COMPARISON.md`](./AB-OPENCODE-COMPARISON.md)** —
   a **different layer** of evidence: an end-to-end A/B that runs the published pre-fix plugin
   (`0.15.4` == `80782f9`) against this working tree through the real OpenCode binary, over the
