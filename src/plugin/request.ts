@@ -180,8 +180,7 @@ function buildCodeWhispererRequest(
         }
       }
     } else curContent = getContentText(curMsg)
-    if (!curContent)
-      curContent = curTrs.length ? 'Tool results provided.' : '[system: conversation continues]'
+    if (!curContent && !curTrs.length) curContent = '[system: conversation continues]'
   }
   const request: CodeWhispererRequest = {
     conversationState: {

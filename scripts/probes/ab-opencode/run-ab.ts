@@ -19,6 +19,15 @@
  *
  * Usage:
  *   CONFIRM=1 bun run scripts/probes/ab-opencode/run-ab.ts [--runs 3] [--model kiro-auth/claude-opus-5-high]
+ *
+ * `--mode provider` reuses the exact same isolation, fixture, `--dir` handling and artifact
+ * layout, but swaps the independent variable: instead of two kiro-auth BUILDS it compares two
+ * PROVIDERS reaching the same Claude Opus 5 — `kiro-auth` (this plugin's CodeWhisperer
+ * translation) against `myopenai` (an OpenAI-protocol Bedrock gateway, i.e. standard
+ * `tool`-role tool results). That isolates "is the premature stop specific to this plugin's
+ * request translation?" from "is it the model".
+ *
+ *   CONFIRM=1 bun run scripts/probes/ab-opencode/run-ab.ts --mode provider --runs 14
  */
 
 import { spawn } from 'node:child_process'
@@ -51,8 +60,16 @@ const OLD_PLUGIN_SPEC = process.env.AB_OLD_PLUGIN ?? '@sunerpy/opencode-kiro-aut
 const SCRATCH = process.env.AB_SCRATCH ?? '/tmp/opencode/ab-arms'
 const RUN_TIMEOUT_MS = Number(process.env.AB_RUN_TIMEOUT_MS ?? 900_000)
 
-type Arm = 'old' | 'new'
-const ARMS: readonly Arm[] = ['old', 'new']
+type Arm = string
+type Mode = 'build' | 'provider'
+
+/** One isolated OpenCode configuration: which plugin(s) load, which model, which provider. */
+interface ArmSpec {
+  readonly name: Arm
+  readonly plugins: readonly string[]
+  readonly model: string
+  readonly provider?: Readonly<Record<string, unknown>>
+}
 
 interface Options {
   readonly runsPerArm: number
@@ -60,6 +77,8 @@ interface Options {
   readonly outDir: string
   readonly variant: string
   readonly startIndex: number
+  readonly mode: Mode
+  readonly dry: boolean
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -68,6 +87,8 @@ function parseArgs(argv: readonly string[]): Options {
   let outDir = join(HERE, 'runs')
   let variant = 'baseline'
   let startIndex = 1
+  let mode: Mode = 'build'
+  let dry = false
 
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
@@ -87,6 +108,14 @@ function parseArgs(argv: readonly string[]): Options {
     } else if (flag === '--start' && value) {
       startIndex = Number(value)
       i += 1
+    } else if (flag === '--mode' && value) {
+      if (value !== 'build' && value !== 'provider') {
+        throw new Error(`--mode must be build|provider, got ${value}`)
+      }
+      mode = value
+      i += 1
+    } else if (flag === '--dry') {
+      dry = true
     }
   }
 
@@ -96,23 +125,82 @@ function parseArgs(argv: readonly string[]): Options {
   if (!Number.isInteger(startIndex) || startIndex < 1) {
     throw new Error(`--start must be a positive integer, got ${startIndex}`)
   }
-  return { runsPerArm, model, outDir, variant, startIndex }
+  return { runsPerArm, model, outDir, variant, startIndex, mode, dry }
 }
 
-function pluginSpecFor(arm: Arm): string {
-  return arm === 'old' ? OLD_PLUGIN_SPEC : LOCAL_PLUGIN_PATH
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Lift ONE model of the user's real `myopenai` provider into a self-contained provider block
+ * for an isolated arm. Only the non-secret shape is copied: the API key lives in
+ * `auth.json` under `XDG_DATA_HOME`, which this runner never relocates and never writes.
+ */
+function myopenaiProvider(model: string, reasoningEffort: string): Record<string, unknown> {
+  const raw: unknown = JSON.parse(readFileSync(join(REAL_CONFIG_DIR, 'opencode.json'), 'utf8'))
+  const providers = isRecord(raw) ? raw.provider : undefined
+  const myopenai = isRecord(providers) ? providers.myopenai : undefined
+  if (!isRecord(myopenai)) {
+    throw new Error(`provider.myopenai not found in ${join(REAL_CONFIG_DIR, 'opencode.json')}`)
+  }
+  const models = isRecord(myopenai.models) ? myopenai.models : {}
+  const entry = models[model]
+  if (!isRecord(entry)) throw new Error(`provider.myopenai.models[${model}] not found`)
+
+  const shape: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(myopenai)) {
+    if (key !== 'models') shape[key] = value
+  }
+  const modelShape: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(entry)) {
+    if (key !== 'options' && key !== 'variants') modelShape[key] = value
+  }
+  const baseOptions = isRecord(entry.options) ? entry.options : {}
+  modelShape.options = { ...baseOptions, reasoningEffort }
+  shape.models = { [model]: modelShape }
+  return { myopenai: shape }
+}
+
+function armsFor(mode: Mode, model: string): readonly ArmSpec[] {
+  if (mode === 'build') {
+    return [
+      { name: 'old', plugins: [OLD_PLUGIN_SPEC], model },
+      { name: 'new', plugins: [LOCAL_PLUGIN_PATH], model }
+    ]
+  }
+  const myopenaiModel = process.env.AB_MYOPENAI_MODEL ?? 'us.anthropic.claude-opus-5'
+  return [
+    { name: 'kiro', plugins: [LOCAL_PLUGIN_PATH], model },
+    {
+      name: 'myopenai',
+      plugins: [],
+      model: `myopenai/${myopenaiModel}`,
+      provider: myopenaiProvider(myopenaiModel, 'max')
+    },
+    {
+      name: 'myohigh',
+      plugins: [],
+      model: `myopenai/${myopenaiModel}`,
+      provider: myopenaiProvider(myopenaiModel, 'high')
+    }
+  ]
 }
 
 /** One XDG_CONFIG_HOME per arm; everything except opencode.json is shared with the real config. */
-function prepareArm(arm: Arm): string {
-  const root = join(SCRATCH, arm)
+function prepareArm(spec: ArmSpec): string {
+  const root = join(SCRATCH, spec.name)
   const cfgDir = join(root, 'opencode')
   rmSync(root, { recursive: true, force: true })
   mkdirSync(cfgDir, { recursive: true })
 
-  for (const entry of ['kiro.db', 'kiro.db-wal', 'kiro.db-shm', 'kiro-auth-plugin']) {
-    const target = join(REAL_CONFIG_DIR, entry)
-    if (existsSync(target)) symlinkSync(target, join(cfgDir, entry))
+  // Only an arm that actually loads the plugin needs the plugin's own state; a
+  // provider-comparison arm without it must not even see the account database.
+  if (spec.plugins.length > 0) {
+    for (const entry of ['kiro.db', 'kiro.db-wal', 'kiro.db-shm', 'kiro-auth-plugin']) {
+      const target = join(REAL_CONFIG_DIR, entry)
+      if (existsSync(target)) symlinkSync(target, join(cfgDir, entry))
+    }
   }
 
   writeFileSync(
@@ -120,8 +208,9 @@ function prepareArm(arm: Arm): string {
     `${JSON.stringify(
       {
         $schema: 'https://opencode.ai/config.json',
-        plugin: [pluginSpecFor(arm)],
-        compaction: { auto: false, prune: false }
+        plugin: [...spec.plugins],
+        compaction: { auto: false, prune: false },
+        ...(spec.provider ? { provider: spec.provider } : {})
       },
       null,
       2
@@ -150,7 +239,7 @@ function prepareRunDir(arm: Arm, index: number, fixtureDir: string): string {
  */
 const PLUGIN_ENV: Readonly<Record<string, string>> = {
   KIRO_ENABLE_LOG_API_REQUEST: 'true',
-  KIRO_ACCOUNT_SELECTION_STRATEGY: 'sticky'
+  KIRO_ACCOUNT_SELECTION_STRATEGY: process.env.KIRO_ACCOUNT_SELECTION_STRATEGY ?? 'sticky'
 }
 
 interface SpawnResult {
@@ -229,6 +318,7 @@ interface RunMeta {
   readonly arm: Arm
   readonly variant: string
   readonly armPluginSpec: string
+  readonly armPlugins: readonly string[]
   readonly index: number
   readonly model: string
   readonly startedAt: string
@@ -243,26 +333,49 @@ interface RunMeta {
 }
 
 async function main(): Promise<void> {
-  if (process.env.CONFIRM !== '1') {
-    console.error('Refusing to run: this makes REAL Kiro API calls. Re-run with CONFIRM=1.')
+  const options = parseArgs(process.argv.slice(2))
+  if (!options.dry && process.env.CONFIRM !== '1') {
+    console.error(
+      'Refusing to run: this makes REAL API calls. Re-run with CONFIRM=1, or --dry to ' +
+        "inspect each arm's isolated config and model list for free."
+    )
     process.exitCode = 1
     return
   }
 
-  const options = parseArgs(process.argv.slice(2))
+  if (options.dry) {
+    for (const spec of armsFor(options.mode, options.model)) {
+      const root = prepareArm(spec)
+      const cfg = readFileSync(join(root, 'opencode', 'opencode.json'), 'utf8')
+      const models = await runOpencode(['models'], root, root)
+      const visible = models.stdout.split('\n').filter((line) => line.trim().length > 0)
+      const provider = spec.model.split('/')[0] ?? ''
+      console.log(`\n=== arm ${spec.name} (model ${spec.model}) ===`)
+      console.log(cfg.trim())
+      console.log(
+        `models total=${visible.length} matching '${provider}/'=` +
+          visible.filter((line) => line.startsWith(`${provider}/`)).length +
+          ` exactModelPresent=${visible.includes(spec.model)}`
+      )
+    }
+    return
+  }
+
   const fixtureDir = fixtureDirFor(options.variant)
   const prompt = readFileSync(join(fixtureDir, 'PROMPT.md'), 'utf8')
   const logsDir = join(REAL_CONFIG_DIR, 'kiro-auth-plugin', 'logs')
 
   mkdirSync(options.outDir, { recursive: true })
+  const arms = armsFor(options.mode, options.model)
   const armRoots = new Map<Arm, string>()
-  for (const arm of ARMS) armRoots.set(arm, prepareArm(arm))
+  for (const spec of arms) armRoots.set(spec.name, prepareArm(spec))
 
   const metas: RunMeta[] = []
 
   const lastIndex = options.startIndex + options.runsPerArm - 1
   for (let index = options.startIndex; index <= lastIndex; index += 1) {
-    for (const arm of ARMS) {
+    for (const spec of arms) {
+      const arm = spec.name
       const xdg = armRoots.get(arm)
       if (!xdg) throw new Error(`arm ${arm} was not prepared`)
 
@@ -273,7 +386,7 @@ async function main(): Promise<void> {
 
       const startedMs = Date.now()
       const startedAt = new Date(startedMs).toISOString()
-      console.log(`[${startedAt}] arm=${arm} run=${index} model=${options.model} ...`)
+      console.log(`[${startedAt}] arm=${arm} run=${index} model=${spec.model} ...`)
 
       const result = await runOpencode(
         [
@@ -288,7 +401,7 @@ async function main(): Promise<void> {
           '--dir',
           runDir,
           '-m',
-          options.model,
+          spec.model,
           prompt
         ],
         runDir,
@@ -311,9 +424,10 @@ async function main(): Promise<void> {
       const meta: RunMeta = {
         arm,
         variant: options.variant,
-        armPluginSpec: pluginSpecFor(arm),
+        armPluginSpec: spec.plugins.join(','),
+        armPlugins: spec.plugins,
         index,
-        model: options.model,
+        model: spec.model,
         startedAt,
         finishedAt: new Date(finishedMs).toISOString(),
         durationMs: finishedMs - startedMs,
