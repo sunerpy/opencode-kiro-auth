@@ -24,7 +24,13 @@ Contents:
   what makes a decisive answer affordable: the plugin's `'Tool results provided.'` tool-result filler
   causes premature stopping at 16.0% (23/144) on that transition, and three independent replacements
   all drive it to 0/120 (Fisher p < 1e-5). It also **exonerates** `collapseAgenticLoops` (0/120 with and
-  without it at turn 5) and per-request `conversationId`. `capture-inbound.ts` is worth knowing about on
+  without it at turn 5) and per-request `conversationId`. **A later replication batch (1280 more real
+  calls, investigation §11) reproduced the baseline (19.6%, p = 0.42), the empty-string trap (7.8% at
+  turn 5) and the explicit-instruction variant (0/128), but did NOT reproduce `'[tool results]'` at 0%
+  — it measured 24/256 = 9.4% there, in two independent batches of exactly 12/128. The fix was
+  therefore NOT implemented; production still sends `'Tool results provided.'`.** Do not cite the
+  "three replacements all reach 0%" sentence without §11.
+  `capture-inbound.ts` is worth knowing about on
   its own: it records the exact OpenAI-shaped body the plugin's custom `fetch` receives, for **zero**
   quota, by standing a local mock where the plugin normally sits — which is the only way to see the
   outbound `history`, since the plugin's api log deliberately reduces it to `historyLength`.

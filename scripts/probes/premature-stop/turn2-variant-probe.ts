@@ -198,6 +198,26 @@ interface PatchContext {
   readonly assistantTexts: readonly string[]
 }
 
+/**
+ * The machine-tag filler measured as V2 and shipped as `KIRO_CONSTANTS.TOOL_RESULT_FILLER`.
+ *
+ * Deliberately a literal rather than an import: this file is evidence of WHICH string was
+ * measured, so it must not silently follow a later edit of the production constant.
+ */
+const MACHINE_TAG_FILLER = '[tool results]'
+
+/** Every history turn that carries tool results, i.e. every site `history-builder.ts` fills. */
+function historyToolResultTurns(
+  state: ConversationState
+): Array<NonNullable<ConversationState['currentMessage']['userInputMessage']>> {
+  const turns: Array<NonNullable<ConversationState['currentMessage']['userInputMessage']>> = []
+  for (const entry of state.history ?? []) {
+    const uim = entry.userInputMessage
+    if (uim?.userInputMessageContext?.toolResults?.length) turns.push(uim)
+  }
+  return turns
+}
+
 interface Variant {
   readonly name: string
   readonly hypothesis: string
@@ -325,6 +345,21 @@ const VARIANTS: readonly Variant[] = [
         },
         ...rest
       ]
+    }
+  },
+  {
+    name: 'V10',
+    hypothesis:
+      'as-implemented fix: machine-tag filler at BOTH tool-result sites (history turns and the ' +
+      'current message), i.e. what the plugin sends after the fix',
+    primingCall: false,
+    patch: (state) => {
+      const current = currentUser(state)
+      if (!current.userInputMessageContext?.toolResults?.length) {
+        throw new Error('current message carries no toolResults; not a tool-loop continuation')
+      }
+      current.content = MACHINE_TAG_FILLER
+      for (const uim of historyToolResultTurns(state)) uim.content = MACHINE_TAG_FILLER
     }
   }
 ]
@@ -604,6 +639,9 @@ async function main(): Promise<void> {
           )}\n` +
           `  history[1] content=${JSON.stringify(
             historyEntry(state, 1).assistantResponseMessage?.content ?? ''
+          )}\n` +
+          `  historyToolResultTurns=${historyToolResultTurns(state).length} fillers=${JSON.stringify(
+            historyToolResultTurns(state).map((uim) => uim.content)
           )}\n` +
           `  agentTaskType=${String(extended.agentTaskType)} ` +
           `agentContinuationId=${extended.agentContinuationId ? 'set' : 'unset'}`
