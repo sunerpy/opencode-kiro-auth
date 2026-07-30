@@ -97,7 +97,7 @@ describe('buildHistory', () => {
     const toolTurn = history.find(
       (h) => h.userInputMessage?.userInputMessageContext?.toolResults
     )?.userInputMessage
-    expect(toolTurn?.content).toBe('Tool results provided.')
+    expect(toolTurn?.content).toBe('')
     expect(toolTurn?.userInputMessageContext?.toolResults).toEqual([
       { content: [{ text: 'result-text' }], status: 'success', toolUseId: 't1' }
     ])

@@ -152,7 +152,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
         history.push({ assistantResponseMessage: { content: '[system: conversation continues]' } })
       history.push({
         userInputMessage: {
-          content: 'Tool results provided.',
+          content: '',
           modelId: resolved,
           origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR,
           userInputMessageContext: { toolResults: deduplicateToolResults(trs) }

@@ -33,6 +33,7 @@ import type { CodeWhispererRequest, KiroAuthDetails } from '../../../src/plugin/
 
 const MODEL = 'claude-opus-5-high'
 const THINKING_BUDGET = 20000
+// Pre-fix baseline at cf4c55f; production uses empty tool-result content after this fix.
 const FILLER = 'Tool results provided.'
 
 type ConversationState = CodeWhispererRequest['conversationState']

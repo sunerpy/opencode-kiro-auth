@@ -978,3 +978,34 @@ KIRO_PROBE_ACCOUNT='you@example.com' CONFIRM=1 \
    四个已有观察的**最简自洽解释**，不是一条独立结论。
 5. **仍然只在一个 fixture 上测过**（§10.1 原样适用），而且 C1 的成本数字（+1229 字节）是这个
    fixture 的，别外推。
+
+---
+
+## 14. 已实施的修复
+
+修复已按 §13.7 的 C5 方案落地：`src/infrastructure/transformers/history-builder.ts` 生成历史
+工具结果回合时把 `userInputMessage.content` 设为 `''`；`src/plugin/request.ts` 仅在当前消息既没有
+文本、也没有工具结果时才保留原有的 `'[system: conversation continues]'`。因此当前工具结果消息
+保持 `''`，历史与当前两个位置始终一致。没有增加可配置常量，也没有改动
+`'[system: tool calling continues]'`、回合结构、`collapseAgenticLoops` 或任何 reasoning-signature 路径。
+
+实施依据仍是同批次 C5 结果：turn 2 从 V0 的 **29/128 = 22.7%** 降到 **0/256**
+（95% CI 0.0–1.5%，p < 1e-4），turn 5 为 **0/256**，相对 V0 的 1/128 只能表述为
+「不更差」（p = 0.33）。合并两个位置，C5 是 **0/512**，但这不等价于证明真实率为零。
+
+§11 的 V1 结果也据此完成和解：V1 从来不是官方形态，它只清空当前消息，却让历史里的同类回合
+继续携带英文句子，形成 turn 5 的混合状态（12/128 = 9.4%）；C5 同时清空两处后是 0/256，
+C5 vs V1 p < 1e-4。真实 Kiro IDE、官方 `aws/amazon-q-developer-cli` 以及去重后的八个三方实现
+发送的都是一致的空内容。
+
+回归覆盖同时锁定了历史位置、当前位置、两处一致性、无工具结果时原占位符不变，以及
+`sanitizeHistory` 不会按 `content` 真值删除有效工具结果。`injectSystemPrompt` 的系统提示词仍附加到
+工具循环之前的首个真实用户回合；空工具结果回合保持不变。现存另外两处旧句子
+（`history-builder.test.ts` 的折叠入参、`message-transformer.test.ts` 的清洗入参）是入站 fixture，
+不是插件输出，因此有意保留。
+
+C5 调研、原始产物与实施方案的真实证据提交是 **`0fd3c1e`**；本节所在提交是实际修复提交，
+其 SHA 由提交对象创建后确定，可用 `git log -1 --format=%H` 读取。
+
+本修复的精确边界是：移除工具循环续跑时由填充句子诱发的提前停止。它不声称消除所有提前停止，
+不处理独立的「HTTP 200 但 0 frame / 0 char」失败，也不属于 reasoning-signature 修复。
