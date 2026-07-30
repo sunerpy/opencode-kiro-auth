@@ -1,0 +1,5 @@
+{
+  "value": 10,
+  "op": "divide",
+  "next": "step20"
+}

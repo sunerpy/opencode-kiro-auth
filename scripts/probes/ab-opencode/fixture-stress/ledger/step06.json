@@ -1,0 +1,5 @@
+{
+  "value": 12,
+  "op": "divide",
+  "next": "step12"
+}

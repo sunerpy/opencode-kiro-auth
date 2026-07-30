@@ -18,6 +18,16 @@ Contents:
   different account? (plan §10 "multi-account rotation … including replay across a rotation")
 - [`results/`](#results--which-files-are-canonical) — the committed raw runs, and which of them
   is canonical for which claim.
+- **[`ab-opencode/`](./ab-opencode/) + [`AB-OPENCODE-COMPARISON.md`](./AB-OPENCODE-COMPARISON.md)** —
+  a **different layer** of evidence: an end-to-end A/B that runs the published pre-fix plugin
+  (`0.15.4` == `80782f9`) against this working tree through the real OpenCode binary, over the
+  same long dependent tool chain. The two probes above build their own CodeWhisperer payloads and
+  prove the **mechanism**; the OpenCode A/B exercises the **real plugin** end to end and measures
+  **behaviour**. Its headline result is deliberately not a win: signed replay is confirmed live on
+  the wire (up to 18/21 requests, 66 envelopes), but the "announces the next step then stops"
+  symptom occurs in **both** arms (2/8 vs 1/8, Fisher p = 1.0). Do not summarize either artifact
+  as though it covered the other's claim. The comparison document is written for a human reviewer
+  and is readable standalone.
 
 ---
 

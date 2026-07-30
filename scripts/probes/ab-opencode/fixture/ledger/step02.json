@@ -1,0 +1,5 @@
+{
+  "value": 25,
+  "op": "subtract",
+  "next": "step10"
+}

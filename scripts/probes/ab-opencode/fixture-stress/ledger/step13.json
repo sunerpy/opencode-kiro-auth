@@ -1,0 +1,5 @@
+{
+  "value": 7,
+  "op": "multiply",
+  "next": "step05"
+}

@@ -1,0 +1,90 @@
+{
+  "variant": "baseline",
+  "hops": 10,
+  "entryFile": "step01.json",
+  "traversalOrder": [
+    "step01.json",
+    "step07.json",
+    "step03.json",
+    "step09.json",
+    "step05.json",
+    "step02.json",
+    "step10.json",
+    "step04.json",
+    "step08.json",
+    "step06.json"
+  ],
+  "fold": [
+    {
+      "hop": 1,
+      "file": "step01.json",
+      "op": "seed",
+      "value": 7,
+      "runningTotal": 7
+    },
+    {
+      "hop": 2,
+      "file": "step07.json",
+      "op": "multiply",
+      "value": 6,
+      "runningTotal": 42
+    },
+    {
+      "hop": 3,
+      "file": "step03.json",
+      "op": "add",
+      "value": 58,
+      "runningTotal": 100
+    },
+    {
+      "hop": 4,
+      "file": "step09.json",
+      "op": "divide",
+      "value": 4,
+      "runningTotal": 25
+    },
+    {
+      "hop": 5,
+      "file": "step05.json",
+      "op": "multiply",
+      "value": 13,
+      "runningTotal": 325
+    },
+    {
+      "hop": 6,
+      "file": "step02.json",
+      "op": "subtract",
+      "value": 25,
+      "runningTotal": 300
+    },
+    {
+      "hop": 7,
+      "file": "step10.json",
+      "op": "divide",
+      "value": 12,
+      "runningTotal": 25
+    },
+    {
+      "hop": 8,
+      "file": "step04.json",
+      "op": "add",
+      "value": 143,
+      "runningTotal": 168
+    },
+    {
+      "hop": 9,
+      "file": "step08.json",
+      "op": "divide",
+      "value": 8,
+      "runningTotal": 21
+    },
+    {
+      "hop": 10,
+      "file": "step06.json",
+      "op": "multiply",
+      "value": 11,
+      "runningTotal": 231
+    }
+  ],
+  "expectedFinalTotal": 231
+}
