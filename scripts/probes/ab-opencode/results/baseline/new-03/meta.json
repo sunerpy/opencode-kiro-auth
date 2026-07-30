@@ -1,0 +1,16 @@
+{
+  "arm": "new",
+  "variant": "baseline",
+  "armPluginSpec": "/config/workspace/ProdDir/AI/opencode-kiro-auth",
+  "index": 3,
+  "model": "kiro-auth/claude-opus-5-high",
+  "startedAt": "2026-07-30T04:17:24.972Z",
+  "finishedAt": "2026-07-30T04:18:10.744Z",
+  "durationMs": 45772,
+  "exitCode": 0,
+  "timedOut": false,
+  "sessionId": "ses_04ec23057fferMXknl0vR9PDjP",
+  "runDir": "/tmp/opencode/ab-arms/runs/new-03",
+  "streamBytes": 23481,
+  "apiLogFile": "/config/.config/opencode/kiro-auth-plugin/logs/api-2026-07-30-p523831-ms705q1u-cmgv51-s0000.ndjson"
+}

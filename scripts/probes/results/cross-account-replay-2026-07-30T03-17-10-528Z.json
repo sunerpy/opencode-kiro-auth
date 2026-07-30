@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "probe": "cross-account-replay-probe",
+  "finishedAt": "2026-07-30T03:17:10.528Z",
+  "dry": false,
+  "model": "claude-opus-5",
+  "effort": "high",
+  "plannedCalls": 3,
+  "realApiCalls": 3,
+  "accounts": {
+    "A": {
+      "masked": "sh************@163.com",
+      "region": "us-east-1",
+      "headroomBefore": 500
+    },
+    "B": {
+      "masked": "sh************@yeah.net",
+      "region": "us-east-1",
+      "headroomBefore": 293
+    }
+  },
+  "verdict": {
+    "crossAccountReplayTurns": 2,
+    "allAcceptedHttp200": true,
+    "reasoningContinued": true,
+    "finalAnswerCorrect": true,
+    "expectedFinal": 51
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "accountLabel": "A",
+      "accountMasked": "sh************@163.com",
+      "http": 200,
+      "reasoningFrames": 13,
+      "reasoningChars": 73,
+      "signaturePresent": true,
+      "signatureLen": 360,
+      "signatureFingerprint": "360c sha256:990b6f70b7ae",
+      "toolKeys": [
+        "step1"
+      ],
+      "textChars": 218,
+      "text": "Plan: start at \"step1\", apply its op to initialize or fold the running total, then follow next_key until it's null. Running total right now is undefined (nothing seeded yet), so the first record should carry op=\"seed\".",
+      "latencyMs": 5227,
+      "historyReplay": [],
+      "requestId": "596ed974-bd84-4b4f-973f-0d2ed8634e18"
+    },
+    {
+      "turn": 1,
+      "accountLabel": "B",
+      "accountMasked": "sh************@yeah.net",
+      "http": 200,
+      "reasoningFrames": 9,
+      "reasoningChars": 58,
+      "signaturePresent": true,
+      "signatureLen": 320,
+      "signatureFingerprint": "320c sha256:c5df988c7014",
+      "toolKeys": [
+        "step2"
+      ],
+      "textChars": 121,
+      "text": "step1: op=\"seed\", value=17. Total = 17 (nothing prior to fold).\n\nVerify from scratch: seed 17 → 17.\n\nNext key is \"step2\".",
+      "latencyMs": 3322,
+      "historyReplay": [
+        {
+          "signedBy": "A",
+          "signatureFingerprint": "360c sha256:990b6f70b7ae"
+        }
+      ],
+      "requestId": "48a99f12-9289-4641-ade9-21c1eefd17cb"
+    },
+    {
+      "turn": 2,
+      "accountLabel": "B",
+      "accountMasked": "sh************@yeah.net",
+      "http": 200,
+      "reasoningFrames": 17,
+      "reasoningChars": 89,
+      "signaturePresent": true,
+      "signatureLen": 332,
+      "signatureFingerprint": "332c sha256:dbfac83ef3cf",
+      "toolKeys": [],
+      "textChars": 178,
+      "text": "step2: op=\"multiply\", value=3. Total = 17 × 3 = 51.\n\nRe-verify from scratch: seed 17 → 17; multiply by 3 → 17 × 3 = 51.\n\nnext_key is null, so the walk ends here.\n\nFinal total: 51",
+      "latencyMs": 2937,
+      "historyReplay": [
+        {
+          "signedBy": "A",
+          "signatureFingerprint": "360c sha256:990b6f70b7ae"
+        },
+        {
+          "signedBy": "B",
+          "signatureFingerprint": "320c sha256:c5df988c7014"
+        }
+      ],
+      "requestId": "1ec28eb5-7fd7-4f98-91b2-d544d3121e9f"
+    }
+  ]
+}

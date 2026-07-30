@@ -277,8 +277,14 @@ Then build and restart OpenCode to pick up changes: `bun run build`.
 
 ## Development
 
-This project uses Bun. The [Makefile](Makefile) is the single source of truth
-for local checks and mirrors CI:
+This project uses Bun — it is the only supported package manager for
+development. There is no `package-lock.json`; `bun.lock` is the single
+lockfile, and both CI and the release workflow install with `bun install`
+(`npm` is used only to publish the built package). Don't run `npm install` or
+`npm ci` here.
+
+The [Makefile](Makefile) is the single source of truth for local checks and
+mirrors CI:
 
 ```bash
 make install    # bun install

@@ -1,18 +1,48 @@
+import {
+  EmittedOutputAccumulator,
+  type EmittedToolUse
+} from '../../plugin/reasoning/emitted-output.js'
+import { resolveLoop } from '../../plugin/reasoning/turn-identity.js'
 import { parseEventStream } from '../../plugin/response'
 import { transformKiroStream } from '../../plugin/streaming/index.js'
+import { ReasoningAccumulator } from '../../plugin/streaming/reasoning-accumulator.js'
 import { transformSdkStream } from '../../plugin/streaming/sdk-stream-transformer.js'
+import type { KiroReasoningContent } from '../../plugin/types.js'
 import { SdkEventStreamIterationError } from './stream-error.js'
+
+/**
+ * What a completed SDK stream hands back to the request layer.
+ *
+ * `loopId` is optional and that is load-bearing: `onComplete` also commits
+ * success state and usage for a plain no-tool answer, which has no loop at all.
+ * Typing it required would force a fabricated value on exactly the responses
+ * that must leave the correlation cache untouched.
+ */
+export interface SdkCompletionPayload {
+  envelope?: KiroReasoningContent
+  reasoningText: string
+  visibleText: string
+  toolUses: EmittedToolUse[]
+  attemptId: string
+  loopId?: string
+  effectiveModel: string
+}
 
 export interface SdkResponseLifecycle {
   signal?: AbortSignal
   onUpstreamWaitStart?: (context: { eventIndex: number }) => void
   onUpstreamWaitEnd?: () => void
   onIterationError?: (error: unknown, afterCompletionMetadata: boolean) => void
-  onComplete?: () => void | Promise<void>
+  onComplete?: (completed: SdkCompletionPayload) => void | Promise<void>
   onTerminal?: () => void
   onCancel?: (reason: unknown) => void
   mapError?: (error: SdkEventStreamIterationError, emittedOutput: true) => unknown
   bufferUntilComplete?: boolean
+  /** Request-scoped, unique per SDK send attempt. Unrelated to account epochs. */
+  attemptId?: string
+  /** Loop root recovered from inbound history, if any. */
+  inheritedLoopId?: string
+  effectiveModel?: string
 }
 
 interface WrappedSdkStream {
@@ -165,6 +195,27 @@ function bufferedSseResponse(chunks: Uint8Array[]): Response {
 }
 
 export class ResponseHandler {
+  private async fireCompletion(
+    lifecycle: SdkResponseLifecycle,
+    reasoning: ReasoningAccumulator,
+    emitted: EmittedOutputAccumulator,
+    model: string
+  ): Promise<void> {
+    if (!lifecycle.onComplete) return
+    const toolUses = emitted.toolUses()
+    const envelope = reasoning.finalize()
+    const resolved = resolveLoop(lifecycle.inheritedLoopId, toolUses)
+    await lifecycle.onComplete({
+      ...(envelope !== undefined ? { envelope } : {}),
+      reasoningText: emitted.reasoningText,
+      visibleText: emitted.visibleText,
+      toolUses,
+      attemptId: lifecycle.attemptId ?? '',
+      ...(resolved.loopId !== undefined ? { loopId: resolved.loopId } : {}),
+      effectiveModel: lifecycle.effectiveModel ?? model
+    })
+  }
+
   async handleSuccess(
     response: Response,
     model: string,
@@ -226,18 +277,25 @@ export class ResponseHandler {
       lifecycle.onUpstreamWaitEnd,
       lifecycle.onIterationError
     )
-    const transformed = transformSdkStream(wrapped.response, model, conversationId)
+    const reasoning = new ReasoningAccumulator()
+    const emitted = new EmittedOutputAccumulator()
+    const transformed = transformSdkStream(wrapped.response, model, conversationId, reasoning)
     const buffered: Uint8Array[] = []
+    // One shared publication point for all three completion paths. Duplicating it
+    // per site is how the live pull-driven path silently stops populating.
+    const complete = async (): Promise<void> =>
+      this.fireCompletion(lifecycle, reasoning, emitted, model)
 
     if (lifecycle.bufferUntilComplete) {
       try {
         while (true) {
           const item = await transformed.next()
           if (item.done) {
-            await lifecycle.onComplete?.()
+            await complete()
             lifecycle.onTerminal?.()
             return bufferedSseResponse(buffered)
           }
+          emitted.observeChunk(item.value)
           buffered.push(encodeSseChunk(item.value))
         }
       } catch (error) {
@@ -254,11 +312,12 @@ export class ResponseHandler {
     while (true) {
       const item = await transformed.next()
       if (item.done) {
-        await lifecycle.onComplete?.()
+        await complete()
         lifecycle.onTerminal?.()
         return bufferedSseResponse(buffered)
       }
 
+      emitted.observeChunk(item.value)
       const encoded = encodeSseChunk(item.value)
       if (isSemanticChunk(item.value)) {
         firstSemantic = encoded
@@ -312,11 +371,12 @@ export class ResponseHandler {
             try {
               const item = await transformed.next()
               if (item.done) {
-                await lifecycle.onComplete?.()
+                await complete()
                 finish()
                 controller.close()
                 return
               }
+              emitted.observeChunk(item.value)
               controller.enqueue(encodeSseChunk(item.value))
             } catch (error) {
               if (terminal) return

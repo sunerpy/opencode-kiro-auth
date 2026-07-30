@@ -238,8 +238,12 @@ Thinking budget 会自动映射到 Kiro 原生的 `effort` 字段：
 
 ## 开发
 
-本项目使用 Bun。[Makefile](../../Makefile) 是本地检查的唯一权威来源，与 CI
-保持一致：
+本项目使用 Bun，且 Bun 是唯一受支持的开发包管理器。仓库不再保留
+`package-lock.json`，`bun.lock` 是唯一的锁文件；CI 与发布流程均使用
+`bun install` 安装依赖（`npm` 仅用于发布构建产物）。请不要在本仓库执行
+`npm install` 或 `npm ci`。
+
+[Makefile](../../Makefile) 是本地检查的唯一权威来源，与 CI 保持一致：
 
 ```bash
 make install    # bun install

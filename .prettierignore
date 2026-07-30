@@ -1,0 +1,9 @@
+# Raw probe results are evidence: they must stay byte-identical to the probe's own output so a
+# re-run can be diffed against them. Reformatting them would silently invalidate that.
+scripts/probes/results/
+scripts/probes/ab-opencode/results/
+
+# Generated fixtures are compared byte-for-byte against what actually ran; a reformat would make
+# the committed fixture differ from the executed one.
+scripts/probes/ab-opencode/fixture/
+scripts/probes/ab-opencode/fixture-stress/

@@ -1,0 +1,16 @@
+{
+  "arm": "old",
+  "variant": "stress",
+  "armPluginSpec": "@sunerpy/opencode-kiro-auth@0.15.4",
+  "index": 2,
+  "model": "kiro-auth/claude-opus-5-high",
+  "startedAt": "2026-07-30T04:30:55.503Z",
+  "finishedAt": "2026-07-30T04:32:46.775Z",
+  "durationMs": 111272,
+  "exitCode": 0,
+  "timedOut": false,
+  "sessionId": "ses_04eb5d246ffekf0S0YoX5IYqsK",
+  "runDir": "/tmp/opencode/ab-arms/runs/old-02",
+  "streamBytes": 49822,
+  "apiLogFile": "/config/.config/opencode/kiro-auth-plugin/logs/api-2026-07-30-p538690-ms70n3gg-4l5koa-s0000.ndjson"
+}

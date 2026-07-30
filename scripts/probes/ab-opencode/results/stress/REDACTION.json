@@ -1,0 +1,258 @@
+{
+  "generatedAt": "2026-07-30T04:53:45.331Z",
+  "replacements": {
+    "emails": 168,
+    "profileArns": 168,
+    "opaqueTokens": 0
+  },
+  "pseudonymCount": 2,
+  "note": "api-filtered.ndjson is a FILTERED derivative: per-request tool schemas were replaced by toolCount. Everything else is byte-preserved apart from the listed redactions.",
+  "files": [
+    {
+      "file": "new-01/meta.json",
+      "bytesIn": 558,
+      "bytesOut": 558,
+      "filtered": false
+    },
+    {
+      "file": "new-01/stream.jsonl",
+      "bytesIn": 50181,
+      "bytesOut": 50181,
+      "filtered": false
+    },
+    {
+      "file": "new-01/export.json",
+      "bytesIn": 87679,
+      "bytesOut": 87679,
+      "filtered": false
+    },
+    {
+      "file": "new-01/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "new-01/api-filtered.ndjson",
+      "bytesIn": 477918,
+      "bytesOut": 40887,
+      "filtered": true
+    },
+    {
+      "file": "new-02/meta.json",
+      "bytesIn": 558,
+      "bytesOut": 558,
+      "filtered": false
+    },
+    {
+      "file": "new-02/stream.jsonl",
+      "bytesIn": 51414,
+      "bytesOut": 51414,
+      "filtered": false
+    },
+    {
+      "file": "new-02/export.json",
+      "bytesIn": 84805,
+      "bytesOut": 84805,
+      "filtered": false
+    },
+    {
+      "file": "new-02/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "new-02/api-filtered.ndjson",
+      "bytesIn": 470441,
+      "bytesOut": 33410,
+      "filtered": true
+    },
+    {
+      "file": "new-03/meta.json",
+      "bytesIn": 558,
+      "bytesOut": 558,
+      "filtered": false
+    },
+    {
+      "file": "new-03/stream.jsonl",
+      "bytesIn": 51172,
+      "bytesOut": 51172,
+      "filtered": false
+    },
+    {
+      "file": "new-03/export.json",
+      "bytesIn": 84438,
+      "bytesOut": 84438,
+      "filtered": false
+    },
+    {
+      "file": "new-03/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "new-03/api-filtered.ndjson",
+      "bytesIn": 468633,
+      "bytesOut": 31623,
+      "filtered": true
+    },
+    {
+      "file": "new-04/meta.json",
+      "bytesIn": 558,
+      "bytesOut": 558,
+      "filtered": false
+    },
+    {
+      "file": "new-04/stream.jsonl",
+      "bytesIn": 51078,
+      "bytesOut": 51078,
+      "filtered": false
+    },
+    {
+      "file": "new-04/export.json",
+      "bytesIn": 84375,
+      "bytesOut": 84375,
+      "filtered": false
+    },
+    {
+      "file": "new-04/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "new-04/api-filtered.ndjson",
+      "bytesIn": 468643,
+      "bytesOut": 31633,
+      "filtered": true
+    },
+    {
+      "file": "old-01/meta.json",
+      "bytesIn": 545,
+      "bytesOut": 545,
+      "filtered": false
+    },
+    {
+      "file": "old-01/stream.jsonl",
+      "bytesIn": 51504,
+      "bytesOut": 51504,
+      "filtered": false
+    },
+    {
+      "file": "old-01/export.json",
+      "bytesIn": 89409,
+      "bytesOut": 89409,
+      "filtered": false
+    },
+    {
+      "file": "old-01/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "old-01/api-filtered.ndjson",
+      "bytesIn": 464086,
+      "bytesOut": 27076,
+      "filtered": true
+    },
+    {
+      "file": "old-02/meta.json",
+      "bytesIn": 545,
+      "bytesOut": 545,
+      "filtered": false
+    },
+    {
+      "file": "old-02/stream.jsonl",
+      "bytesIn": 49822,
+      "bytesOut": 49822,
+      "filtered": false
+    },
+    {
+      "file": "old-02/export.json",
+      "bytesIn": 86965,
+      "bytesOut": 86965,
+      "filtered": false
+    },
+    {
+      "file": "old-02/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "old-02/api-filtered.ndjson",
+      "bytesIn": 464107,
+      "bytesOut": 27076,
+      "filtered": true
+    },
+    {
+      "file": "old-03/meta.json",
+      "bytesIn": 545,
+      "bytesOut": 545,
+      "filtered": false
+    },
+    {
+      "file": "old-03/stream.jsonl",
+      "bytesIn": 49628,
+      "bytesOut": 49628,
+      "filtered": false
+    },
+    {
+      "file": "old-03/export.json",
+      "bytesIn": 88171,
+      "bytesOut": 88171,
+      "filtered": false
+    },
+    {
+      "file": "old-03/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "old-03/api-filtered.ndjson",
+      "bytesIn": 464107,
+      "bytesOut": 27076,
+      "filtered": true
+    },
+    {
+      "file": "old-04/meta.json",
+      "bytesIn": 545,
+      "bytesOut": 545,
+      "filtered": false
+    },
+    {
+      "file": "old-04/stream.jsonl",
+      "bytesIn": 51511,
+      "bytesOut": 51511,
+      "filtered": false
+    },
+    {
+      "file": "old-04/export.json",
+      "bytesIn": 88492,
+      "bytesOut": 88492,
+      "filtered": false
+    },
+    {
+      "file": "old-04/stderr.txt",
+      "bytesIn": 0,
+      "bytesOut": 0,
+      "filtered": false
+    },
+    {
+      "file": "old-04/api-filtered.ndjson",
+      "bytesIn": 464086,
+      "bytesOut": 27076,
+      "filtered": true
+    },
+    {
+      "file": "index.json",
+      "bytesIn": 5168,
+      "bytesOut": 5168,
+      "filtered": false
+    }
+  ]
+}

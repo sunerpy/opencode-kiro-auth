@@ -23,7 +23,9 @@ import {
   extractTextFromParts
 } from './image-handler.js'
 import { resolveModelVariant } from './models.js'
+import { reconstructAssistantResponse } from './reasoning/request-replay.js'
 import type {
+  CodeWhispererMessage,
   CodeWhispererRequest,
   Effort,
   KiroAuthDetails,
@@ -38,9 +40,10 @@ interface TransformResult {
   variantEffort?: Effort
 }
 
-interface EffortConfig {
+interface SdkRequestOptions {
   effort?: Effort
   autoEffortMapping?: boolean
+  disableReasoningReplay?: boolean
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -115,14 +118,10 @@ function buildCodeWhispererRequest(
       const lastHistEntry = history[history.length - 1]
       const historyEndsWithUser = lastHistEntry?.userInputMessage
       if (historyEndsWithUser) {
-        let prevText = ''
-        if (Array.isArray(prevMsg.content)) {
-          for (const p of prevMsg.content) {
-            if (p.type === 'text') prevText += p.text || ''
-          }
-        } else prevText = getContentText(prevMsg)
-        if (prevText) {
-          history.push({ assistantResponseMessage: { content: prevText } })
+        const reconstructed = reconstructAssistantResponse(prevMsg, resolved, false)
+        const arm = reconstructed.response
+        if (arm.content || arm.toolUses || arm.reasoningContent) {
+          history.push({ assistantResponseMessage: arm })
         }
       }
     }
@@ -134,37 +133,9 @@ function buildCodeWhispererRequest(
   const curImgs: any[] = []
 
   if (curMsg.role === 'assistant') {
-    const arm: any = { content: '' }
-    let th = ''
-    if (Array.isArray(curMsg.content)) {
-      for (const p of curMsg.content) {
-        if (p.type === 'text') arm.content += p.text || ''
-        else if (p.type === 'thinking') th += p.thinking || p.text || ''
-        else if (p.type === 'tool_use') {
-          if (!arm.toolUses) arm.toolUses = []
-          arm.toolUses.push({ input: p.input, name: p.name, toolUseId: p.id })
-        }
-      }
-    } else arm.content = getContentText(curMsg)
-    if ((curMsg as any).tool_calls && Array.isArray((curMsg as any).tool_calls)) {
-      if (!arm.toolUses) arm.toolUses = []
-      for (const tc of (curMsg as any).tool_calls) {
-        arm.toolUses.push({
-          input:
-            typeof tc.function?.arguments === 'string'
-              ? JSON.parse(tc.function.arguments)
-              : tc.function?.arguments,
-          name: tc.function?.name,
-          toolUseId: tc.id
-        })
-      }
-    }
-    if (th)
-      arm.content = arm.content
-        ? `<thinking>${th}</thinking>\n\n${arm.content}`
-        : `<thinking>${th}</thinking>`
+    const arm = reconstructAssistantResponse(curMsg, resolved, true).response
 
-    if (arm.content || arm.toolUses) {
+    if (arm.content || arm.toolUses || arm.reasoningContent) {
       history.push({ assistantResponseMessage: arm })
     }
     curContent = '[system: conversation continues]'
@@ -306,7 +277,7 @@ function buildCodeWhispererRequest(
 }
 
 export function transformToCodeWhisperer(
-  url: string,
+  _url: string,
   body: any,
   model: string,
   auth: KiroAuthDetails,
@@ -343,6 +314,21 @@ export function transformToCodeWhisperer(
   }
 }
 
+// A partially-stripped history is still a 400: Kiro validates every replayed
+// signature, so signature-rejection recovery must remove ALL of them, including
+// the current turn's.
+export function stripReasoningContent(
+  conversationState: CodeWhispererRequest['conversationState']
+): void {
+  const strip = (message?: CodeWhispererMessage): void => {
+    if (message?.assistantResponseMessage) {
+      delete message.assistantResponseMessage.reasoningContent
+    }
+  }
+  for (const entry of conversationState.history ?? []) strip(entry)
+  strip(conversationState.currentMessage)
+}
+
 export function transformToSdkRequest(
   body: any,
   model: string,
@@ -350,7 +336,7 @@ export function transformToSdkRequest(
   think = false,
   budget = 20000,
   showToast?: ToastFunction,
-  effortConfig?: EffortConfig
+  options?: SdkRequestOptions
 ): SdkPreparedRequest {
   const { request, resolved, convId, variantEffort } = buildCodeWhispererRequest(
     body,
@@ -361,14 +347,18 @@ export function transformToSdkRequest(
     showToast
   )
 
+  if (options?.disableReasoningReplay) {
+    stripReasoningContent(request.conversationState)
+  }
+
   const effort = variantEffort
     ? resolveEffort(resolved, variantEffort)
     : getEffectiveEffort(
         resolved,
         think,
         budget,
-        effortConfig?.effort,
-        effortConfig?.autoEffortMapping ?? true
+        options?.effort,
+        options?.autoEffortMapping ?? true
       )
 
   return {

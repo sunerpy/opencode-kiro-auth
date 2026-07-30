@@ -1,0 +1,172 @@
+{
+  "variant": "stress",
+  "hops": 20,
+  "entryFile": "step01.json",
+  "traversalOrder": [
+    "step01.json",
+    "step13.json",
+    "step05.json",
+    "step18.json",
+    "step09.json",
+    "step02.json",
+    "step16.json",
+    "step07.json",
+    "step20.json",
+    "step11.json",
+    "step04.json",
+    "step15.json",
+    "step08.json",
+    "step19.json",
+    "step06.json",
+    "step12.json",
+    "step03.json",
+    "step17.json",
+    "step10.json",
+    "step14.json"
+  ],
+  "fold": [
+    {
+      "hop": 1,
+      "file": "step01.json",
+      "op": "seed",
+      "value": 12,
+      "runningTotal": 12
+    },
+    {
+      "hop": 2,
+      "file": "step13.json",
+      "op": "multiply",
+      "value": 7,
+      "runningTotal": 84
+    },
+    {
+      "hop": 3,
+      "file": "step05.json",
+      "op": "add",
+      "value": 116,
+      "runningTotal": 200
+    },
+    {
+      "hop": 4,
+      "file": "step18.json",
+      "op": "divide",
+      "value": 8,
+      "runningTotal": 25
+    },
+    {
+      "hop": 5,
+      "file": "step09.json",
+      "op": "multiply",
+      "value": 24,
+      "runningTotal": 600
+    },
+    {
+      "hop": 6,
+      "file": "step02.json",
+      "op": "subtract",
+      "value": 145,
+      "runningTotal": 455
+    },
+    {
+      "hop": 7,
+      "file": "step16.json",
+      "op": "add",
+      "value": 65,
+      "runningTotal": 520
+    },
+    {
+      "hop": 8,
+      "file": "step07.json",
+      "op": "divide",
+      "value": 10,
+      "runningTotal": 52
+    },
+    {
+      "hop": 9,
+      "file": "step20.json",
+      "op": "multiply",
+      "value": 15,
+      "runningTotal": 780
+    },
+    {
+      "hop": 10,
+      "file": "step11.json",
+      "op": "subtract",
+      "value": 60,
+      "runningTotal": 720
+    },
+    {
+      "hop": 11,
+      "file": "step04.json",
+      "op": "divide",
+      "value": 9,
+      "runningTotal": 80
+    },
+    {
+      "hop": 12,
+      "file": "step15.json",
+      "op": "add",
+      "value": 145,
+      "runningTotal": 225
+    },
+    {
+      "hop": 13,
+      "file": "step08.json",
+      "op": "multiply",
+      "value": 4,
+      "runningTotal": 900
+    },
+    {
+      "hop": 14,
+      "file": "step19.json",
+      "op": "subtract",
+      "value": 108,
+      "runningTotal": 792
+    },
+    {
+      "hop": 15,
+      "file": "step06.json",
+      "op": "divide",
+      "value": 12,
+      "runningTotal": 66
+    },
+    {
+      "hop": 16,
+      "file": "step12.json",
+      "op": "multiply",
+      "value": 13,
+      "runningTotal": 858
+    },
+    {
+      "hop": 17,
+      "file": "step03.json",
+      "op": "add",
+      "value": 62,
+      "runningTotal": 920
+    },
+    {
+      "hop": 18,
+      "file": "step17.json",
+      "op": "divide",
+      "value": 8,
+      "runningTotal": 115
+    },
+    {
+      "hop": 19,
+      "file": "step10.json",
+      "op": "multiply",
+      "value": 6,
+      "runningTotal": 690
+    },
+    {
+      "hop": 20,
+      "file": "step14.json",
+      "op": "subtract",
+      "value": 231,
+      "runningTotal": 459
+    }
+  ],
+  "expectedFinalTotal": 459,
+  "checksumModulus": 9973,
+  "expectedFinalChecksum": 8553
+}

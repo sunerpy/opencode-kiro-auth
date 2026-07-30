@@ -8,6 +8,8 @@ import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
 import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
+import { reasoningCorrelationCache } from '../../plugin/reasoning/correlation-cache'
+import { deriveInheritedLoopId, normalizeToolArguments } from '../../plugin/reasoning/turn-identity'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
@@ -16,8 +18,9 @@ import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
 import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler, isKiroContextOverflowBody, type RequestContext } from './error-handler'
-import { ResponseHandler } from './response-handler'
+import { ResponseHandler, type SdkCompletionPayload } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
+import { buildSdkRequestLogPayload } from './sdk-log-payload'
 import { SdkEventStreamIterationError, UpstreamUnexpectedError } from './stream-error'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -163,6 +166,9 @@ export class RequestHandler {
     let consecutiveNullAccounts = 0
     let streamFailureCount = 0
     let forcedStreamAccount: ManagedAccount | null = null
+    let pinnedAccount: ManagedAccount | null = null
+    let currentAttemptId = ''
+    const inheritedLoopId = deriveInheritedLoopId(body.messages)
     const retryContext = this.retryStrategy.createContext()
 
     try {
@@ -181,8 +187,9 @@ export class RequestHandler {
           continue
         }
 
-        let acc: ManagedAccount | null = forcedStreamAccount
+        let acc: ManagedAccount | null = forcedStreamAccount ?? pinnedAccount
         forcedStreamAccount = null
+        pinnedAccount = null
         if (!acc) {
           acc = await this.accountSelector
             .selectHealthyAccount(showToast, signal)
@@ -215,7 +222,15 @@ export class RequestHandler {
           continue
         }
 
-        const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
+        const sdkPrep = this.prepareSdkRequest(
+          init?.body,
+          model,
+          auth,
+          think,
+          budget,
+          showToast,
+          handlerContext.disableReasoningReplay === true
+        )
         const streamAttempt = streamFailureCount + 1
         const streamLogDetails = (
           details: Record<string, unknown> = {}
@@ -268,6 +283,11 @@ export class RequestHandler {
           const attemptEpoch = this.nextAccountAttemptEpoch(acc.id)
           const isCurrentAttempt = (): boolean =>
             this.accountAttemptEpochs.get(acc.id) === attemptEpoch
+          // Request-scoped, deliberately NOT the per-account epoch: an unrelated
+          // request selecting the same account bumps that epoch and would discard
+          // a healthy concurrent stream's envelope.
+          const attemptId = crypto.randomUUID()
+          currentAttemptId = attemptId
           let completionDone = false
           const completeRequest = async (): Promise<void> => {
             if (completionDone) return
@@ -275,6 +295,11 @@ export class RequestHandler {
             if (!isCurrentAttempt()) return
             this.handleSuccessfulRequest(acc)
             await this.usageTracker.syncUsage(acc, auth, isCurrentAttempt)
+          }
+          const accountId = acc.id
+          const onStreamComplete = async (completed?: SdkCompletionPayload): Promise<void> => {
+            await completeRequest()
+            this.commitReasoningCorrelation(completed, accountId, currentAttemptId)
           }
 
           let sdkResponse: GenerateAssistantResponseCommandOutput
@@ -337,7 +362,10 @@ export class RequestHandler {
                   })
                 )
               },
-              onComplete: completeRequest,
+              onComplete: onStreamComplete,
+              attemptId,
+              ...(inheritedLoopId !== undefined ? { inheritedLoopId } : {}),
+              effectiveModel: sdkPrep.effectiveModel,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),
               bufferUntilComplete: this.config.stream_buffer_until_complete,
@@ -418,7 +446,15 @@ export class RequestHandler {
               this.logSdkError(sdkPrep, e, acc, apiTimestamp)
             }
 
-            const errorBody = JSON.stringify({ message: e.message, __type: e.name })
+            // ErrorHandler branches on `errorData.reason` (INVALID_MODEL_ID,
+            // TEMPORARILY_SUSPENDED, THINKING_SIGNATURE_INVALID), so the modeled
+            // exception's reason code must survive into the synthetic body.
+            const errorReasonCode = typeof e?.reason === 'string' ? e.reason : undefined
+            const errorBody = JSON.stringify({
+              message: e.message,
+              __type: e.name,
+              ...(errorReasonCode !== undefined ? { reason: errorReasonCode } : {})
+            })
             const errorStatusText = e.name || 'Error'
             const jsonHeaders = { 'Content-Type': 'application/json' }
 
@@ -438,6 +474,9 @@ export class RequestHandler {
             if (errorResult.shouldRetry) {
               if (errorResult.newContext) {
                 handlerContext = errorResult.newContext
+              }
+              if (errorResult.pinAccount) {
+                pinnedAccount = acc
               }
               continue
             }
@@ -498,11 +537,13 @@ export class RequestHandler {
     auth: KiroAuthDetails,
     think: boolean,
     budget: number,
-    showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
+    showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void,
+    disableReasoningReplay = false
   ): SdkPreparedRequest {
     return transformToSdkRequest(body, model, auth, think, budget, showToast, {
       effort: this.config.effort,
-      autoEffortMapping: this.config.auto_effort_mapping
+      autoEffortMapping: this.config.auto_effort_mapping,
+      disableReasoningReplay
     })
   }
 
@@ -519,26 +560,7 @@ export class RequestHandler {
   }
 
   private logSdkRequest(prep: SdkPreparedRequest, acc: ManagedAccount, timestamp: string): void {
-    logger.logApiRequest(
-      {
-        url: `https://q.${prep.region}.amazonaws.com/generateAssistantResponse`,
-        method: 'POST',
-        headers: { 'x-amzn-kiro-agent-mode': 'vibe' },
-        body: {
-          conversationState: {
-            chatTriggerType: prep.conversationState.chatTriggerType,
-            conversationId: prep.conversationState.conversationId,
-            historyLength: (prep.conversationState as any).history?.length || 0,
-            currentMessage: prep.conversationState.currentMessage
-          },
-          profileArn: prep.profileArn
-        },
-        conversationId: prep.conversationId,
-        model: prep.effectiveModel,
-        email: acc.email
-      },
-      timestamp
-    )
+    logger.logApiRequest(buildSdkRequestLogPayload(prep, acc), timestamp)
   }
 
   private logSdkResponse(prep: SdkPreparedRequest, timestamp: string): void {
@@ -658,6 +680,39 @@ export class RequestHandler {
       return false
     }
     return accounts.every((acc) => !acc.isHealthy && isPermanentError(acc.unhealthyReason))
+  }
+
+  private commitReasoningCorrelation(
+    completed: SdkCompletionPayload | undefined,
+    accountId: string,
+    owningAttemptId: string
+  ): void {
+    if (!completed || completed.loopId === undefined) return
+    if (completed.attemptId === '' || completed.attemptId !== owningAttemptId) return
+
+    // A final answer ends the loop, so its entries are torn down. A tool-emitting
+    // turn that produced no signed envelope merely skips publication — the loop
+    // continues and its other turns' envelopes must survive.
+    if (completed.toolUses.length === 0) {
+      reasoningCorrelationCache.clearLoop(completed.loopId)
+      return
+    }
+    if (!completed.envelope) return
+
+    reasoningCorrelationCache.publish({
+      envelope: completed.envelope,
+      reasoningText: completed.reasoningText,
+      visibleText: completed.visibleText,
+      toolUses: completed.toolUses.map((tool) => ({
+        toolUseId: tool.toolUseId,
+        name: tool.name,
+        argumentsJson: normalizeToolArguments(tool.argumentsJson)
+      })),
+      effectiveModel: completed.effectiveModel,
+      loopId: completed.loopId,
+      accountId,
+      attemptId: completed.attemptId
+    })
   }
 
   private nextAccountAttemptEpoch(accountId: string): number {

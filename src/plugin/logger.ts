@@ -11,6 +11,7 @@ import {
   shouldRotateLog,
   type LogMaintenanceOptions
 } from './log-maintenance.js'
+import { redactReasoningForLog } from './log-redaction.js'
 
 const MEBIBYTE = 1024 * 1024
 const PROCESS_INSTANCE = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -73,7 +74,9 @@ const writeToFile = (level: string, message: string, ...args: unknown[]) => {
         }
         if (typeof a === 'object') {
           try {
-            return JSON.stringify(a)
+            // §6.8: redact at the sink, so no caller can leak a signature by logging
+            // a prepared request or a whole conversationState for debugging.
+            return JSON.stringify(redactReasoningForLog(a))
           } catch {
             return '[Unserializable object]'
           }
@@ -144,7 +147,7 @@ const writeApiLog = (
         timestamp,
         type,
         ...(isError ? { error: true } : {}),
-        data
+        data: redactReasoningForLog(data)
       },
       binaryToBase64Replacer
     )}\n`
