@@ -11,7 +11,7 @@ export type LiveRecoveryOptions = {
   readonly priorStreamFailures: number
   readonly signal: AbortSignal
   readonly initialAccount: ManagedAccount
-  readonly attemptFactory: RecoveryAttemptFactory
+  readonly attemptFactory: Pick<RecoveryAttemptFactory, 'open'>
   readonly retryDelay: (failureCount: number) => number
   readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>
   readonly selectAlternativeAccount: (excludedAccountId: string) => Promise<ManagedAccount | null>
@@ -25,6 +25,12 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   let nextAccount = options.initialAccount
   let completedAttempt: SdkStreamingAttempt | undefined
   let activeLogDetails = (_details: Record<string, unknown> = {}): Record<string, unknown> => ({})
+  let terminalFinished = false
+  const finishTerminal = (): void => {
+    if (terminalFinished) return
+    terminalFinished = true
+    options.onTerminal()
+  }
 
   const openAttempt = async (attemptIndex: number): Promise<SdkStreamingAttempt> => {
     const result: RecoveryAttemptResult = await options.attemptFactory.open(
@@ -37,7 +43,13 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     return result.handle
   }
 
-  const initialAttempt = await openAttempt(1)
+  let initialAttempt: SdkStreamingAttempt
+  try {
+    initialAttempt = await openAttempt(1)
+  } catch (error) {
+    finishTerminal()
+    throw error
+  }
   const coordinator = new StreamRecoveryCoordinator({
     mode: options.mode,
     maxAttempts: options.maxAttempts,
@@ -99,7 +111,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
         })
       )
     },
-    onTerminal: options.onTerminal,
+    onTerminal: finishTerminal,
     onCancel: options.onCancel
   })
 
