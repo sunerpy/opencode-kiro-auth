@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { TokenRefresher } from '../core/auth/token-refresher.js'
-import { RequestHandler } from '../core/request/request-handler.js'
+import {
+  RequestHandler,
+  STREAM_MISSING_COMPLETION_LOG,
+  STREAM_REQUEST_STARTED_LOG
+} from '../core/request/request-handler.js'
 import { ResponseHandler } from '../core/request/response-handler.js'
 import { encodeRefreshToken } from '../kiro/auth.js'
 import { AccountManager } from '../plugin/accounts.js'
@@ -892,6 +896,126 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
   })
 
+  test('an exhausted attempt reports how much of each channel was already emitted', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [
+              { reasoningContentEvent: { text: 'abc' } },
+              { assistantResponseEvent: { content: 'hello' } }
+            ],
+            new Error('buffered stream died')
+          )
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamBufferUntilComplete: true,
+        streamMaxAttempts: 1
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      expect(response.status).toBe(503)
+      expect(logs.error).toHaveBeenCalledWith(
+        'Kiro SDK event stream iteration failed',
+        expect.objectContaining({
+          outcome: 'exhausted',
+          emittedReasoningChars: 3,
+          emittedVisibleChars: 5,
+          emittedToolCount: 0,
+          sawToolIntent: false
+        })
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('tool intent before the break is reported even though no tool call was emitted', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [
+              { reasoningContentEvent: { text: 'abc' } },
+              { toolUseEvent: { name: 'read_file', toolUseId: 'tool-1', input: '{"path":"/a' } }
+            ],
+            new Error('died mid tool call')
+          )
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamBufferUntilComplete: true,
+        streamMaxAttempts: 1
+      })
+      installImmediateStreamBackoff(handler)
+
+      await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      expect(logs.error).toHaveBeenCalledWith(
+        'Kiro SDK event stream iteration failed',
+        expect.objectContaining({
+          outcome: 'exhausted',
+          emittedReasoningChars: 3,
+          emittedVisibleChars: 0,
+          emittedToolCount: 0,
+          sawToolIntent: true
+        })
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('a post-output failure reports the volumes delivered before the break', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [
+              { reasoningContentEvent: { text: 'abc' } },
+              { assistantResponseEvent: { content: 'hello' } }
+            ],
+            new Error('late stream failure')
+          )
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const reader = response.body!.getReader()
+      const drained = (async () => {
+        while (!(await reader.read()).done) {}
+      })()
+
+      await expect(drained).rejects.toMatchObject({ name: 'UpstreamUnexpectedError' })
+      expect(logs.error).toHaveBeenCalledWith(
+        'Kiro SDK event stream iteration failed',
+        expect.objectContaining({
+          outcome: 'terminated_after_output',
+          emittedReasoningChars: 3,
+          emittedVisibleChars: 5,
+          emittedToolCount: 0,
+          sawToolIntent: false
+        })
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
   test('stream retry jitter stays inside the documented bounds', () => {
     const { handler } = buildHandler({})
     const internals = handler as unknown as {
@@ -905,6 +1029,217 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     internals.streamRetryRandom = () => 1
     expect(internals.getStreamRetryDelay(1)).toBe(312.5)
     expect(internals.getStreamRetryDelay(2)).toBe(625)
+  })
+})
+
+describe('RequestHandler.handle — unconditional stream-start record', () => {
+  function startRecords(log: ReturnType<typeof captureLogger>['log']): unknown[][] {
+    return log.mock.calls.filter((call) => call[0] === STREAM_REQUEST_STARTED_LOG)
+  }
+
+  test('one record is written per inbound request, carrying only correlation fields', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream([{ assistantResponseEvent: { content: 'answer' } }])],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: 'x' }) },
+        noToast
+      )
+      await response.text()
+
+      const records = startRecords(logs.log)
+      expect(records).toHaveLength(1)
+      expect(records[0]![1]).toEqual({
+        conversationId: 'c1',
+        model: 'x',
+        effectiveModel: 'claude-sonnet-4-5',
+        processId: process.pid
+      })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('stream retries within one request add no further records', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([], new Error('decode-1')),
+          sdkStream([], new Error('decode-2')),
+          sdkStream([{ assistantResponseEvent: { content: 'third time lucky' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+      expect(startRecords(logs.log)).toHaveLength(1)
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('an account switch driven by an HTTP error adds no further records', async () => {
+    const acc1 = makeAccount({ id: 'A' })
+    const acc2 = makeAccount({ id: 'B' })
+    const httpError: any = new Error('rate limited')
+    httpError.$metadata = { httpStatusCode: 429 }
+    httpError.name = 'ThrottlingException'
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc1, acc2],
+        sdkResults: [httpError, sdkStream([{ assistantResponseEvent: { content: 'from B' } }])],
+        errorHandleResults: [{ shouldRetry: true, switchAccount: true }],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(startRecords(logs.log)).toHaveLength(1)
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('a non-streaming request writes no record', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream([{ assistantResponseEvent: { content: 'answer' } }])],
+        useRealResponseHandler: true
+      })
+
+      await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      expect(startRecords(logs.log)).toHaveLength(0)
+    } finally {
+      logs.restore()
+    }
+  })
+})
+
+describe('RequestHandler.handle — clean end without completion metadata', () => {
+  test('the marker is logged while the response still finishes exactly as before', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream([{ assistantResponseEvent: { content: 'partial answer' } }])],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const body = await response.text()
+      const streamedContent = body
+        .split('\n\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => JSON.parse(line.slice('data: '.length)).choices?.[0]?.delta?.content ?? '')
+        .join('')
+
+      expect(streamedContent).toBe('partial answer')
+      expect(body).toContain('"finish_reason":"stop"')
+      expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+      expect(acc.failCount).toBe(0)
+      expect(logs.warn).toHaveBeenCalledWith(
+        STREAM_MISSING_COMPLETION_LOG,
+        expect.objectContaining({
+          outcome: 'clean_eof_without_completion_metadata',
+          conversationId: 'c1',
+          accountId: 'A',
+          streamAttempt: 1,
+          emittedReasoningChars: 0,
+          emittedVisibleChars: 'partial answer'.length,
+          emittedToolCount: 0,
+          sawToolIntent: false
+        })
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('a stream carrying completion metadata logs no marker', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([
+            { assistantResponseEvent: { content: 'complete answer' } },
+            {
+              metadataEvent: {
+                tokenUsage: { uncachedInputTokens: 3, outputTokens: 2, totalTokens: 5 }
+              }
+            }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      expect(logs.warn.mock.calls.some((call) => call[0] === STREAM_MISSING_COMPLETION_LOG)).toBe(
+        false
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('the marker also covers a buffered stream that ends without metadata', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream([{ reasoningContentEvent: { text: 'abc' } }])],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamBufferUntilComplete: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const body = await response.text()
+
+      expect(body).toContain('"finish_reason":"stop"')
+      expect(logs.warn).toHaveBeenCalledWith(
+        STREAM_MISSING_COMPLETION_LOG,
+        expect.objectContaining({
+          outcome: 'clean_eof_without_completion_metadata',
+          emittedReasoningChars: 3,
+          emittedVisibleChars: 0,
+          streamDeliveryMode: 'buffered'
+        })
+      )
+    } finally {
+      logs.restore()
+    }
   })
 })
 

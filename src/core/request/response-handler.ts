@@ -49,11 +49,24 @@ export interface SdkResponseLifecycle {
    * attempt fails — the streaming branch only feeds it.
    */
   streamObserver?: StreamObserver
+  /**
+   * Owned by the caller for the same reason as `streamObserver`: the emitted
+   * per-channel volume has to stay readable after the attempt fails. Defaults to
+   * an internal instance when absent, so callers that do not observe are unchanged.
+   */
+  emittedOutput?: EmittedOutputAccumulator
+  /**
+   * The SDK iterator reached a clean `done` without ever delivering completion
+   * metadata. Observation only — success handling proceeds exactly as before.
+   */
+  onCleanEofWithoutCompletionMetadata?: () => void
 }
 
 interface WrappedSdkStream {
   response: any
   closeRaw: () => Promise<void>
+  /** Whether a `metadataEvent.tokenUsage` event was seen so far on this attempt. */
+  completionMetadataSeen: () => boolean
 }
 
 function abortReason(signal: AbortSignal): unknown {
@@ -82,7 +95,7 @@ function wrapSdkEventStream(
 ): WrappedSdkStream {
   const eventStream = sdkResponse.generateAssistantResponseResponse
   if (!eventStream || typeof eventStream[Symbol.asyncIterator] !== 'function') {
-    return { response: sdkResponse, closeRaw: async () => {} }
+    return { response: sdkResponse, closeRaw: async () => {}, completionMetadataSeen: () => false }
   }
 
   const rawIterator = eventStream[Symbol.asyncIterator]() as AsyncIterator<unknown>
@@ -166,7 +179,8 @@ function wrapSdkEventStream(
 
   return {
     response: { ...sdkResponse, generateAssistantResponseResponse: wrappedStream },
-    closeRaw
+    closeRaw,
+    completionMetadataSeen: () => completionMetadataSeen
   }
 }
 
@@ -284,7 +298,7 @@ export class ResponseHandler {
       lifecycle.onIterationError
     )
     const reasoning = new ReasoningAccumulator()
-    const emitted = new EmittedOutputAccumulator()
+    const emitted = lifecycle.emittedOutput ?? new EmittedOutputAccumulator()
     const transformed = transformSdkStream(
       wrapped.response,
       model,
@@ -294,9 +308,13 @@ export class ResponseHandler {
     )
     const buffered: Uint8Array[] = []
     // One shared publication point for all three completion paths. Duplicating it
-    // per site is how the live pull-driven path silently stops populating.
-    const complete = async (): Promise<void> =>
-      this.fireCompletion(lifecycle, reasoning, emitted, model)
+    // per site is how the live pull-driven path silently stops populating. It is
+    // also the only place a clean `done` is observable, so the missing-completion
+    // marker fires here, before completion, rather than at each `item.done`.
+    const complete = async (): Promise<void> => {
+      if (!wrapped.completionMetadataSeen()) lifecycle.onCleanEofWithoutCompletionMetadata?.()
+      return this.fireCompletion(lifecycle, reasoning, emitted, model)
+    }
 
     if (lifecycle.bufferUntilComplete) {
       try {

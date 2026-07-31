@@ -33,6 +33,7 @@ import type {
 const MODEL = 'claude-opus-5'
 const SIG = `sig-${'A'.repeat(320)}`
 const REASONING = 'private chain of thought that the signature covers'
+const STREAMED_REPLY = 'the streamed reply body that must never reach a log'
 const REDACTED_BYTES = new Uint8Array(
   Array.from({ length: 96 }, (_value, index) => (index * 7 + 13) % 256)
 )
@@ -377,6 +378,83 @@ function wireHandler(prep: SdkPreparedRequest, send: () => Promise<unknown>): Re
   internals.makeSdkClient = () => ({ send })
   return handler
 }
+
+function streamingPrep(): SdkPreparedRequest {
+  return { ...signedPrep(), streaming: true }
+}
+
+function sdkStreamOf(events: unknown[], failure?: Error): () => Promise<unknown> {
+  return async () => ({
+    generateAssistantResponseResponse: (async function* () {
+      for (const event of events) yield event
+      if (failure) throw failure
+    })()
+  })
+}
+
+async function drain(response: Response): Promise<void> {
+  const reader = response.body!.getReader()
+  try {
+    while (!(await reader.read()).done) {}
+  } catch {}
+}
+
+describe('§6.8 redaction — stream observability fields', () => {
+  test('failure-log channel fields carry volume only, never reasoning or reply text', async () => {
+    const handler = wireHandler(
+      streamingPrep(),
+      sdkStreamOf(
+        [
+          { reasoningContentEvent: { text: REASONING } },
+          { assistantResponseEvent: { content: STREAMED_REPLY } }
+        ],
+        new Error('stream died after output')
+      )
+    )
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    const text = allLogText()
+    expect(text).toContain(`"emittedReasoningChars":${REASONING.length}`)
+    expect(text).toContain(`"emittedVisibleChars":${STREAMED_REPLY.length}`)
+    expect(text).toContain('"emittedToolCount":0')
+    expect(text).toContain('"sawToolIntent":false')
+    expect(text).not.toContain(REASONING)
+    expect(text).not.toContain(STREAMED_REPLY)
+    expectNoLeak(text)
+  })
+
+  test('the missing-completion-metadata marker carries volume only', async () => {
+    const handler = wireHandler(
+      streamingPrep(),
+      sdkStreamOf([
+        { reasoningContentEvent: { text: REASONING } },
+        { assistantResponseEvent: { content: STREAMED_REPLY } }
+      ])
+    )
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    const text = allLogText()
+    expect(text).toContain('Kiro stream ended without completion metadata')
+    expect(text).toContain(`"emittedVisibleChars":${STREAMED_REPLY.length}`)
+    expect(text).not.toContain(REASONING)
+    expect(text).not.toContain(STREAMED_REPLY)
+    expectNoLeak(text)
+  })
+})
 
 describe('§6.8 redaction — end to end with enable_log_api_request', () => {
   test('an SDK error thrown while a signed history is in flight leaks nothing', async () => {

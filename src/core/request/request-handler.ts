@@ -9,9 +9,11 @@ import type { KiroConfig } from '../../plugin/config'
 import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
 import { reasoningCorrelationCache } from '../../plugin/reasoning/correlation-cache'
+import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output'
 import { deriveInheritedLoopId, normalizeToolArguments } from '../../plugin/reasoning/turn-identity'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
+import { StreamObserver } from '../../plugin/streaming/stream-observer'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import { AccountSelector } from '../account/account-selector'
@@ -28,6 +30,17 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
 type UpstreamWaitPhase = 'SDK response' | 'stream event'
+
+/**
+ * Written once per inbound streaming request, unconditionally — it is the
+ * denominator every stream-failure rate is measured against, so it must not
+ * depend on `enable_log_api_request`. Log-analysis scripts match this exact
+ * string; changing it invalidates every window collected before the change.
+ */
+export const STREAM_REQUEST_STARTED_LOG = 'Kiro stream request started'
+
+/** Emitted on a clean SDK `done` that never carried completion metadata. */
+export const STREAM_MISSING_COMPLETION_LOG = 'Kiro stream ended without completion metadata'
 
 function describeError(error: unknown, depth = 0): unknown {
   if (!(error instanceof Error)) return String(error)
@@ -164,6 +177,7 @@ export class RequestHandler {
 
     let handlerContext: RequestContext = { retry: 0, forcedRefreshAccountIds: new Set<string>() }
     let consecutiveNullAccounts = 0
+    let streamStartRecorded = false
     let streamFailureCount = 0
     let forcedStreamAccount: ManagedAccount | null = null
     let pinnedAccount: ManagedAccount | null = null
@@ -233,6 +247,8 @@ export class RequestHandler {
         )
         const streamAttempt = streamFailureCount + 1
         const streamAttemptStartedAt = Date.now()
+        const streamObserver = new StreamObserver()
+        const emittedOutput = new EmittedOutputAccumulator()
         let upstreamEventCount = 0
         const streamLogDetails = (
           details: Record<string, unknown> = {}
@@ -251,8 +267,24 @@ export class RequestHandler {
           bunVersion: process.versions.bun,
           upstreamEventCount,
           streamElapsedMs: Date.now() - streamAttemptStartedAt,
+          // Volume only, never content: the same redaction rule the API log sink
+          // follows. A char count cannot reconstruct reasoning or reply text.
+          emittedReasoningChars: emittedOutput.reasoningText.length,
+          emittedVisibleChars: emittedOutput.visibleText.length,
+          emittedToolCount: emittedOutput.toolUses().length,
+          sawToolIntent: streamObserver.sawToolIntent,
           ...details
         })
+
+        if (sdkPrep.streaming && streamAttempt === 1 && !streamStartRecorded) {
+          streamStartRecorded = true
+          logger.log(STREAM_REQUEST_STARTED_LOG, {
+            conversationId: sdkPrep.conversationId,
+            model,
+            effectiveModel: sdkPrep.effectiveModel,
+            processId: process.pid
+          })
+        }
 
         if (this.config.enable_log_effort_debug) {
           try {
@@ -370,7 +402,15 @@ export class RequestHandler {
                   })
                 )
               },
+              onCleanEofWithoutCompletionMetadata: () => {
+                logger.warn(
+                  STREAM_MISSING_COMPLETION_LOG,
+                  streamLogDetails({ outcome: 'clean_eof_without_completion_metadata' })
+                )
+              },
               onComplete: onStreamComplete,
+              streamObserver,
+              emittedOutput,
               attemptId,
               ...(inheritedLoopId !== undefined ? { inheritedLoopId } : {}),
               effectiveModel: sdkPrep.effectiveModel,
