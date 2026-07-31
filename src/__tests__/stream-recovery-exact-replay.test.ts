@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { decideRecoveryTier } from '../core/request/stream-recovery.js'
+import { decideRecoveryTier, type AttemptHandle } from '../core/request/stream-recovery.js'
 import {
+  EMPTY_OBSERVATION,
   TestStreamFailure,
   chunk,
   collect,
   createHarness,
+  expectRejection,
   makeAttempt
 } from './stream-recovery.fixture.js'
 
@@ -217,6 +219,198 @@ describe('StreamRecoveryCoordinator exact replay', () => {
     expect(labels).toEqual(['first', 'suffix', 'finish'])
     expect(harness.requestedAttempts).toEqual([1, 2, 3])
     expect(harness.replayTelemetry[0]?.divergenceChannel).toBe('early_end')
+  })
+
+  test('matches a multibyte prefix re-split at different boundaries', async () => {
+    // Given
+    const first = makeAttempt({
+      output: [chunk('first-1', { content: '你好' }), chunk('first-2', { content: '，世界' })],
+      observation: { emitted: { visibleChars: 5, toolCount: 0 }, sawToolIntent: false },
+      failure: new TestStreamFailure('failed after multibyte prefix')
+    })
+    const replay = makeAttempt({
+      output: [
+        chunk('shadow-1', { content: '你' }),
+        chunk('shadow-2', { content: '好，世' }),
+        chunk('suffix', { content: '界！' }),
+        chunk('finish', {}, 'stop')
+      ]
+    })
+    const harness = createHarness([first, replay], { mode: 'exact_replay' })
+
+    // When
+    const labels = await collect(harness.coordinator.stream)
+
+    // Then
+    expect(labels).toEqual(['first-1', 'first-2', 'suffix', 'finish'])
+    expect(harness.replayTelemetry).toEqual([
+      {
+        matchedReasoningChars: 0,
+        matchedVisibleChars: 5,
+        matchedToolCount: 0,
+        divergenceChannel: 'none',
+        replayOutcome: 'caught_up',
+        attempts: 2
+      }
+    ])
+  })
+
+  test('consumes one budget slot per tool identity divergence without leaking a shadow tool', async () => {
+    // Given
+    const delivered = [toolCall(0, 'tool-1', 'read', '{"path":"/a"}')]
+    const first = makeAttempt({
+      output: [chunk('first-tools', { tool_calls: delivered })],
+      observation: { emitted: { visibleChars: 0, toolCount: 1 }, sawToolIntent: true },
+      failure: new TestStreamFailure('failed after one tool')
+    })
+    const renamedId = makeAttempt({
+      output: [chunk('leaked-id', { tool_calls: [toolCall(0, 'tool-9', 'read', '{"path":"/a"}')] })]
+    })
+    const renamedName = makeAttempt({
+      output: [
+        chunk('leaked-name', { tool_calls: [toolCall(0, 'tool-1', 'write', '{"path":"/a"}')] })
+      ]
+    })
+    const recovered = makeAttempt({
+      output: [chunk('matched-tools', { tool_calls: delivered }), chunk('finish', {}, 'tool_calls')]
+    })
+    const harness = createHarness([first, renamedId, renamedName, recovered], {
+      mode: 'exact_replay'
+    })
+
+    // When
+    const labels = await collect(harness.coordinator.stream)
+
+    // Then
+    expect(labels).toEqual(['first-tools', 'finish'])
+    expect(harness.requestedAttempts).toEqual([1, 2, 3, 4])
+    expect(
+      harness.replayTelemetry.map(({ replayOutcome, divergenceChannel, matchedToolCount }) => ({
+        replayOutcome,
+        divergenceChannel,
+        matchedToolCount
+      }))
+    ).toEqual([
+      { replayOutcome: 'diverged', divergenceChannel: 'tool', matchedToolCount: 0 },
+      { replayOutcome: 'diverged', divergenceChannel: 'tool', matchedToolCount: 0 },
+      { replayOutcome: 'caught_up', divergenceChannel: 'none', matchedToolCount: 1 }
+    ])
+  })
+
+  test('holds a mismatched tool argument stream back until its terminal chunk diverges', async () => {
+    // Given
+    const first = makeAttempt({
+      output: [
+        chunk('first-tools', { tool_calls: [toolCall(0, 'tool-1', 'read', '{"path":"/a"}')] })
+      ],
+      observation: { emitted: { visibleChars: 0, toolCount: 1 }, sawToolIntent: true },
+      failure: new TestStreamFailure('failed after one tool')
+    })
+    const wrongArguments = makeAttempt({
+      output: [
+        chunk('leaked-open', { tool_calls: [toolCall(0, 'tool-1', 'read', '{"path":')] }),
+        chunk('leaked-close', { tool_calls: [toolCall(0, 'tool-1', 'read', '"/b"}')] }),
+        chunk('leaked-finish', {}, 'tool_calls')
+      ]
+    })
+    const recovered = makeAttempt({
+      output: [
+        chunk('matched-tools', { tool_calls: [toolCall(0, 'tool-1', 'read', '{"path":"/a"}')] }),
+        chunk('finish', {}, 'tool_calls')
+      ]
+    })
+    const harness = createHarness([first, wrongArguments, recovered], { mode: 'exact_replay' })
+
+    // When
+    const labels = await collect(harness.coordinator.stream)
+
+    // Then
+    expect(labels).toEqual(['first-tools', 'finish'])
+    expect(harness.replayTelemetry[0]).toEqual({
+      matchedReasoningChars: 0,
+      matchedVisibleChars: 0,
+      matchedToolCount: 0,
+      divergenceChannel: 'tool',
+      replayOutcome: 'diverged',
+      attempts: 2
+    })
+  })
+
+  test('spends every remaining budget slot on divergent replays and then maps one terminal error', async () => {
+    // Given
+    const mapped = new TestStreamFailure('exact replay budget exhausted')
+    const first = makeAttempt({
+      output: [chunk('first', { content: 'hello world' })],
+      observation: VISIBLE_OBSERVATION,
+      failure: new TestStreamFailure('first failure')
+    })
+    const divergent = (label: string): AttemptHandle =>
+      makeAttempt({ output: [chunk(label, { content: 'hello wurld' })] })
+    const harness = createHarness([first, divergent('leak-2'), divergent('leak-3')], {
+      mode: 'exact_replay',
+      maxAttempts: 3,
+      mapError: () => mapped
+    })
+    const reader = harness.coordinator.stream.getReader()
+
+    // When
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('first')
+
+    // Then
+    await expectRejection(reader.read(), mapped)
+    expect(harness.requestedAttempts).toEqual([1, 2, 3])
+    expect(harness.replayTelemetry).toHaveLength(2)
+    expect(harness.replayTelemetry.map((entry) => entry.attempts)).toEqual([2, 3])
+    expect(harness.completions).toEqual([])
+    expect(harness.terminalCalls()).toBe(1)
+  })
+
+  test('abort while a shadow replay is withheld terminates once and reports no divergence', async () => {
+    // Given
+    const controller = new AbortController()
+    const withheld = Promise.withResolvers<void>()
+    let closeCalls = 0
+    let reads = 0
+    const stalledReplay: AttemptHandle = {
+      chunks: {
+        next: async () => {
+          reads++
+          if (reads === 1) return { done: false, value: chunk('shadow', { content: 'hello' }) }
+          withheld.resolve()
+          return new Promise<IteratorResult<unknown>>(() => {})
+        }
+      },
+      observed: () => EMPTY_OBSERVATION,
+      close: async () => {
+        closeCalls++
+      }
+    }
+    const first = makeAttempt({
+      output: [chunk('first', { content: 'hello world' })],
+      observation: VISIBLE_OBSERVATION,
+      failure: new TestStreamFailure('first failure')
+    })
+    const harness = createHarness([first, stalledReplay], {
+      mode: 'exact_replay',
+      maxAttempts: 3,
+      signal: controller.signal
+    })
+    const reader = harness.coordinator.stream.getReader()
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('first')
+    const pendingRead = reader.read()
+    await withheld.promise
+
+    // When
+    const reason = new DOMException('cancelled while withholding', 'AbortError')
+    controller.abort(reason)
+
+    // Then
+    await expectRejection(pendingRead, reason)
+    await Promise.resolve()
+    expect(closeCalls).toBe(1)
+    expect(harness.replayTelemetry).toEqual([])
+    expect(harness.requestedAttempts).toEqual([1, 2])
+    expect(harness.terminalCalls()).toBe(1)
   })
 
   test('reports a replay stream failure before catch-up without leaking its shadow bytes', async () => {

@@ -471,6 +471,48 @@ describe('§6.8 redaction — stream observability fields', () => {
     expectNoLeak(text)
   })
 
+  test('exact replay telemetry carries matched volumes only, never replay text', async () => {
+    const SHADOW_REPLY = `${STREAMED_REPLY.slice(0, -3)}LOG`
+    const MATCHED = STREAMED_REPLY.length - 3
+    let sends = 0
+    const handler = wireHandler(
+      streamingPrep(),
+      async () => {
+        sends++
+        const failing = sends === 1
+        return {
+          generateAssistantResponseResponse: (async function* () {
+            yield { reasoningContentEvent: { text: REASONING } }
+            yield { assistantResponseEvent: { content: failing ? STREAMED_REPLY : SHADOW_REPLY } }
+            if (failing) throw new Error('reset after visible output')
+          })()
+        }
+      },
+      { stream_max_attempts: 2, stream_recovery_mode: 'exact_replay' }
+    )
+    ;(handler as unknown as { sleep: () => Promise<void> }).sleep = async () => {}
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    expect(sends).toBe(2)
+    const text = allLogText()
+    expect(text).toContain('Kiro exact replay attempt finished')
+    expect(text).toContain('"replayOutcome":"diverged"')
+    expect(text).toContain('"divergenceChannel":"text"')
+    expect(text).toContain(`"matchedReasoningChars":${REASONING.length}`)
+    expect(text).toContain(`"matchedVisibleChars":${MATCHED}`)
+    expect(text).not.toContain(REASONING)
+    expect(text).not.toContain(STREAMED_REPLY)
+    expect(text).not.toContain(SHADOW_REPLY)
+    expectNoLeak(text)
+  })
+
   test('the missing-completion-metadata marker carries volume only', async () => {
     const handler = wireHandler(
       streamingPrep(),

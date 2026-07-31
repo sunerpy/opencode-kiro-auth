@@ -135,3 +135,200 @@ describe('ExactReplayMatcher', () => {
     expect(matcher.progress().matchedVisibleChars).toBe(5)
   })
 })
+
+describe('ExactReplayMatcher chunk-boundary independence', () => {
+  test('catches up on one char per chunk and releases only the trailing suffix chars', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(TEXT_PREFIX)
+    const replayed = 'hello world!?'
+
+    // When
+    const results = [...replayed].map((character) => matcher.consume(chunk({ content: character })))
+
+    // Then
+    expect(results.slice(0, 10).every((result) => result.kind === 'withheld')).toBe(true)
+    expect(released(results[10]!)).toEqual([])
+    expect(contentOf(released(results[11]!)[0], 'content')).toBe('!')
+    expect(contentOf(released(results[12]!)[0], 'content')).toBe('?')
+    expect(matcher.progress().matchedVisibleChars).toBe(11)
+  })
+
+  test('catches up when the whole reply arrives as one giant chunk', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(TEXT_PREFIX)
+
+    // When
+    const result = matcher.consume(chunk({ content: 'hello world and then some more' }))
+
+    // Then
+    const suffix = released(result)
+    expect(suffix).toHaveLength(1)
+    expect(contentOf(suffix[0], 'content')).toBe(' and then some more')
+    expect(matcher.progress().matchedVisibleChars).toBe(11)
+  })
+
+  test('matches CJK text split at boundaries the first attempt never used', () => {
+    // Given
+    const matcher = new ExactReplayMatcher({
+      reasoningText: '',
+      visibleText: '你好，世界',
+      toolUses: []
+    })
+
+    // When
+    const first = matcher.consume(chunk({ content: '你好' }))
+    const second = matcher.consume(chunk({ content: '，世' }))
+    const third = matcher.consume(chunk({ content: '界！' }))
+
+    // Then
+    expect([first, second].every((result) => result.kind === 'withheld')).toBe(true)
+    expect(contentOf(released(third)[0], 'content')).toBe('！')
+    expect(matcher.progress().matchedVisibleChars).toBe(5)
+  })
+
+  test('matches an emoji whose surrogate pair is split across two replay chunks', () => {
+    // Given: the matcher compares JS string chars, i.e. UTF-16 code units, so a
+    // lone high surrogate is a legal intermediate state rather than a mismatch.
+    const emoji = '😀'
+    expect(emoji.length).toBe(2)
+    const matcher = new ExactReplayMatcher({
+      reasoningText: '',
+      visibleText: `ok${emoji}`,
+      toolUses: []
+    })
+
+    // When
+    const head = matcher.consume(chunk({ content: `ok${emoji[0]}` }))
+    const tail = matcher.consume(chunk({ content: `${emoji[1]}done` }))
+
+    // Then
+    expect(head).toEqual({ kind: 'withheld' })
+    expect(matcher.progress().matchedVisibleChars).toBe(4)
+    expect(contentOf(released(tail)[0], 'content')).toBe('done')
+  })
+
+  test('reports a mismatch inside a multibyte character as a text divergence', () => {
+    // Given
+    const matcher = new ExactReplayMatcher({
+      reasoningText: '',
+      visibleText: '你好，世界',
+      toolUses: []
+    })
+
+    // When
+    const result = matcher.consume(chunk({ content: '你好，宇宙' }))
+
+    // Then
+    expect(result).toEqual({ kind: 'diverged', channel: 'text' })
+    expect(matcher.progress().matchedVisibleChars).toBe(3)
+  })
+})
+
+describe('ExactReplayMatcher tool channel divergence', () => {
+  const ONE_TOOL: ReplayPrefix = {
+    reasoningText: '',
+    visibleText: '',
+    toolUses: [{ toolUseId: 'tool-1', name: 'read', argumentsJson: '{"path":"/a"}' }]
+  }
+
+  function call(
+    id: string,
+    name: string | undefined,
+    argumentsJson: string | undefined,
+    index = 0
+  ): unknown {
+    const fn: Record<string, unknown> = {}
+    if (name !== undefined) fn['name'] = name
+    if (argumentsJson !== undefined) fn['arguments'] = argumentsJson
+    return { index, id, function: fn }
+  }
+
+  test('rejects a replayed tool whose id changed', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(ONE_TOOL)
+
+    // When
+    const result = matcher.consume(chunk({ tool_calls: [call('tool-9', 'read', '{"path":"/a"}')] }))
+
+    // Then
+    expect(result).toEqual({ kind: 'diverged', channel: 'tool' })
+    expect(matcher.progress().matchedToolCount).toBe(0)
+  })
+
+  test('rejects a replayed tool whose name changed', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(ONE_TOOL)
+
+    // When
+    const result = matcher.consume(
+      chunk({ tool_calls: [call('tool-1', 'write', '{"path":"/a"}')] })
+    )
+
+    // Then
+    expect(result).toEqual({ kind: 'diverged', channel: 'tool' })
+  })
+
+  test('withholds a still-streaming argument prefix and only diverges at the terminal chunk', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(ONE_TOOL)
+
+    // When: an argument delta that is a legal prefix of nothing yet cannot be
+    // judged mid-stream, so the matcher waits instead of guessing.
+    const partial = matcher.consume(chunk({ tool_calls: [call('tool-1', 'read', '{"path":')] }))
+    const wrong = matcher.consume(chunk({ tool_calls: [call('tool-1', undefined, '"/b"}')] }))
+    const terminal = matcher.consume(chunk({}, 'tool_calls'))
+
+    // Then
+    expect(partial).toEqual({ kind: 'withheld' })
+    expect(wrong).toEqual({ kind: 'withheld' })
+    expect(terminal).toEqual({ kind: 'diverged', channel: 'tool' })
+    expect(matcher.progress().matchedToolCount).toBe(0)
+  })
+
+  test('catches up once a chunked argument stream reassembles the same normalized JSON', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(ONE_TOOL)
+
+    // When
+    const opening = matcher.consume(chunk({ tool_calls: [call('tool-1', 'read', '{ "path"')] }))
+    const closing = matcher.consume(chunk({ tool_calls: [call('tool-1', undefined, ': "/a" }')] }))
+
+    // Then
+    expect(opening).toEqual({ kind: 'withheld' })
+    expect(closing).toEqual({ kind: 'release', chunks: [], caughtUp: true })
+    expect(matcher.progress().matchedToolCount).toBe(1)
+  })
+
+  test('rejects an extra replayed tool that appears before the known prefix completes', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(ONE_TOOL)
+
+    // When
+    const result = matcher.consume(
+      chunk({
+        tool_calls: [call('tool-1', 'read', '{"path":'), call('tool-2', 'write', '{}', 1)]
+      })
+    )
+
+    // Then
+    expect(result).toEqual({ kind: 'diverged', channel: 'tool' })
+  })
+
+  test('releases a genuinely new tool call once the delivered tool prefix matched', () => {
+    // Given
+    const matcher = new ExactReplayMatcher(ONE_TOOL)
+
+    // When
+    const result = matcher.consume(
+      chunk({
+        tool_calls: [call('tool-1', 'read', '{"path":"/a"}'), call('tool-2', 'write', '{}', 1)]
+      })
+    )
+
+    // Then
+    const suffix = released(result)
+    expect(suffix).toHaveLength(1)
+    expect(JSON.stringify(suffix[0])).toContain('tool-2')
+    expect(JSON.stringify(suffix[0])).not.toContain('tool-1')
+  })
+})

@@ -245,6 +245,41 @@ function streamedText(body: string): string {
     .join('')
 }
 
+function sseFrames(body: string): Array<Record<string, any>> {
+  const raw = body.split('\n\n')
+  expect(raw.at(-1)).toBe('')
+  return raw.slice(0, -1).map((frame) => {
+    expect(frame.startsWith('data: ')).toBe(true)
+    return JSON.parse(frame.slice('data: '.length)) as Record<string, any>
+  })
+}
+
+function joinedDelta(
+  frames: Array<Record<string, any>>,
+  field: 'content' | 'reasoning_content'
+): string {
+  return frames.map((frame) => frame.choices?.[0]?.delta?.[field] ?? '').join('')
+}
+
+function terminalFrames(frames: Array<Record<string, any>>): Array<Record<string, any>> {
+  return frames.filter((frame) => {
+    const finish = frame.choices?.[0]?.finish_reason
+    return finish !== null && finish !== undefined
+  })
+}
+
+function records(
+  spy: ReturnType<typeof captureLogger>['warn'],
+  message: string
+): Array<Record<string, unknown>> {
+  return spy.mock.calls
+    .filter((call) => call[0] === message)
+    .map((call) => call[1] as Record<string, unknown>)
+}
+
+const STREAM_FAILURE_LOG = 'Kiro SDK event stream iteration failed'
+const REPLAY_TELEMETRY_LOG = 'Kiro exact replay attempt finished'
+
 function installImmediateStreamBackoff(handler: RequestHandler): void {
   const internals = handler as unknown as {
     streamRetryRandom: () => number
@@ -2679,26 +2714,6 @@ describe('RequestHandler.handle — API request logging', () => {
 })
 
 describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix', () => {
-  function sseFrames(body: string): Array<Record<string, any>> {
-    const raw = body.split('\n\n')
-    expect(raw.at(-1)).toBe('')
-    return raw.slice(0, -1).map((frame) => {
-      expect(frame.startsWith('data: ')).toBe(true)
-      return JSON.parse(frame.slice('data: '.length)) as Record<string, any>
-    })
-  }
-
-  function records(
-    spy: ReturnType<typeof captureLogger>['warn'],
-    message: string
-  ): Array<Record<string, unknown>> {
-    return spy.mock.calls
-      .filter((call) => call[0] === message)
-      .map((call) => call[1] as Record<string, unknown>)
-  }
-
-  const STREAM_FAILURE_LOG = 'Kiro SDK event stream iteration failed'
-
   test('row 1: a pre-output failure in recovery mode stays on the legacy retry path', async () => {
     const acc = makeAccount({ id: 'A' })
     const logs = captureLogger()
@@ -3035,6 +3050,425 @@ describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix',
 
       expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
       expect(records(logs.log, STREAM_REQUEST_STARTED_LOG)).toHaveLength(1)
+    } finally {
+      logs.restore()
+    }
+  })
+})
+
+describe('RequestHandler.handle — §9 Tier B exact-replay fault-injection matrix', () => {
+  // The transformer withholds the trailing `<thinking>`-tag-sized window of a
+  // content event until more text arrives, so a bare content event that breaks
+  // mid-stream delivers only its leading characters. A native reasoning event
+  // ahead of the text closes that window, which makes the delivered prefix
+  // exactly the injected strings and keeps these rows about routing, not about
+  // buffer arithmetic.
+  const THOUGHT = 'thought'
+  const DELIVERED = 'hello world'
+  const SHADOW_LEAK = 'MUST-NOT-LEAK'
+  const DIVERGENT = `hello wurld ${SHADOW_LEAK}`
+  const MATCHED_UNTIL = 'hello w'.length
+
+  function reasoningThenText(content: string, ...trailing: unknown[]): unknown[] {
+    return [
+      { reasoningContentEvent: { text: THOUGHT } },
+      { assistantResponseEvent: { content } },
+      ...trailing
+    ]
+  }
+
+  function expectNoShadow(body: string): void {
+    expect(body).not.toContain(SHADOW_LEAK)
+    expect(body).not.toContain('wurld')
+  }
+
+  test('row text mid-break: a divergent replay is attempted and leaks no byte downstream', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(reasoningThenText(DELIVERED), new Error('first reset')),
+          sdkStream(reasoningThenText(DIVERGENT)),
+          sdkStream(
+            reasoningThenText(`${DELIVERED}!`, {
+              metadataEvent: { tokenUsage: { outputTokens: 2 } }
+            })
+          )
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const body = await response.text()
+      const frames = sseFrames(body)
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+      expect(joinedDelta(frames, 'reasoning_content')).toBe(THOUGHT)
+      expect(joinedDelta(frames, 'content')).toBe(`${DELIVERED}!`)
+      expectNoShadow(body)
+      expect(terminalFrames(frames)).toHaveLength(1)
+      expect(
+        records(logs.log, REPLAY_TELEMETRY_LOG).map((entry) => [
+          entry['replayOutcome'],
+          entry['divergenceChannel'],
+          entry['matchedReasoningChars'],
+          entry['matchedVisibleChars']
+        ])
+      ).toEqual([
+        ['diverged', 'text', THOUGHT.length, MATCHED_UNTIL],
+        ['caught_up', 'none', THOUGHT.length, DELIVERED.length]
+      ])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row budget exhausted: the terminal error keeps its shape and the shadow stays withheld', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(reasoningThenText(DELIVERED), new Error('first reset')),
+          sdkStream(reasoningThenText(DIVERGENT))
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay',
+        streamMaxAttempts: 2
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const stream = response.body
+      if (!stream) throw new Error('expected a streaming response body')
+      const reader = stream.getReader()
+      let delivered = ''
+      const draining = (async () => {
+        while (true) {
+          const item = await reader.read()
+          if (item.done) return
+          delivered += new TextDecoder().decode(item.value)
+        }
+      })()
+
+      await expect(draining).rejects.toMatchObject({
+        name: 'UpstreamUnexpectedError',
+        emittedOutput: true
+      })
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      const frames = sseFrames(delivered)
+      expect(joinedDelta(frames, 'content')).toBe(DELIVERED)
+      expect(joinedDelta(frames, 'reasoning_content')).toBe(THOUGHT)
+      expectNoShadow(delivered)
+      expect(terminalFrames(frames)).toHaveLength(0)
+      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([
+        expect.objectContaining({
+          divergenceChannel: 'text',
+          replayOutcome: 'diverged',
+          matchedVisibleChars: MATCHED_UNTIL
+        })
+      ])
+      expect(records(logs.error, STREAM_FAILURE_LOG)[0]).toMatchObject({
+        outcome: 'terminated_after_output',
+        emittedOutput: true
+      })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row completed tool call: a mid-stream break still delivers no tool prefix to match', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [
+              { reasoningContentEvent: { text: THOUGHT } },
+              {
+                toolUseEvent: {
+                  toolUseId: 'tool-1',
+                  name: 'read_file',
+                  input: '{"path":"/a"}',
+                  stop: true
+                }
+              }
+            ],
+            new Error('reset after a completed tool call')
+          ),
+          sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      // The transformer accumulates tool calls and emits them only after the
+      // event loop drains, so a break can never leave a delivered tool prefix:
+      // `sawToolIntent` is set while `emittedToolCount` stays 0, which routes to
+      // 'none'. The matcher's tool channel is therefore exercised at the
+      // coordinator level, not through this path.
+      await expect(response.text()).rejects.toMatchObject({
+        name: 'UpstreamUnexpectedError',
+        emittedOutput: true
+      })
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+      expect(records(logs.error, STREAM_FAILURE_LOG)[0]).toMatchObject({
+        outcome: 'terminated_after_output',
+        emittedToolCount: 0,
+        sawToolIntent: true
+      })
+      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row raw tool intent: an intent-only break stays terminal instead of replaying', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [
+              { reasoningContentEvent: { text: 'reasoning before tool intent' } },
+              { toolUseEvent: { name: 'read_file', toolUseId: 'tool-1', input: '{"path":"/a' } }
+            ],
+            new Error('tool stream failed')
+          ),
+          sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      // `sawToolIntent` disqualifies Tier A while zero visible text and zero
+      // emitted tools also disqualify Tier B, so `decideRecoveryTier` returns
+      // 'none'. This is deliberately conservative: an unfinished tool intent
+      // leaves nothing for a replay to match against. Pinned so a routing
+      // change cannot pass silently; loosening it is a Phase 3 question.
+      await expect(response.text()).rejects.toMatchObject({
+        name: 'UpstreamUnexpectedError',
+        emittedOutput: true
+      })
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row clean EOF: a truncation after delivered text routes into exact replay', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(reasoningThenText(DELIVERED)),
+          sdkStream(
+            reasoningThenText(`${DELIVERED} continued`, {
+              metadataEvent: { tokenUsage: { outputTokens: 3 } }
+            })
+          )
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const frames = sseFrames(await response.text())
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(joinedDelta(frames, 'content')).toBe(`${DELIVERED} continued`)
+      expect(joinedDelta(frames, 'reasoning_content')).toBe(THOUGHT)
+      expect(terminalFrames(frames)).toHaveLength(1)
+      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([
+        expect.objectContaining({
+          matchedReasoningChars: THOUGHT.length,
+          matchedVisibleChars: DELIVERED.length,
+          divergenceChannel: 'none',
+          replayOutcome: 'caught_up'
+        })
+      ])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row mode ordering: a reasoning-only break under exact_replay never builds a matcher', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [{ reasoningContentEvent: { text: 'partial reasoning' } }],
+            new Error('reasoning reset')
+          ),
+          sdkStream([
+            { reasoningContentEvent: { text: 'restarted reasoning' } },
+            { assistantResponseEvent: { content: 'final answer' } },
+            { metadataEvent: { tokenUsage: { outputTokens: 2 } } }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const frames = sseFrames(await response.text())
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(joinedDelta(frames, 'reasoning_content')).toBe('partial reasoningrestarted reasoning')
+      expect(joinedDelta(frames, 'content')).toBe('final answer')
+      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('exact replay honors stream_max_attempts and logs one telemetry record per replay', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(reasoningThenText(DELIVERED), new Error('first reset')),
+          sdkStream(reasoningThenText(DIVERGENT)),
+          sdkStream(reasoningThenText(DIVERGENT)),
+          sdkStream(reasoningThenText(`${DELIVERED}!`))
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay',
+        streamMaxAttempts: 3
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      await expect(response.text()).rejects.toMatchObject({
+        name: 'UpstreamUnexpectedError',
+        emittedOutput: true
+      })
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+      const telemetry = records(logs.log, REPLAY_TELEMETRY_LOG)
+      expect(telemetry.map((entry) => entry['attempts'])).toEqual([2, 3])
+      expect(telemetry.map((entry) => entry['quotaNote'])).toEqual([
+        'each exact replay attempt consumes one real SDK send',
+        'each exact replay attempt consumes one real SDK send'
+      ])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('exact replay stops at the RetryStrategy iteration budget before stream_max_attempts', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(reasoningThenText(DELIVERED), new Error('first reset')),
+        sdkStream(reasoningThenText(DIVERGENT)),
+        sdkStream(reasoningThenText(`${DELIVERED}!`))
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'exact_replay',
+      streamMaxAttempts: 5,
+      maxRequestIterations: 2
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    await expect(response.text()).rejects.toMatchObject({
+      name: 'UpstreamUnexpectedError',
+      emittedOutput: true
+    })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+  })
+
+  test('caller abort while a shadow replay is withheld releases the queue for the next request', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc, acc],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay'
+      })
+      installImmediateStreamBackoff(handler)
+      const internals = handler as unknown as {
+        makeSdkClient: () => { send: () => Promise<object> }
+      }
+      let sendCalls = 0
+      const shadowWithheld = Promise.withResolvers<void>()
+      internals.makeSdkClient = () => ({
+        send: async () => {
+          sendCalls++
+          if (sendCalls === 1) {
+            return sdkStream(reasoningThenText(DELIVERED), new Error('late reset'))
+          }
+          if (sendCalls === 2) {
+            return {
+              generateAssistantResponseResponse: (async function* () {
+                yield { reasoningContentEvent: { text: THOUGHT } }
+                shadowWithheld.resolve()
+                await new Promise<void>(() => {})
+              })()
+            }
+          }
+          return sdkStream([
+            { assistantResponseEvent: { content: 'later request succeeds' } },
+            { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+          ])
+        }
+      })
+
+      const controller = new AbortController()
+      const response = await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({}), signal: controller.signal },
+        noToast
+      )
+      const reading = response.text()
+
+      await shadowWithheld.promise
+      controller.abort(new DOMException('cancelled while withholding', 'AbortError'))
+
+      await expect(reading).rejects.toMatchObject({ name: 'AbortError' })
+      expect(sendCalls).toBe(2)
+      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([])
+      const next = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      expect(streamedText(await next.text())).toBe('later request succeeds')
+      expect(sendCalls).toBe(3)
     } finally {
       logs.restore()
     }
