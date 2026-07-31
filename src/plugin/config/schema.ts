@@ -121,6 +121,13 @@ export const KiroConfigSchema = z.object({
   sdk_response_timeout_ms: z.number().min(30000).max(600000).default(300000),
 
   /**
+   * Reuse completed SDK HTTP connections across requests. Disabled by default
+   * because Bun can surface stale pooled sockets as mid-stream ECONNRESET.
+   * Active requests remain fully concurrent when this is false.
+   */
+  sdk_http_keep_alive: z.boolean().default(false),
+
+  /**
    * Opt into a fixed inactivity deadline between upstream stream events.
    * Disabled by default because a silent event gap is ambiguous: Kiro may
    * still be performing a valid long-running generation.
@@ -230,6 +237,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   max_request_iterations: 20,
   sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
+  sdk_http_keep_alive: false,
   stream_event_timeout_enabled: false,
   request_timeout_ms: 120000,
   stream_buffer_until_complete: false,

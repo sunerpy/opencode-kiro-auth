@@ -27,6 +27,7 @@ const KIRO_ENV_KEYS = [
   'KIRO_STREAM_MAX_ATTEMPTS',
   'KIRO_SDK_RESPONSE_TIMEOUT_ENABLED',
   'KIRO_SDK_RESPONSE_TIMEOUT_MS',
+  'KIRO_SDK_HTTP_KEEP_ALIVE',
   'KIRO_TOKEN_EXPIRY_BUFFER_MS',
   'KIRO_USAGE_SYNC_MAX_RETRIES',
   'KIRO_AUTH_SERVER_PORT_START',
@@ -101,6 +102,7 @@ describe('loadConfig defaults', () => {
     expect(cfg.stream_max_attempts).toBe(3)
     expect(cfg.sdk_response_timeout_enabled).toBe(false)
     expect(cfg.sdk_response_timeout_ms).toBe(300000)
+    expect(cfg.sdk_http_keep_alive).toBe(false)
     expect(cfg.token_expiry_buffer_ms).toBe(300000)
     expect(cfg.usage_tracking_enabled).toBe(true)
     expect(cfg.auto_sync_kiro_cli).toBe(false)
@@ -154,6 +156,11 @@ describe('loadConfig env overrides', () => {
   test('KIRO_STREAM_EVENT_TIMEOUT_ENABLED opts into a finite stream inactivity wait', () => {
     process.env.KIRO_STREAM_EVENT_TIMEOUT_ENABLED = 'true'
     expect(loadConfig(projectDir).stream_event_timeout_enabled).toBe(true)
+  })
+
+  test('KIRO_SDK_HTTP_KEEP_ALIVE opts into cross-request socket reuse', () => {
+    process.env.KIRO_SDK_HTTP_KEEP_ALIVE = 'true'
+    expect(loadConfig(projectDir).sdk_http_keep_alive).toBe(true)
   })
 
   test('KIRO_STREAM_BUFFER_UNTIL_COMPLETE opts into replay-safe stream delivery', () => {

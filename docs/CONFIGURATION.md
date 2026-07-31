@@ -23,6 +23,7 @@ root [README](../README.md#configuration) for the short version.
   "max_request_iterations": 20,
   "sdk_response_timeout_enabled": false,
   "sdk_response_timeout_ms": 300000,
+  "sdk_http_keep_alive": false,
   "stream_event_timeout_enabled": false,
   "request_timeout_ms": 120000,
   "stream_buffer_until_complete": false,
@@ -107,6 +108,14 @@ because moving a live database during an upgrade is unsafe.
 - `sdk_response_timeout_ms`: Fixed SDK response deadline when
   `sdk_response_timeout_enabled` is `true` (30000-600000ms, default: `300000`).
   Override with `KIRO_SDK_RESPONSE_TIMEOUT_MS`.
+- `sdk_http_keep_alive`: Reuse a completed SDK HTTP connection for a later
+  request (default: `false`). The default gives every request a fresh socket to
+  avoid Bun reusing a stale pooled connection. This does not serialize or cap
+  active streams: the SDK still permits up to 50 concurrent sockets per client,
+  and multiple OpenCode processes remain independent. The tradeoff is one
+  additional TCP/TLS handshake per request. Set this to `true` only when
+  connection reuse has proven stable in your runtime. Override with
+  `KIRO_SDK_HTTP_KEEP_ALIVE`.
 - `stream_event_timeout_enabled`: Opt into a fixed inactivity deadline between
   upstream stream events (default: `false`). It is disabled because high-effort
   models can legitimately compute for several minutes between events, so event

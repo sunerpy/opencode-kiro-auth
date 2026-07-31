@@ -27,6 +27,34 @@ describe('SDK client', () => {
     clearSdkClientCache()
   })
 
+  test('uses fresh sockets without reducing active stream capacity', async () => {
+    clearSdkClientCache()
+
+    const client = createSdkClient(auth(), 'us-east-1')
+    const handlerConfig = await (client.config.requestHandler as any).configProvider
+
+    expect(handlerConfig.httpsAgent.keepAlive).toBe(false)
+    expect(handlerConfig.httpsAgent.maxSockets).toBe(50)
+
+    clearSdkClientCache()
+  })
+
+  test('keeps transport modes in separate client cache entries', async () => {
+    clearSdkClientCache()
+
+    const fresh = createSdkClient(auth(), 'us-east-1', undefined, { keepAlive: false })
+    const reused = createSdkClient(auth(), 'us-east-1', undefined, { keepAlive: true })
+    const reusedAgain = createSdkClient(auth(), 'us-east-1', undefined, { keepAlive: true })
+    const reusedConfig = await (reused.config.requestHandler as any).configProvider
+
+    expect(fresh).not.toBe(reused)
+    expect(reusedAgain).toBe(reused)
+    expect(reusedConfig.httpsAgent.keepAlive).toBe(true)
+    expect(reusedConfig.httpsAgent.maxSockets).toBe(50)
+
+    clearSdkClientCache()
+  })
+
   test('injects effort before content-length is computed', async () => {
     clearSdkClientCache()
 

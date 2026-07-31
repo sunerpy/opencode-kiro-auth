@@ -199,6 +199,8 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       config.sdk_response_timeout_ms
     ),
 
+    sdk_http_keep_alive: parseBooleanEnv(env.KIRO_SDK_HTTP_KEEP_ALIVE, config.sdk_http_keep_alive),
+
     stream_event_timeout_enabled: parseBooleanEnv(
       env.KIRO_STREAM_EVENT_TIMEOUT_ENABLED,
       config.stream_event_timeout_enabled

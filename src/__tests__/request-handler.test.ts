@@ -62,6 +62,7 @@ const baseConfig = {
   stream_max_attempts: 3,
   sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
+  sdk_http_keep_alive: false,
   rate_limit_max_retries: 3,
   rate_limit_retry_delay_ms: 100,
   enable_log_effort_debug: false,
@@ -355,6 +356,11 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
           accountId: 'A',
           streamAttempt: 1,
           maxStreamAttempts: 3,
+          sdkHttpKeepAlive: false,
+          processId: process.pid,
+          bunVersion: process.versions.bun,
+          upstreamEventCount: 0,
+          streamElapsedMs: expect.any(Number),
           nextAttempt: 2,
           delayMs: 250,
           nextAccount: 'A@example.com'
@@ -369,6 +375,11 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
           accountId: 'A',
           streamAttempt: 2,
           maxStreamAttempts: 3,
+          sdkHttpKeepAlive: false,
+          processId: process.pid,
+          bunVersion: process.versions.bun,
+          upstreamEventCount: 0,
+          streamElapsedMs: expect.any(Number),
           attempts: 2
         })
       )

@@ -232,6 +232,8 @@ export class RequestHandler {
           handlerContext.disableReasoningReplay === true
         )
         const streamAttempt = streamFailureCount + 1
+        const streamAttemptStartedAt = Date.now()
+        let upstreamEventCount = 0
         const streamLogDetails = (
           details: Record<string, unknown> = {}
         ): Record<string, unknown> => ({
@@ -244,6 +246,11 @@ export class RequestHandler {
           streamAttempt,
           maxStreamAttempts: this.config.stream_max_attempts,
           streamDeliveryMode: this.config.stream_buffer_until_complete ? 'buffered' : 'live',
+          sdkHttpKeepAlive: this.config.sdk_http_keep_alive,
+          processId: process.pid,
+          bunVersion: process.versions.bun,
+          upstreamEventCount,
+          streamElapsedMs: Date.now() - streamAttemptStartedAt,
           ...details
         })
 
@@ -336,6 +343,7 @@ export class RequestHandler {
             {
               signal,
               onUpstreamWaitStart: ({ eventIndex }) => {
+                upstreamEventCount = eventIndex
                 if (eventIndex === 0) {
                   if (!this.config.sdk_response_timeout_enabled) endUpstreamWait()
                   return
@@ -528,7 +536,9 @@ export class RequestHandler {
    * identical to calling createSdkClient directly.
    */
   private makeSdkClient(auth: KiroAuthDetails, region: string, effort?: any): any {
-    return createSdkClient(auth, region, effort)
+    return createSdkClient(auth, region, effort, {
+      keepAlive: this.config.sdk_http_keep_alive
+    })
   }
 
   private prepareSdkRequest(
