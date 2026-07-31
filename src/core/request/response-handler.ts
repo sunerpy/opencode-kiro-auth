@@ -7,6 +7,7 @@ import { parseEventStream } from '../../plugin/response'
 import { transformKiroStream } from '../../plugin/streaming/index.js'
 import { ReasoningAccumulator } from '../../plugin/streaming/reasoning-accumulator.js'
 import { transformSdkStream } from '../../plugin/streaming/sdk-stream-transformer.js'
+import type { StreamObserver } from '../../plugin/streaming/stream-observer.js'
 import type { KiroReasoningContent } from '../../plugin/types.js'
 import { SdkEventStreamIterationError } from './stream-error.js'
 
@@ -43,6 +44,11 @@ export interface SdkResponseLifecycle {
   /** Loop root recovered from inbound history, if any. */
   inheritedLoopId?: string
   effectiveModel?: string
+  /**
+   * Owned by the caller so the ingestion-time signals stay readable after this
+   * attempt fails — the streaming branch only feeds it.
+   */
+  streamObserver?: StreamObserver
 }
 
 interface WrappedSdkStream {
@@ -279,7 +285,13 @@ export class ResponseHandler {
     )
     const reasoning = new ReasoningAccumulator()
     const emitted = new EmittedOutputAccumulator()
-    const transformed = transformSdkStream(wrapped.response, model, conversationId, reasoning)
+    const transformed = transformSdkStream(
+      wrapped.response,
+      model,
+      conversationId,
+      reasoning,
+      lifecycle.streamObserver
+    )
     const buffered: Uint8Array[] = []
     // One shared publication point for all three completion paths. Duplicating it
     // per site is how the live pull-driven path silently stops populating.

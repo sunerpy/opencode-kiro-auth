@@ -3,6 +3,7 @@ import { estimateTokens } from '../response.js'
 import { DialectGate } from './dialect-gate.js'
 import { convertToOpenAI } from './openai-converter.js'
 import type { ReasoningAccumulator, ReasoningContentEventLike } from './reasoning-accumulator.js'
+import type { StreamObserver } from './stream-observer.js'
 import { findRealTag } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
 import {
@@ -13,11 +14,18 @@ import {
   ToolCallState
 } from './types.js'
 
+/**
+ * `reasoningAccumulator` and `observer` are optional write-only collaborators:
+ * the transformer feeds them and never reads them back, so neither can change
+ * an emitted chunk. They stay separate trailing parameters rather than one
+ * options bag because every existing call site passes positionally.
+ */
 export async function* transformSdkStream(
   sdkResponse: any,
   model: string,
   conversationId: string,
-  reasoningAccumulator?: ReasoningAccumulator
+  reasoningAccumulator?: ReasoningAccumulator,
+  observer?: StreamObserver
 ): AsyncGenerator<any> {
   const thinkingRequested = true
 
@@ -45,6 +53,7 @@ export async function* transformSdkStream(
   const toChunk = (ev: StreamEvent): any => {
     if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
       const safe = dialectGate.push(ev.delta.text ?? '')
+      if (dialectGate.suppressing) observer?.noteDialectToolIntent()
       if (!safe) return null
       const gated: StreamEvent = { ...ev, delta: { ...ev.delta, text: safe } }
       return convertToOpenAI(gated, conversationId, model)
@@ -78,6 +87,7 @@ export async function* transformSdkStream(
           reasoningClosed = false
         }
         reasoningStarted = true
+        observer?.noteReasoningStarted()
         for (const ev of createThinkingDeltaEvents(reasoningText, streamState)) {
           const _c = convertToOpenAI(ev, conversationId, model)
           if (_c !== null) yield _c
@@ -96,6 +106,7 @@ export async function* transformSdkStream(
           if (_c !== null) yield _c
         }
         reasoningClosed = true
+        observer?.noteReasoningEnded()
       }
 
       if (reasoningStarted) {
@@ -129,6 +140,7 @@ export async function* transformSdkStream(
             }
             streamState.buffer = streamState.buffer.slice(startPos + THINKING_START_TAG.length)
             streamState.inThinking = true
+            observer?.noteReasoningStarted()
             continue
           }
 
@@ -153,6 +165,7 @@ export async function* transformSdkStream(
             streamState.buffer = streamState.buffer.slice(endPos + THINKING_END_TAG.length)
             streamState.inThinking = false
             streamState.thinkingExtracted = true
+            observer?.noteReasoningEnded()
             deltaEvents.push(...createThinkingDeltaEvents('', streamState))
             deltaEvents.push(...stopBlock(streamState.thinkingBlockIndex, streamState))
             if (streamState.buffer.startsWith('\n\n')) {
@@ -188,6 +201,9 @@ export async function* transformSdkStream(
       }
     } else if (event.toolUseEvent) {
       const tc = event.toolUseEvent
+      // Tool intent is recorded at ingestion, not at the end-of-stream flush below:
+      // a stream that dies here has tool intent but zero emitted tool_calls.
+      observer?.noteRawToolIntent()
 
       if (tc.name && tc.toolUseId) {
         if (currentToolCall && currentToolCall.toolUseId === tc.toolUseId) {
@@ -229,6 +245,7 @@ export async function* transformSdkStream(
       if (_c !== null) yield _c
     }
     reasoningClosed = true
+    observer?.noteReasoningEnded()
   }
 
   if (thinkingRequested && streamState.buffer) {
@@ -246,6 +263,7 @@ export async function* transformSdkStream(
         const _c = convertToOpenAI(ev, conversationId, model)
         if (_c !== null) yield _c
       }
+      observer?.noteReasoningEnded()
     } else {
       for (const ev of createTextDeltaEvents(streamState.buffer, streamState)) {
         const _c = toChunk(ev)
