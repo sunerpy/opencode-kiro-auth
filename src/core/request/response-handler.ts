@@ -220,23 +220,15 @@ class SemanticStreamTruncationError extends Error {
   readonly name = 'SemanticStreamTruncationError'
 
   constructor() {
-    super('Kiro SDK event stream ended without completion metadata after semantic output')
+    super('Kiro SDK event stream ended with an unclosed tool intent')
   }
 }
 
 function isSemanticTruncation(
   mode: StreamRecoveryMode,
-  wrapped: WrappedSdkStream,
-  emitted: EmittedOutputAccumulator,
   observer: StreamObserver | undefined
 ): boolean {
-  return (
-    mode !== 'off' &&
-    !wrapped.completionMetadataSeen() &&
-    (emitted.reasoningText.length > 0 || emitted.visibleText.length > 0) &&
-    emitted.toolUses().length === 0 &&
-    observer?.sawToolIntent !== true
-  )
+  return mode !== 'off' && observer?.hasOpenToolIntent === true
 }
 
 function bufferedSseResponse(chunks: Uint8Array[]): Response {
@@ -314,7 +306,7 @@ export class ResponseHandler {
       const item = await transformed.next()
       if (item.done) {
         if (!wrapped.completionMetadataSeen()) lifecycle.onCleanEofWithoutCompletionMetadata?.()
-        if (isSemanticTruncation(recoveryMode, wrapped, emitted, lifecycle.streamObserver)) {
+        if (isSemanticTruncation(recoveryMode, lifecycle.streamObserver)) {
           throw new SdkEventStreamIterationError(new SemanticStreamTruncationError())
         }
         drained = true
@@ -447,14 +439,7 @@ export class ResponseHandler {
     // marker fires here, before completion, rather than at each `item.done`.
     const complete = async (): Promise<void> => {
       if (!wrapped.completionMetadataSeen()) lifecycle.onCleanEofWithoutCompletionMetadata?.()
-      if (
-        isSemanticTruncation(
-          lifecycle.recoveryMode ?? 'off',
-          wrapped,
-          emitted,
-          lifecycle.streamObserver
-        )
-      ) {
+      if (isSemanticTruncation(lifecycle.recoveryMode ?? 'off', lifecycle.streamObserver)) {
         throw new SdkEventStreamIterationError(new SemanticStreamTruncationError())
       }
       return this.fireCompletion(lifecycle, reasoning, emitted, model, false)
@@ -609,7 +594,7 @@ export class ResponseHandler {
             toolCalls.push(event.toolUseEvent)
           }
           if (event.metadataEvent?.tokenUsage) {
-            inputTokens = event.metadataEvent.tokenUsage.inputTokens || 0
+            inputTokens = event.metadataEvent.tokenUsage.uncachedInputTokens || 0
             outputTokens = event.metadataEvent.tokenUsage.outputTokens || 0
           }
         }

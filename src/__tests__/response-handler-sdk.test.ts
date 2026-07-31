@@ -31,7 +31,11 @@ describe('handleSdkSuccess — non-streaming', () => {
     const events = [
       { assistantResponseEvent: { content: 'Hello ' } },
       { assistantResponseEvent: { content: 'world' } },
-      { metadataEvent: { tokenUsage: { inputTokens: 12, outputTokens: 3 } } }
+      {
+        metadataEvent: {
+          tokenUsage: { uncachedInputTokens: 12, outputTokens: 3, totalTokens: 15 }
+        }
+      }
     ]
     const response = await new ResponseHandler().handleSdkSuccess(
       makeSdkResponse(events),

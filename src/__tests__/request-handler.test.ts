@@ -1262,17 +1262,16 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
   })
 
-  test('clean EOF after reasoning is a recoverable semantic truncation in recovery mode', async () => {
-    const acc = makeAccount({ id: 'A' })
+  test('healthy reasoning and text without metadata completes without recovery', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
     const { handler, fakes } = buildHandler({
       selectResults: [acc],
       sdkResults: [
-        sdkStream([{ reasoningContentEvent: { text: 'truncated reasoning' } }]),
         sdkStream([
-          { reasoningContentEvent: { text: 'replacement reasoning' } },
-          { assistantResponseEvent: { content: 'replacement answer' } },
-          { metadataEvent: { tokenUsage: { outputTokens: 2, totalTokens: 2 } } }
-        ])
+          { reasoningContentEvent: { text: 'complete reasoning' } },
+          { assistantResponseEvent: { content: 'complete answer' } }
+        ]),
+        sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
       ],
       streaming: true,
       useRealResponseHandler: true,
@@ -1283,10 +1282,12 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
     const body = await response.text()
 
-    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
-    expect(body).toContain('truncated reasoning')
-    expect(body).toContain('replacement answer')
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+    expect(body).toContain('complete reasoning')
+    expect(streamedText(body)).toBe('complete answer')
     expect(body.split('"finish_reason":"stop"')).toHaveLength(2)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+    expect(acc.failCount).toBe(0)
   })
 
   test('reasoning restart honors stream_max_attempts across initial and recovery sends', async () => {
@@ -1596,6 +1597,18 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
     { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
   ]
 
+  const incompleteSignedToolEvents = (label: string): unknown[] => [
+    { reasoningContentEvent: { text: `reasoning-${label}` } },
+    { reasoningContentEvent: { signature: `signature-${label}` } },
+    {
+      toolUseEvent: {
+        name: 'read_file',
+        toolUseId: `tool-${label}`,
+        input: `{"path":"/${label}`
+      }
+    }
+  ]
+
   const lookupSignedTool = (label: string) =>
     reasoningCorrelationCache.lookup({
       reasoningText: `reasoning-${label}`,
@@ -1609,6 +1622,88 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
       ],
       effectiveModel: 'claude-sonnet-4-5'
     })
+
+  const lookupIncompleteSignedTool = (label: string) =>
+    reasoningCorrelationCache.lookup({
+      reasoningText: `reasoning-${label}`,
+      visibleText: '',
+      toolUses: [
+        {
+          toolUseId: `tool-${label}`,
+          name: 'read_file',
+          argumentsJson: `{"path":"/${label}`
+        }
+      ],
+      effectiveModel: 'claude-sonnet-4-5'
+    })
+
+  for (const mode of ['reasoning_restart', 'exact_replay'] as const) {
+    test(`an unclosed signed raw tool intent fails before completion in ${mode}`, async () => {
+      const label = `f1-${mode}`
+      const acc = makeAccount({ id: 'A', failCount: 4, unhealthyReason: 'transient' })
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream(incompleteSignedToolEvents(label))],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: mode,
+        streamMaxAttempts: 1
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const stream = response.body
+      if (!stream) throw new Error('expected a streaming response body')
+      const reader = stream.getReader()
+      let delivered = ''
+      const draining = (async () => {
+        while (true) {
+          const item = await reader.read()
+          if (item.done) return
+          delivered += new TextDecoder().decode(item.value)
+        }
+      })()
+
+      await expect(draining).rejects.toMatchObject({
+        name: 'UpstreamUnexpectedError',
+        cause: {
+          name: 'SdkEventStreamIterationError',
+          cause: { name: 'SemanticStreamTruncationError' }
+        },
+        emittedOutput: true
+      })
+      expect(delivered).not.toContain('"finish_reason":"tool_calls"')
+      expect(delivered).not.toContain('"finish_reason":"stop"')
+      expect(lookupIncompleteSignedTool(label).refusal).toBe('miss')
+      expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+      expect(acc.failCount).toBe(4)
+      expect(acc.unhealthyReason).toBe('transient')
+    })
+  }
+
+  test('off mode preserves the synthetic completion for an unclosed signed raw tool intent', async () => {
+    const label = 'f1-off'
+    const acc = makeAccount({ id: 'A', failCount: 4, unhealthyReason: 'transient' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [sdkStream(incompleteSignedToolEvents(label))],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'off'
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+
+    expect(body).toContain('"finish_reason":"tool_calls"')
+    expect(lookupIncompleteSignedTool(label).envelope).toEqual({
+      kind: 'reasoningText',
+      text: `reasoning-${label}`,
+      signature: `signature-${label}`
+    })
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+    expect(acc.failCount).toBe(0)
+    expect(acc.unhealthyReason).toBeUndefined()
+  })
 
   test('two healthy concurrent requests on one account both publish their envelopes', async () => {
     const acc = makeAccount({ id: 'A' })
@@ -2980,6 +3075,53 @@ describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix',
     }
   })
 
+  test('an unresolved dialect marker ends as a typed stream failure without a terminal chunk', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 3, unhealthyReason: 'transient' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([
+          { reasoningContentEvent: { text: 'signed-off reasoning' } },
+          {
+            assistantResponseEvent: {
+              content: '<invoke name="read_file"><parameter name="path">/unfinished'
+            }
+          }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart',
+      streamMaxAttempts: 1
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const stream = response.body
+    if (!stream) throw new Error('expected a streaming response body')
+    const reader = stream.getReader()
+    let delivered = ''
+    const draining = (async () => {
+      while (true) {
+        const item = await reader.read()
+        if (item.done) return
+        delivered += new TextDecoder().decode(item.value)
+      }
+    })()
+
+    await expect(draining).rejects.toMatchObject({
+      name: 'UpstreamUnexpectedError',
+      cause: {
+        name: 'SdkEventStreamIterationError',
+        cause: { name: 'SemanticStreamTruncationError' }
+      }
+    })
+    expect(delivered).not.toContain('"finish_reason":"stop"')
+    expect(delivered).not.toContain('"finish_reason":"tool_calls"')
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+    expect(acc.failCount).toBe(3)
+    expect(acc.unhealthyReason).toBe('transient')
+  })
+
   test('a recovered stream is one well-framed SSE sequence with a single terminal chunk', async () => {
     const acc = makeAccount({ id: 'A' })
     const { handler } = buildHandler({
@@ -3276,7 +3418,7 @@ describe('RequestHandler.handle — §9 Tier B exact-replay fault-injection matr
     }
   })
 
-  test('row clean EOF: a truncation after delivered text routes into exact replay', async () => {
+  test('row clean EOF: healthy reasoning and text without metadata skips exact replay', async () => {
     const acc = makeAccount({ id: 'A' })
     const logs = captureLogger()
     try {
@@ -3284,11 +3426,7 @@ describe('RequestHandler.handle — §9 Tier B exact-replay fault-injection matr
         selectResults: [acc],
         sdkResults: [
           sdkStream(reasoningThenText(DELIVERED)),
-          sdkStream(
-            reasoningThenText(`${DELIVERED} continued`, {
-              metadataEvent: { tokenUsage: { outputTokens: 3 } }
-            })
-          )
+          sdkStream(reasoningThenText('must not be sent'))
         ],
         streaming: true,
         useRealResponseHandler: true,
@@ -3299,18 +3437,11 @@ describe('RequestHandler.handle — §9 Tier B exact-replay fault-injection matr
       const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
       const frames = sseFrames(await response.text())
 
-      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
-      expect(joinedDelta(frames, 'content')).toBe(`${DELIVERED} continued`)
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+      expect(joinedDelta(frames, 'content')).toBe(DELIVERED)
       expect(joinedDelta(frames, 'reasoning_content')).toBe(THOUGHT)
       expect(terminalFrames(frames)).toHaveLength(1)
-      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([
-        expect.objectContaining({
-          matchedReasoningChars: THOUGHT.length,
-          matchedVisibleChars: DELIVERED.length,
-          divergenceChannel: 'none',
-          replayOutcome: 'caught_up'
-        })
-      ])
+      expect(records(logs.log, REPLAY_TELEMETRY_LOG)).toEqual([])
     } finally {
       logs.restore()
     }

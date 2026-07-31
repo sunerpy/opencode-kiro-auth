@@ -203,7 +203,7 @@ export async function* transformSdkStream(
       const tc = event.toolUseEvent
       // Tool intent is recorded at ingestion, not at the end-of-stream flush below:
       // a stream that dies here has tool intent but zero emitted tool_calls.
-      observer?.noteRawToolIntent()
+      observer?.noteRawToolIntent(tc.toolUseId, tc.stop === true)
 
       if (tc.name && tc.toolUseId) {
         if (currentToolCall && currentToolCall.toolUseId === tc.toolUseId) {
@@ -274,6 +274,7 @@ export async function* transformSdkStream(
   }
 
   const { toolCalls: dialectToolCalls, remainderText } = dialectGate.finalize()
+  observer?.noteDialectToolResolution(dialectToolCalls.length > 0)
   if (remainderText) {
     for (const ev of createTextDeltaEvents(remainderText, streamState)) {
       const _c = convertToOpenAI(ev, conversationId, model)

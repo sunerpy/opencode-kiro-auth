@@ -15,6 +15,8 @@ export interface StreamObservedState {
    * the dialect gate.
    */
   sawToolIntent: boolean
+  /** True while a raw or dialect tool intent has not reached a valid close signal. */
+  hasOpenToolIntent: boolean
   reasoningPhase: ReasoningPhase
   /** True once the dialect gate started withholding text (a marker appeared). */
   dialectActive: boolean
@@ -32,18 +34,33 @@ export interface StreamObservedState {
  */
 export class StreamObserver {
   private toolIntent = false
+  private readonly openRawToolIntents = new Set<string>()
+  private anonymousRawToolIntent = false
+  private dialectToolIntentOpen = false
   private phase: ReasoningPhase = 'none'
   private dialect = false
 
-  /** A raw SDK `toolUseEvent`-family event arrived (name/id completeness irrelevant). */
-  noteRawToolIntent(): void {
+  /** A raw SDK tool sequence advanced; only `stop: true` closes that sequence. */
+  noteRawToolIntent(toolUseId: string | undefined, closed: boolean): void {
     this.toolIntent = true
+    if (toolUseId) {
+      if (closed) this.openRawToolIntents.delete(toolUseId)
+      else this.openRawToolIntents.add(toolUseId)
+      return
+    }
+    this.anonymousRawToolIntent = !closed
   }
 
   /** The dialect gate observed a text-dialect tool-call opening marker. */
   noteDialectToolIntent(): void {
     this.dialect = true
+    this.dialectToolIntentOpen = true
     this.toolIntent = true
+  }
+
+  /** Records whether finalization resolved the observed marker into a complete call. */
+  noteDialectToolResolution(hasCompleteToolCall: boolean): void {
+    if (this.dialect && hasCompleteToolCall) this.dialectToolIntentOpen = false
   }
 
   /** A reasoning/thinking block opened (native reasoning run or inline tag). */
@@ -60,6 +77,12 @@ export class StreamObserver {
     return this.toolIntent
   }
 
+  get hasOpenToolIntent(): boolean {
+    return (
+      this.openRawToolIntents.size > 0 || this.anonymousRawToolIntent || this.dialectToolIntentOpen
+    )
+  }
+
   get reasoningPhase(): ReasoningPhase {
     return this.phase
   }
@@ -71,6 +94,7 @@ export class StreamObserver {
   snapshot(): StreamObservedState {
     return {
       sawToolIntent: this.toolIntent,
+      hasOpenToolIntent: this.hasOpenToolIntent,
       reasoningPhase: this.phase,
       dialectActive: this.dialect
     }

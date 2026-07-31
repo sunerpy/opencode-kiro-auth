@@ -103,6 +103,7 @@ describe('StreamObserver — ingestion-time tool intent', () => {
     expect(broke).toBe(true)
     expect(toolCallChunks(chunks).length).toBe(0)
     expect(observer.sawToolIntent).toBe(true)
+    expect(observer.hasOpenToolIntent).toBe(true)
     expect(observer.snapshot().sawToolIntent).toBe(true)
   })
 
@@ -116,6 +117,7 @@ describe('StreamObserver — ingestion-time tool intent', () => {
 
     expect(toolCallChunks(chunks).length).toBe(0)
     expect(observer.sawToolIntent).toBe(true)
+    expect(observer.hasOpenToolIntent).toBe(true)
   })
 
   test('text-dialect tool marker then stream break: sawToolIntent and dialectActive true', async () => {
@@ -132,6 +134,7 @@ describe('StreamObserver — ingestion-time tool intent', () => {
     expect(toolCallChunks(chunks).length).toBe(0)
     expect(observer.dialectActive).toBe(true)
     expect(observer.sawToolIntent).toBe(true)
+    expect(observer.hasOpenToolIntent).toBe(true)
     // The dialect span itself must never have been streamed as visible text.
     const visible = chunks.map((c) => contentOf(c) ?? '').join('')
     expect(visible).not.toContain('<invoke')
@@ -146,6 +149,7 @@ describe('StreamObserver — ingestion-time tool intent', () => {
 
     expect(observer.dialectActive).toBe(true)
     expect(observer.sawToolIntent).toBe(true)
+    expect(observer.hasOpenToolIntent).toBe(true)
   })
 })
 
@@ -190,6 +194,7 @@ describe('StreamObserver — reasoning phase', () => {
     expect(observer.reasoningPhase).toBe('none')
     expect(observer.snapshot()).toEqual({
       sawToolIntent: false,
+      hasOpenToolIntent: false,
       reasoningPhase: 'none',
       dialectActive: false
     })
