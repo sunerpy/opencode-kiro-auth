@@ -288,7 +288,8 @@ export class ResponseHandler {
       model,
       conversationId,
       reasoning,
-      lifecycle.streamObserver
+      lifecycle.streamObserver,
+      recoveryMode !== 'off'
     )
     const prefetched: unknown[] = []
     let prefetchIndex = 0
@@ -430,7 +431,8 @@ export class ResponseHandler {
       model,
       conversationId,
       reasoning,
-      lifecycle.streamObserver
+      lifecycle.streamObserver,
+      (lifecycle.recoveryMode ?? 'off') !== 'off'
     )
     const buffered: Uint8Array[] = []
     // One shared publication point for all three completion paths. Duplicating it

@@ -14,12 +14,39 @@ function makeSdkResponse(events: any[]): any {
   }
 }
 
-async function collectSdkChunks(events: any[]): Promise<any[]> {
+async function collectSdkChunks(
+  events: any[],
+  suppressIncompleteDialect?: boolean
+): Promise<any[]> {
   const chunks: any[] = []
-  for await (const chunk of transformSdkStream(makeSdkResponse(events), 'auto', 'chatcmpl-test')) {
+  for await (const chunk of transformSdkStream(
+    makeSdkResponse(events),
+    'auto',
+    'chatcmpl-test',
+    undefined,
+    undefined,
+    suppressIncompleteDialect
+  )) {
     chunks.push(chunk)
   }
   return chunks
+}
+
+function joinedContent(chunks: any[]): string {
+  return chunks
+    .map((c) => contentOf(c))
+    .filter((s): s is string => s !== undefined)
+    .join('')
+}
+
+function toolCallChunks(chunks: any[]): any[] {
+  return chunks.filter((c) => c?.choices?.[0]?.delta?.tool_calls !== undefined)
+}
+
+function finishReasons(chunks: any[]): unknown[] {
+  return chunks
+    .map((c) => c?.choices?.[0]?.finish_reason)
+    .filter((r) => r !== null && r !== undefined)
 }
 
 function contentOf(chunk: any): string | undefined {
@@ -219,5 +246,105 @@ describe('streaming suppression — no dialect leaks into delta.content', () => 
       .join('')
     expect(streamed).toBe('Hello world, no tools here.')
     expect(toolStartChunks(chunks).length).toBe(0)
+  })
+})
+
+describe('transformSdkStream — suppressIncompleteDialect', () => {
+  const MIXED_DIALECT =
+    '<invoke name="read"><parameter name="path">/kept</parameter></invoke>' +
+    '<invoke name="write"><parameter name="path">/truncated'
+
+  test('Given a mixed complete+truncated dialect, When suppression is on, Then nothing from the span is emitted', async () => {
+    const chunks = await collectSdkChunks(
+      [{ assistantResponseEvent: { content: MIXED_DIALECT } }],
+      true
+    )
+
+    const content = joinedContent(chunks)
+    expect(content).not.toContain('<invoke')
+    expect(content).not.toContain('parameter name')
+    expect(content).not.toContain('/truncated')
+    expect(toolCallChunks(chunks).length).toBe(0)
+    expect(finishReasons(chunks)).toEqual(['stop'])
+  })
+
+  test('Given the same dialect, When suppression is off, Then the historical leak is preserved', async () => {
+    const chunks = await collectSdkChunks(
+      [{ assistantResponseEvent: { content: MIXED_DIALECT } }],
+      false
+    )
+
+    const content = joinedContent(chunks)
+    expect(content).toContain('<invoke name="write"')
+    expect(content).toContain('/truncated')
+    expect(toolStartChunks(chunks).length).toBe(1)
+    expect(toolStartChunks(chunks)[0]!.choices[0].delta.tool_calls[0].function.name).toBe('read')
+    expect(finishReasons(chunks)).toEqual(['tool_calls'])
+  })
+
+  test('Given suppression is off, When the flag is omitted, Then the chunk sequence is identical', async () => {
+    const stamp = (chunks: any[]): string =>
+      JSON.stringify(chunks, (key, value) => {
+        if (key === 'created') return 0
+        // Run-scoped: the parser mints `tool_<ts>_<rand>` for a dialect call the
+        // upstream never gave an id, so it is not part of the emit contract.
+        if (key === 'id' && typeof value === 'string' && /^tool_\d+_[a-z0-9]+$/.test(value)) {
+          return 'tool_synthetic'
+        }
+        return value
+      })
+
+    const omitted = await collectSdkChunks([{ assistantResponseEvent: { content: MIXED_DIALECT } }])
+    const explicit = await collectSdkChunks(
+      [{ assistantResponseEvent: { content: MIXED_DIALECT } }],
+      false
+    )
+
+    expect(stamp(explicit)).toBe(stamp(omitted))
+  })
+
+  test('Given a truncated dialect alongside a closed raw tool call, When suppression is on, Then the partial tool set is withheld', async () => {
+    const chunks = await collectSdkChunks(
+      [
+        {
+          toolUseEvent: { toolUseId: 'tu-1', name: 'grep', input: '{"q":"x"}', stop: true }
+        },
+        { assistantResponseEvent: { content: '<invoke name="write"><parameter name="path">/half' } }
+      ],
+      true
+    )
+
+    expect(toolCallChunks(chunks).length).toBe(0)
+    expect(joinedContent(chunks)).not.toContain('<invoke')
+    expect(finishReasons(chunks)).toEqual(['stop'])
+  })
+
+  test('Given a fully resolved dialect with trailing text, When suppression is on, Then both the tool call and the remainder are emitted', async () => {
+    const chunks = await collectSdkChunks(
+      [
+        {
+          assistantResponseEvent: {
+            content:
+              '<invoke name="read"><parameter name="path">/kept</parameter></invoke> all done'
+          }
+        }
+      ],
+      true
+    )
+
+    expect(joinedContent(chunks)).toBe(' all done')
+    expect(toolStartChunks(chunks).length).toBe(1)
+    expect(toolStartChunks(chunks)[0]!.choices[0].delta.tool_calls[0].function.name).toBe('read')
+    expect(finishReasons(chunks)).toEqual(['tool_calls'])
+  })
+
+  test('Given a code-region-only marker, When suppression is on, Then the text streams verbatim', async () => {
+    const content =
+      'Example:\n```xml\n<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>\n```'
+    const chunks = await collectSdkChunks([{ assistantResponseEvent: { content } }], true)
+
+    expect(joinedContent(chunks)).toBe(content)
+    expect(toolCallChunks(chunks).length).toBe(0)
+    expect(finishReasons(chunks)).toEqual(['stop'])
   })
 })

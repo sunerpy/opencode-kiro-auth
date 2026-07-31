@@ -1755,6 +1755,12 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
         })
         expect(delivered).not.toContain('"finish_reason":"tool_calls"')
         expect(delivered).not.toContain('"finish_reason":"stop"')
+        // Zero leakage: neither the half-parsed span nor the resolved sibling call
+        // may reach the consumer on a turn declared semantically truncated.
+        expect(delivered).not.toContain('<invoke')
+        expect(delivered).not.toContain('parameter name')
+        expect(delivered).not.toContain('/truncated')
+        expect(delivered).not.toContain('tool_calls')
         expect(publish).toHaveBeenCalledTimes(0)
         expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
         expect(acc.failCount).toBe(4)
@@ -1781,7 +1787,12 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
       const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
       const body = await response.text()
 
+      // `off` keeps the documented carve-out verbatim, leak included: the truncated
+      // span streams as visible text and the resolved sibling call still ships.
       expect(body).toContain('/truncated')
+      expect(body).toContain('<invoke name=\\"write_file\\"')
+      expect(body).toContain('parameter name')
+      expect(body).toContain('"name":"read_file"')
       expect(body).toContain('"finish_reason":"tool_calls"')
       expect(publish).toHaveBeenCalledTimes(1)
       expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
@@ -1799,7 +1810,12 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
     try {
       const { handler, fakes } = buildHandler({
         selectResults: [acc],
-        sdkResults: [sdkStream(signedDialectEvents(label, false))],
+        sdkResults: [
+          sdkStream([
+            ...signedDialectEvents(label, false),
+            { assistantResponseEvent: { content: ` trailing-${label}` } }
+          ])
+        ],
         streaming: true,
         useRealResponseHandler: true,
         streamRecoveryMode: 'reasoning_restart'
@@ -1809,6 +1825,10 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
       const body = await response.text()
 
       expect(body).not.toContain('<invoke')
+      // Suppression is scoped to `incomplete`: a resolved span still delivers both
+      // its remainder text and its tool call.
+      expect(body).toContain(`trailing-${label}`)
+      expect(body).toContain('"name":"read_file"')
       expect(body).toContain('"finish_reason":"tool_calls"')
       expect(publish).toHaveBeenCalledTimes(1)
       expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
