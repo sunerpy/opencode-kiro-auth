@@ -77,11 +77,20 @@ export function cleanToolCallsFromText(text: string, toolCalls: ToolCall[]): str
 // deepseek DSML opening marker — the exact U+FF5C ('｜') form observed leaking.
 export const DSML_MARKER = '<\uFF5CDSML\uFF5Cfunction_calls'
 
+export const TEXT_TOOL_CALL_OPENING_MARKERS = [
+  '<function_calls',
+  '<invoke name=',
+  DSML_MARKER
+] as const
+
+export type DialectToolResolution = 'none' | 'complete' | 'incomplete'
+
 /** A matched dialect span in `text`, with the tool calls it yields (may be empty for strip-only). */
 interface DialectMatch {
   start: number
   end: number
   toolCalls: ToolCall[]
+  resolvedOpeningStarts: number[]
 }
 
 function genToolUseId(): string {
@@ -114,6 +123,26 @@ function computeCodeRanges(text: string): Array<[number, number]> {
 
 function overlapsCode(start: number, end: number, codeRanges: Array<[number, number]>): boolean {
   return codeRanges.some(([s, e]) => start < e && end > s)
+}
+
+function openingMarkerStarts(text: string, codeRanges: Array<[number, number]>): number[] {
+  const starts: number[] = []
+  for (const marker of TEXT_TOOL_CALL_OPENING_MARKERS) {
+    let from = 0
+    for (;;) {
+      const start = text.indexOf(marker, from)
+      if (start === -1) break
+      const end = start + marker.length
+      if (!overlapsCode(start, end, codeRanges)) starts.push(start)
+      from = end
+    }
+  }
+  return starts
+}
+
+export function firstTextToolCallOpeningMarkerIndex(text: string): number {
+  const starts = openingMarkerStarts(text, computeCodeRanges(text))
+  return starts.length === 0 ? -1 : Math.min(...starts)
 }
 
 function overlapsClaimed(start: number, end: number, claimed: Array<[number, number]>): boolean {
@@ -171,16 +200,18 @@ function matchAnthropicXml(
 
     const invokeRe = /<invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/invoke>/g
     const toolCalls: ToolCall[] = []
+    const resolvedOpeningStarts = [start]
     let im: RegExpExecArray | null
     while ((im = invokeRe.exec(bm[0])) !== null) {
       const name = im[1]
       if (!name) continue
       toolCalls.push(toolCallFromInvoke(name, im[2] ?? ''))
+      resolvedOpeningStarts.push(start + im.index)
     }
     // Only treat as a tool-call span if at least one invoke parsed; otherwise
     // it is not a real dialect payload — leave the text untouched.
     if (toolCalls.length === 0) continue
-    matches.push({ start, end, toolCalls })
+    matches.push({ start, end, toolCalls, resolvedOpeningStarts })
     claimed.push([start, end])
   }
 
@@ -194,7 +225,12 @@ function matchAnthropicXml(
     if (!name) continue
     if (overlapsCode(start, end, codeRanges)) continue
     if (overlapsClaimed(start, end, claimed)) continue
-    matches.push({ start, end, toolCalls: [toolCallFromInvoke(name, sm[2] ?? '')] })
+    matches.push({
+      start,
+      end,
+      toolCalls: [toolCallFromInvoke(name, sm[2] ?? '')],
+      resolvedOpeningStarts: [start]
+    })
     claimed.push([start, end])
   }
 
@@ -247,7 +283,12 @@ function matchDsml(
       }
     }
 
-    matches.push({ start, end, toolCalls })
+    matches.push({
+      start,
+      end,
+      toolCalls,
+      resolvedOpeningStarts: toolCalls.length > 0 ? [start] : []
+    })
     claimed.push([start, end])
   }
   return matches
@@ -282,7 +323,8 @@ function matchBracket(
     matches.push({
       start,
       end,
-      toolCalls: [{ toolUseId: genToolUseId(), name, input }]
+      toolCalls: [{ toolUseId: genToolUseId(), name, input }],
+      resolvedOpeningStarts: []
     })
     claimed.push([start, end])
   }
@@ -299,10 +341,15 @@ function matchBracket(
  *  - candidates inside fenced/inline code are skipped;
  *  - a dialect that yields no parseable call is stripped, never fabricated.
  */
-export function parseTextToolCalls(text: string): { toolCalls: ToolCall[]; cleanedText: string } {
-  if (!text) return { toolCalls: [], cleanedText: text }
+export function parseTextToolCalls(text: string): {
+  toolCalls: ToolCall[]
+  cleanedText: string
+  resolution: DialectToolResolution
+} {
+  if (!text) return { toolCalls: [], cleanedText: text, resolution: 'none' }
 
   const codeRanges = computeCodeRanges(text)
+  const openings = openingMarkerStarts(text, codeRanges)
   const claimed: Array<[number, number]> = []
 
   const matches: DialectMatch[] = [
@@ -311,11 +358,18 @@ export function parseTextToolCalls(text: string): { toolCalls: ToolCall[]; clean
     ...matchBracket(text, codeRanges, claimed)
   ]
 
-  if (matches.length === 0) return { toolCalls: [], cleanedText: text }
+  if (matches.length === 0) {
+    return {
+      toolCalls: [],
+      cleanedText: text,
+      resolution: openings.length === 0 ? 'none' : 'incomplete'
+    }
+  }
 
   matches.sort((a, b) => a.start - b.start)
 
   const toolCalls: ToolCall[] = []
+  const resolvedOpenings = new Set(matches.flatMap((match) => match.resolvedOpeningStarts))
   let cleanedText = ''
   let cursor = 0
   for (const mt of matches) {
@@ -326,5 +380,11 @@ export function parseTextToolCalls(text: string): { toolCalls: ToolCall[]; clean
   }
   cleanedText += text.slice(cursor)
 
-  return { toolCalls, cleanedText }
+  const resolution =
+    openings.length === 0
+      ? 'none'
+      : openings.every((opening) => resolvedOpenings.has(opening))
+        ? 'complete'
+        : 'incomplete'
+  return { toolCalls, cleanedText, resolution }
 }

@@ -67,4 +67,42 @@ describe('StreamObserver — tool intent closure', () => {
 
     expect(observer.hasOpenToolIntent).toBe(false)
   })
+
+  test('a complete invoke followed by a truncated invoke keeps the dialect intent open', async () => {
+    const observer = new StreamObserver()
+
+    await drain(
+      [
+        {
+          assistantResponseEvent: {
+            content:
+              '<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>' +
+              '<invoke name="write"><parameter name="path">/truncated'
+          }
+        }
+      ],
+      observer
+    )
+
+    expect(observer.sawToolIntent).toBe(true)
+    expect(observer.hasOpenToolIntent).toBe(true)
+  })
+
+  for (const [region, content] of [
+    [
+      'fenced code',
+      'Example:\n```xml\n<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>\n```'
+    ],
+    ['inline code', 'Use `<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>`.']
+  ] as const) {
+    test(`a marker inside ${region} never opens dialect intent`, async () => {
+      const observer = new StreamObserver()
+
+      await drain([{ assistantResponseEvent: { content } }], observer)
+
+      expect(observer.sawToolIntent).toBe(false)
+      expect(observer.hasOpenToolIntent).toBe(false)
+      expect(observer.dialectActive).toBe(true)
+    })
+  }
 })

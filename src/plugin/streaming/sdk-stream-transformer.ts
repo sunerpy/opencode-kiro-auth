@@ -53,7 +53,8 @@ export async function* transformSdkStream(
   const toChunk = (ev: StreamEvent): any => {
     if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
       const safe = dialectGate.push(ev.delta.text ?? '')
-      if (dialectGate.suppressing) observer?.noteDialectToolIntent()
+      if (dialectGate.suppressing) observer?.noteDialectGateActive()
+      observer?.noteDialectToolIntent(dialectGate.hasToolIntent)
       if (!safe) return null
       const gated: StreamEvent = { ...ev, delta: { ...ev.delta, text: safe } }
       return convertToOpenAI(gated, conversationId, model)
@@ -273,8 +274,8 @@ export async function* transformSdkStream(
     }
   }
 
-  const { toolCalls: dialectToolCalls, remainderText } = dialectGate.finalize()
-  observer?.noteDialectToolResolution(dialectToolCalls.length > 0)
+  const { toolCalls: dialectToolCalls, remainderText, resolution } = dialectGate.finalize()
+  observer?.noteDialectToolResolution(resolution)
   if (remainderText) {
     for (const ev of createTextDeltaEvents(remainderText, streamState)) {
       const _c = convertToOpenAI(ev, conversationId, model)

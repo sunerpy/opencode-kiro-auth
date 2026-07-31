@@ -1609,6 +1609,18 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
     }
   ]
 
+  const signedDialectEvents = (label: string, truncated: boolean): unknown[] => [
+    { reasoningContentEvent: { text: `reasoning-${label}` } },
+    { reasoningContentEvent: { signature: `signature-${label}` } },
+    {
+      assistantResponseEvent: {
+        content:
+          `<invoke name="read_file"><parameter name="path">/${label}</parameter></invoke>` +
+          (truncated ? '<invoke name="write_file"><parameter name="path">/truncated' : '')
+      }
+    }
+  ]
+
   const lookupSignedTool = (label: string) =>
     reasoningCorrelationCache.lookup({
       reasoningText: `reasoning-${label}`,
@@ -1703,6 +1715,108 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
     expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
     expect(acc.failCount).toBe(0)
     expect(acc.unhealthyReason).toBeUndefined()
+  })
+
+  for (const mode of ['reasoning_restart', 'exact_replay'] as const) {
+    test(`a mixed complete and truncated signed dialect fails before completion in ${mode}`, async () => {
+      const label = `dialect-${mode}`
+      const acc = makeAccount({ id: 'A', failCount: 4, unhealthyReason: 'transient' })
+      const publish = spyOn(reasoningCorrelationCache, 'publish')
+      try {
+        const { handler, fakes } = buildHandler({
+          selectResults: [acc],
+          sdkResults: [sdkStream(signedDialectEvents(label, true))],
+          streaming: true,
+          useRealResponseHandler: true,
+          streamRecoveryMode: mode,
+          streamMaxAttempts: 1
+        })
+
+        const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+        const stream = response.body
+        if (!stream) throw new Error('expected a streaming response body')
+        const reader = stream.getReader()
+        let delivered = ''
+        const draining = (async () => {
+          while (true) {
+            const item = await reader.read()
+            if (item.done) return
+            delivered += new TextDecoder().decode(item.value)
+          }
+        })()
+
+        await expect(draining).rejects.toMatchObject({
+          name: 'UpstreamUnexpectedError',
+          cause: {
+            name: 'SdkEventStreamIterationError',
+            cause: { name: 'SemanticStreamTruncationError' }
+          },
+          emittedOutput: true
+        })
+        expect(delivered).not.toContain('"finish_reason":"tool_calls"')
+        expect(delivered).not.toContain('"finish_reason":"stop"')
+        expect(publish).toHaveBeenCalledTimes(0)
+        expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(0)
+        expect(acc.failCount).toBe(4)
+        expect(acc.unhealthyReason).toBe('transient')
+      } finally {
+        publish.mockRestore()
+      }
+    })
+  }
+
+  test('off mode preserves mixed dialect emission and completion side effects', async () => {
+    const label = 'dialect-off'
+    const acc = makeAccount({ id: 'A', failCount: 4, unhealthyReason: 'transient' })
+    const publish = spyOn(reasoningCorrelationCache, 'publish')
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream(signedDialectEvents(label, true))],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'off'
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const body = await response.text()
+
+      expect(body).toContain('/truncated')
+      expect(body).toContain('"finish_reason":"tool_calls"')
+      expect(publish).toHaveBeenCalledTimes(1)
+      expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+      expect(acc.failCount).toBe(0)
+      expect(acc.unhealthyReason).toBeUndefined()
+    } finally {
+      publish.mockRestore()
+    }
+  })
+
+  test('a fully resolved signed dialect keeps the success and publish path intact', async () => {
+    const label = 'dialect-complete'
+    const acc = makeAccount({ id: 'A', failCount: 4, unhealthyReason: 'transient' })
+    const publish = spyOn(reasoningCorrelationCache, 'publish')
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream(signedDialectEvents(label, false))],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart'
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const body = await response.text()
+
+      expect(body).not.toContain('<invoke')
+      expect(body).toContain('"finish_reason":"tool_calls"')
+      expect(publish).toHaveBeenCalledTimes(1)
+      expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+      expect(acc.failCount).toBe(0)
+      expect(acc.unhealthyReason).toBeUndefined()
+    } finally {
+      publish.mockRestore()
+    }
   })
 
   test('two healthy concurrent requests on one account both publish their envelopes', async () => {
@@ -3121,6 +3235,37 @@ describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix',
     expect(acc.failCount).toBe(3)
     expect(acc.unhealthyReason).toBe('transient')
   })
+
+  for (const [region, content] of [
+    [
+      'fenced',
+      'Example:\n```xml\n<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>\n```'
+    ],
+    ['inline', 'Use `<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>`.']
+  ] as const) {
+    test(`${region} code-only dialect markers stay byte-identical across recovery modes`, async () => {
+      const bodies: string[] = []
+
+      for (const mode of ['off', 'reasoning_restart', 'exact_replay'] as const) {
+        const acc = makeAccount({ id: `A-${mode}` })
+        const { handler, fakes } = buildHandler({
+          selectResults: [acc],
+          sdkResults: [sdkStream([{ assistantResponseEvent: { content } }])],
+          streaming: true,
+          useRealResponseHandler: true,
+          streamRecoveryMode: mode
+        })
+
+        const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+        bodies.push((await response.text()).replace(/"created":\d+/g, '"created":0'))
+        expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+        expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+      }
+
+      expect(bodies[1]).toBe(bodies[0])
+      expect(bodies[2]).toBe(bodies[0])
+    })
+  }
 
   test('a recovered stream is one well-framed SSE sequence with a single terminal chunk', async () => {
     const acc = makeAccount({ id: 'A' })

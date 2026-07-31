@@ -1,3 +1,5 @@
+import type { DialectToolResolution } from '../../infrastructure/transformers/tool-call-parser.js'
+
 /**
  * Where the reasoning/thinking channel stands at the moment of observation.
  *
@@ -33,16 +35,17 @@ export interface StreamObservedState {
  * naive replay would double-execute a tool.
  */
 export class StreamObserver {
-  private toolIntent = false
+  private rawToolIntentSeen = false
   private readonly openRawToolIntents = new Set<string>()
   private anonymousRawToolIntent = false
+  private dialectToolIntentSeen = false
   private dialectToolIntentOpen = false
   private phase: ReasoningPhase = 'none'
   private dialect = false
 
   /** A raw SDK tool sequence advanced; only `stop: true` closes that sequence. */
   noteRawToolIntent(toolUseId: string | undefined, closed: boolean): void {
-    this.toolIntent = true
+    this.rawToolIntentSeen = true
     if (toolUseId) {
       if (closed) this.openRawToolIntents.delete(toolUseId)
       else this.openRawToolIntents.add(toolUseId)
@@ -51,16 +54,32 @@ export class StreamObserver {
     this.anonymousRawToolIntent = !closed
   }
 
-  /** The dialect gate observed a text-dialect tool-call opening marker. */
-  noteDialectToolIntent(): void {
+  noteDialectGateActive(): void {
     this.dialect = true
-    this.dialectToolIntentOpen = true
-    this.toolIntent = true
   }
 
-  /** Records whether finalization resolved the observed marker into a complete call. */
-  noteDialectToolResolution(hasCompleteToolCall: boolean): void {
-    if (this.dialect && hasCompleteToolCall) this.dialectToolIntentOpen = false
+  /** Synchronize the currently observable non-code-region dialect marker. */
+  noteDialectToolIntent(present: boolean): void {
+    this.dialectToolIntentSeen = present
+    this.dialectToolIntentOpen = present
+  }
+
+  /** Records whether finalization resolved every non-code-region opening marker. */
+  noteDialectToolResolution(resolution: DialectToolResolution): void {
+    switch (resolution) {
+      case 'none':
+        this.dialectToolIntentSeen = false
+        this.dialectToolIntentOpen = false
+        return
+      case 'complete':
+        this.dialectToolIntentSeen = true
+        this.dialectToolIntentOpen = false
+        return
+      case 'incomplete':
+        this.dialectToolIntentSeen = true
+        this.dialectToolIntentOpen = true
+        return
+    }
   }
 
   /** A reasoning/thinking block opened (native reasoning run or inline tag). */
@@ -74,7 +93,7 @@ export class StreamObserver {
   }
 
   get sawToolIntent(): boolean {
-    return this.toolIntent
+    return this.rawToolIntentSeen || this.dialectToolIntentSeen
   }
 
   get hasOpenToolIntent(): boolean {
@@ -93,7 +112,7 @@ export class StreamObserver {
 
   snapshot(): StreamObservedState {
     return {
-      sawToolIntent: this.toolIntent,
+      sawToolIntent: this.sawToolIntent,
       hasOpenToolIntent: this.hasOpenToolIntent,
       reasoningPhase: this.phase,
       dialectActive: this.dialect
