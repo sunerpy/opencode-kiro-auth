@@ -1,14 +1,16 @@
-import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { TokenRefresher } from '../core/auth/token-refresher.js'
 import {
   RequestHandler,
   STREAM_MISSING_COMPLETION_LOG,
   STREAM_REQUEST_STARTED_LOG
 } from '../core/request/request-handler.js'
-import { ResponseHandler } from '../core/request/response-handler.js'
+import { ResponseHandler, type SdkResponseLifecycle } from '../core/request/response-handler.js'
+import { SdkEventStreamIterationError } from '../core/request/stream-error.js'
 import { encodeRefreshToken } from '../kiro/auth.js'
 import { AccountManager } from '../plugin/accounts.js'
 import * as logger from '../plugin/logger.js'
+import { reasoningCorrelationCache } from '../plugin/reasoning/correlation-cache.js'
 import type { ManagedAccount, SdkPreparedRequest } from '../plugin/types.js'
 
 // RequestHandler is pure orchestration: handle() routes by KIRO_API_PATTERN
@@ -64,6 +66,7 @@ const baseConfig = {
   stream_event_timeout_enabled: false,
   stream_buffer_until_complete: false,
   stream_max_attempts: 3,
+  stream_recovery_mode: 'off',
   sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
   sdk_http_keep_alive: false,
@@ -88,7 +91,10 @@ interface Fakes {
     forceRefresh: ReturnType<typeof mock>
   }
   errorHandler: { handle: ReturnType<typeof mock>; handleNetworkError: ReturnType<typeof mock> }
-  responseHandler: { handleSdkSuccess: ReturnType<typeof mock> }
+  responseHandler: {
+    handleSdkSuccess: ReturnType<typeof mock>
+    prepareSdkStreamingAttempt?: ReturnType<typeof mock>
+  }
   usageTracker: { syncUsage: ReturnType<typeof mock> }
   sdkSend: ReturnType<typeof mock>
   accountManager: any
@@ -108,6 +114,8 @@ function buildHandler(opts: {
   streamEventTimeoutEnabled?: boolean
   streamBufferUntilComplete?: boolean
   streamMaxAttempts?: number
+  streamRecoveryMode?: 'off' | 'reasoning_restart'
+  maxRequestIterations?: number
   sdkResponseTimeoutEnabled?: boolean
   sdkResponseTimeoutMs?: number
 }): { handler: RequestHandler; fakes: Fakes } {
@@ -148,8 +156,14 @@ function buildHandler(opts: {
     handle: mock(async () => errorQueue.shift() ?? { shouldRetry: false }),
     handleNetworkError: mock(async () => ({ shouldRetry: false }))
   }
+  const realResponseHandler = new ResponseHandler()
   const responseHandler = opts.useRealResponseHandler
-    ? { handleSdkSuccess: mock(new ResponseHandler().handleSdkSuccess.bind(new ResponseHandler())) }
+    ? {
+        handleSdkSuccess: mock(realResponseHandler.handleSdkSuccess.bind(realResponseHandler)),
+        prepareSdkStreamingAttempt: mock(
+          realResponseHandler.prepareSdkStreamingAttempt.bind(realResponseHandler)
+        )
+      }
     : {
         handleSdkSuccess: mock(
           async (
@@ -176,12 +190,14 @@ function buildHandler(opts: {
     accountManager,
     {
       ...baseConfig,
+      max_request_iterations: opts.maxRequestIterations ?? baseConfig.max_request_iterations,
       request_timeout_ms: opts.requestTimeoutMs ?? baseConfig.request_timeout_ms,
       stream_event_timeout_enabled:
         opts.streamEventTimeoutEnabled ?? baseConfig.stream_event_timeout_enabled,
       stream_buffer_until_complete:
         opts.streamBufferUntilComplete ?? baseConfig.stream_buffer_until_complete,
       stream_max_attempts: opts.streamMaxAttempts ?? baseConfig.stream_max_attempts,
+      stream_recovery_mode: opts.streamRecoveryMode ?? 'off',
       sdk_response_timeout_enabled:
         opts.sdkResponseTimeoutEnabled ?? baseConfig.sdk_response_timeout_enabled,
       sdk_response_timeout_ms: opts.sdkResponseTimeoutMs ?? baseConfig.sdk_response_timeout_ms
@@ -219,6 +235,14 @@ function sdkStream(events: unknown[], error?: Error): object {
       if (error) throw error
     })()
   }
+}
+
+function streamedText(body: string): string {
+  return body
+    .split('\n\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice('data: '.length)).choices?.[0]?.delta?.content ?? '')
+    .join('')
 }
 
 function installImmediateStreamBackoff(handler: RequestHandler): void {
@@ -1016,6 +1040,218 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     }
   })
 
+  test('reasoning-only live failure restarts inside one SSE when recovery is enabled', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [{ reasoningContentEvent: { text: 'partial reasoning' } }],
+          new Error('reasoning transport reset')
+        ),
+        sdkStream([
+          { reasoningContentEvent: { text: 'complete reasoning' } },
+          { assistantResponseEvent: { content: 'complete answer' } },
+          {
+            metadataEvent: {
+              tokenUsage: { uncachedInputTokens: 3, outputTokens: 2, totalTokens: 5 }
+            }
+          }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+    expect(fakes.accountSelector.selectAlternativeAccount).toHaveBeenCalledTimes(0)
+    expect(body).toContain('partial reasoning')
+    expect(body).toContain('complete reasoning')
+    expect(body).toContain('complete answer')
+    expect(body.split('"finish_reason":"stop"')).toHaveLength(2)
+    expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+    expect(acc.failCount).toBe(0)
+  })
+
+  test('the first live recovery reuses its account and a later recovery prefers an alternative', async () => {
+    const a = makeAccount({ id: 'A' })
+    const b = makeAccount({ id: 'B' })
+    const { handler, fakes } = buildHandler({
+      accounts: [a, b],
+      selectResults: [a],
+      alternativeAccount: b,
+      sdkResults: [
+        sdkStream([{ reasoningContentEvent: { text: 'attempt one' } }], new Error('reset one')),
+        sdkStream([{ reasoningContentEvent: { text: 'attempt two' } }], new Error('reset two')),
+        sdkStream([
+          { assistantResponseEvent: { content: 'from alternative' } },
+          { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+
+    expect(fakes.accountSelector.selectAlternativeAccount).toHaveBeenCalledTimes(1)
+    expect(
+      fakes.accountManager.toAuthDetails.mock.calls.map((call: [ManagedAccount]) => call[0].id)
+    ).toEqual(['A', 'A', 'A', 'B', 'B'])
+  })
+
+  test('visible text makes a live failure ineligible for reasoning restart', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [{ assistantResponseEvent: { content: 'visible before failure' } }],
+          new Error('late text failure')
+        ),
+        sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const stream = response.body
+    if (!stream) throw new Error('expected a streaming response body')
+    const reader = stream.getReader()
+    let delivered = ''
+    const draining = (async () => {
+      while (true) {
+        const item = await reader.read()
+        if (item.done) return
+        delivered += new TextDecoder().decode(item.value)
+      }
+    })()
+
+    await expect(draining).rejects.toMatchObject({
+      name: 'UpstreamUnexpectedError',
+      emittedOutput: true
+    })
+    expect(delivered).toContain('visible befo')
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+  })
+
+  test('raw tool intent makes a reasoning-only live failure ineligible for restart', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [
+            { reasoningContentEvent: { text: 'reasoning before tool intent' } },
+            { toolUseEvent: { name: 'read_file', toolUseId: 'tool-1', input: '{"path":"/a' } }
+          ],
+          new Error('tool stream failed')
+        ),
+        sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await expect(response.text()).rejects.toMatchObject({
+      name: 'UpstreamUnexpectedError',
+      emittedOutput: true
+    })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+  })
+
+  test('clean EOF after reasoning is a recoverable semantic truncation in recovery mode', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([{ reasoningContentEvent: { text: 'truncated reasoning' } }]),
+        sdkStream([
+          { reasoningContentEvent: { text: 'replacement reasoning' } },
+          { assistantResponseEvent: { content: 'replacement answer' } },
+          { metadataEvent: { tokenUsage: { outputTokens: 2, totalTokens: 2 } } }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const body = await response.text()
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+    expect(body).toContain('truncated reasoning')
+    expect(body).toContain('replacement answer')
+    expect(body.split('"finish_reason":"stop"')).toHaveLength(2)
+  })
+
+  test('reasoning restart honors stream_max_attempts across initial and recovery sends', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const failure = new Error('persistent reasoning failure')
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([{ reasoningContentEvent: { text: 'attempt one' } }], failure),
+        sdkStream([{ reasoningContentEvent: { text: 'attempt two' } }], failure),
+        sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart',
+      streamMaxAttempts: 2
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    await expect(response.text()).rejects.toMatchObject({
+      name: 'UpstreamUnexpectedError',
+      emittedOutput: true
+    })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+  })
+
+  test('reasoning restart consumes RetryStrategy budget before every recovery send', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const failure = new Error('persistent reasoning failure')
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([{ reasoningContentEvent: { text: 'attempt one' } }], failure),
+        sdkStream([{ reasoningContentEvent: { text: 'attempt two' } }], failure),
+        sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart',
+      streamMaxAttempts: 3,
+      maxRequestIterations: 2
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+    await expect(response.text()).rejects.toMatchObject({
+      name: 'UpstreamUnexpectedError',
+      emittedOutput: true
+    })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+  })
+
   test('stream retry jitter stays inside the documented bounds', () => {
     const { handler } = buildHandler({})
     const internals = handler as unknown as {
@@ -1243,6 +1479,233 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
   })
 })
 
+describe('RequestHandler.handle — reasoning signature safety gates', () => {
+  beforeEach(() => {
+    reasoningCorrelationCache.clearAllForTests()
+  })
+
+  const signedToolEvents = (label: string): unknown[] => [
+    { reasoningContentEvent: { text: `reasoning-${label}` } },
+    { reasoningContentEvent: { signature: `signature-${label}` } },
+    { assistantResponseEvent: { content: `visible-${label}` } },
+    {
+      toolUseEvent: {
+        name: 'read_file',
+        toolUseId: `tool-${label}`,
+        input: `{"path":"/${label}"}`
+      }
+    },
+    {
+      toolUseEvent: {
+        name: 'read_file',
+        toolUseId: `tool-${label}`,
+        input: '',
+        stop: true
+      }
+    },
+    { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+  ]
+
+  const lookupSignedTool = (label: string) =>
+    reasoningCorrelationCache.lookup({
+      reasoningText: `reasoning-${label}`,
+      visibleText: `visible-${label}`,
+      toolUses: [
+        {
+          toolUseId: `tool-${label}`,
+          name: 'read_file',
+          argumentsJson: `{"path":"/${label}"}`
+        }
+      ],
+      effectiveModel: 'claude-sonnet-4-5'
+    })
+
+  test('two healthy concurrent requests on one account both publish their envelopes', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler } = buildHandler({
+      selectResults: [acc, acc],
+      sdkResults: [sdkStream(signedToolEvents('first')), sdkStream(signedToolEvents('second'))],
+      streaming: true,
+      useRealResponseHandler: true
+    })
+
+    const first = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const second = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await Promise.all([first.text(), second.text()])
+
+    expect(lookupSignedTool('first').envelope).toEqual({
+      kind: 'reasoningText',
+      text: 'reasoning-first',
+      signature: 'signature-first'
+    })
+    expect(lookupSignedTool('second').envelope).toEqual({
+      kind: 'reasoningText',
+      text: 'reasoning-second',
+      signature: 'signature-second'
+    })
+  })
+
+  test('a recovered tool completion does not publish its final-attempt envelope', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [{ reasoningContentEvent: { text: 'partial reasoning' } }],
+          new Error('late reset')
+        ),
+        sdkStream(signedToolEvents('recovered'))
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+    expect(lookupSignedTool('recovered').refusal).toBe('miss')
+  })
+
+  test('a superseded attempt cannot republish after the recovered final answer clears its loop', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const loopId = 'loop-superseded-attempt'
+    reasoningCorrelationCache.publish({
+      envelope: { kind: 'reasoningText', text: 'seed reasoning', signature: 'seed signature' },
+      reasoningText: 'seed reasoning',
+      visibleText: 'seed visible',
+      toolUses: [
+        {
+          toolUseId: loopId,
+          name: 'seed_tool',
+          argumentsJson: '{}'
+        }
+      ],
+      effectiveModel: 'claude-sonnet-4-5',
+      loopId,
+      accountId: acc.id,
+      attemptId: 'seed-attempt'
+    })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [{}, {}],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+    let prepareCalls = 0
+    let supersededLifecycle: SdkResponseLifecycle | undefined
+    const partialChunk = {
+      choices: [{ index: 0, delta: { reasoning_content: 'partial' }, finish_reason: null }]
+    }
+    const terminalChunk = {
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+    }
+    const prepareSdkStreamingAttempt = mock(
+      async (input: { readonly lifecycle: SdkResponseLifecycle }) => {
+        prepareCalls++
+        if (prepareCalls === 1) {
+          supersededLifecycle = input.lifecycle
+          let reads = 0
+          return {
+            chunks: {
+              async next(): Promise<IteratorResult<unknown>> {
+                reads++
+                if (reads === 1) return { done: false, value: partialChunk }
+                throw new SdkEventStreamIterationError(new Error('superseded stream failed'))
+              }
+            },
+            observed: () => ({
+              emitted: { visibleChars: 0, toolCount: 0 },
+              sawToolIntent: false
+            }),
+            close: async () => {},
+            complete: async () => {}
+          }
+        }
+
+        let reads = 0
+        return {
+          chunks: {
+            async next(): Promise<IteratorResult<unknown>> {
+              reads++
+              return reads === 1
+                ? { done: false, value: terminalChunk }
+                : { done: true, value: undefined }
+            }
+          },
+          observed: () => ({
+            emitted: { visibleChars: 0, toolCount: 0 },
+            sawToolIntent: false
+          }),
+          close: async () => {},
+          complete: async (completion: { readonly recovered: boolean }) => {
+            await input.lifecycle.onComplete?.({
+              reasoningText: 'final reasoning',
+              visibleText: 'final answer',
+              toolUses: [],
+              attemptId: input.lifecycle.attemptId ?? '',
+              loopId,
+              effectiveModel: 'claude-sonnet-4-5',
+              recovered: completion.recovered
+            })
+          }
+        }
+      }
+    )
+    Object.assign(handler, {
+      responseHandler: {
+        handleSdkSuccess: fakes.responseHandler.handleSdkSuccess,
+        prepareSdkStreamingAttempt
+      }
+    })
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+    const staleLifecycle = supersededLifecycle
+    if (!staleLifecycle) throw new Error('expected the superseded lifecycle to be captured')
+    await staleLifecycle.onComplete?.({
+      envelope: {
+        kind: 'reasoningText',
+        text: 'superseded reasoning',
+        signature: 'superseded signature'
+      },
+      reasoningText: 'superseded reasoning',
+      visibleText: 'superseded visible',
+      toolUses: [
+        {
+          toolUseId: loopId,
+          name: 'stale_tool',
+          argumentsJson: '{}'
+        }
+      ],
+      attemptId: staleLifecycle.attemptId ?? '',
+      loopId,
+      effectiveModel: 'claude-sonnet-4-5',
+      recovered: false
+    })
+
+    expect(reasoningCorrelationCache.sizeForLoop(loopId)).toBe(0)
+    expect(
+      reasoningCorrelationCache.lookup({
+        reasoningText: 'superseded reasoning',
+        visibleText: 'superseded visible',
+        toolUses: [
+          {
+            toolUseId: loopId,
+            name: 'stale_tool',
+            argumentsJson: '{}'
+          }
+        ],
+        effectiveModel: 'claude-sonnet-4-5'
+      }).refusal
+    ).toBe('miss')
+  })
+})
+
 describe('RequestHandler.handle — cancellation and queue release', () => {
   test('inbound abort interrupts a pending send without retry and releases the next request', async () => {
     const acc = makeAccount({ id: 'A' })
@@ -1445,6 +1908,121 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
 
     await expect(request).rejects.toMatchObject({ name: 'AbortError' })
     expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+  })
+
+  test('inbound abort during reasoning recovery backoff releases the request without another send', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc, acc],
+      sdkResults: [
+        sdkStream(
+          [{ reasoningContentEvent: { text: 'partial reasoning' } }],
+          new Error('late reset')
+        ),
+        sdkStream([
+          { assistantResponseEvent: { content: 'next request succeeds' } },
+          { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    const internals = handler as unknown as {
+      sleep: (ms: number, signal?: AbortSignal) => Promise<void>
+    }
+    let notifyBackoffStarted: (() => void) | undefined
+    const backoffStarted = new Promise<void>((resolve) => {
+      notifyBackoffStarted = resolve
+    })
+    internals.sleep = async (_ms, signal) => {
+      notifyBackoffStarted?.()
+      return new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }
+    const controller = new AbortController()
+    const response = await handler.handle(
+      KIRO_URL,
+      { body: JSON.stringify({}), signal: controller.signal },
+      noToast
+    )
+    const reading = response.text()
+
+    await backoffStarted
+    controller.abort(new DOMException('cancelled during recovery backoff', 'AbortError'))
+
+    await expect(reading).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+    const next = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(streamedText(await next.text())).toBe('next request succeeds')
+  })
+
+  test('inbound abort interrupts the second recovery send and allows a later request', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler } = buildHandler({
+      selectResults: [acc, acc],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    const internals = handler as unknown as {
+      makeSdkClient: () => {
+        send: (command: unknown, options: { abortSignal: AbortSignal }) => Promise<object>
+      }
+      sleep: (ms: number, signal?: AbortSignal) => Promise<void>
+    }
+    let sendCalls = 0
+    let notifySecondSendStarted: (() => void) | undefined
+    const secondSendStarted = new Promise<void>((resolve) => {
+      notifySecondSendStarted = resolve
+    })
+    internals.sleep = async (_ms, signal) => {
+      if (signal?.aborted) throw signal.reason
+    }
+    internals.makeSdkClient = () => ({
+      send: async (_command, options) => {
+        sendCalls++
+        if (sendCalls === 1) {
+          return sdkStream(
+            [{ reasoningContentEvent: { text: 'partial reasoning' } }],
+            new Error('late reset')
+          )
+        }
+        if (sendCalls === 2) {
+          notifySecondSendStarted?.()
+          return new Promise<object>((_resolve, reject) => {
+            options.abortSignal.addEventListener(
+              'abort',
+              () => reject(options.abortSignal.reason),
+              {
+                once: true
+              }
+            )
+          })
+        }
+        return sdkStream([
+          { assistantResponseEvent: { content: 'later request succeeds' } },
+          { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+        ])
+      }
+    })
+    const controller = new AbortController()
+    const response = await handler.handle(
+      KIRO_URL,
+      { body: JSON.stringify({}), signal: controller.signal },
+      noToast
+    )
+    const reading = response.text()
+
+    await secondSendStarted
+    controller.abort(new DOMException('cancelled during recovery send', 'AbortError'))
+
+    await expect(reading).rejects.toMatchObject({ name: 'AbortError' })
+    expect(sendCalls).toBe(2)
+    const next = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(streamedText(await next.text())).toBe('later request succeeds')
+    expect(sendCalls).toBe(3)
   })
 
   test('periodic upstream activity allows a thinking stream to outlive the timeout window', async () => {

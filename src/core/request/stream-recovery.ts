@@ -46,6 +46,8 @@ export type StreamRecoveryOptions = {
   readonly mode: StreamRecoveryMode
   readonly maxAttempts: number
   readonly signal: AbortSignal
+  /** Already primed through the first semantic chunk so pre-output failures stay caller-owned. */
+  readonly initialAttempt?: AttemptHandle
   readonly attemptFactory: AttemptFactory
   /** Receives the one-based index of the failed attempt being backed off. */
   readonly delayFn: (attemptIndex: number, signal: AbortSignal) => Promise<void>
@@ -111,6 +113,10 @@ export class StreamRecoveryCoordinator {
       throw new RangeError('maxAttempts must be a positive integer')
     }
     this.options = options
+    if (options.initialAttempt) {
+      this.activeAttempt = options.initialAttempt
+      this.attemptIndex = 1
+    }
     this.stream = new ReadableStream<Uint8Array>(
       {
         start: (controller) => this.start(controller),

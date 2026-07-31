@@ -20,27 +20,21 @@ import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
 import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler, isKiroContextOverflowBody, type RequestContext } from './error-handler'
+import { RecoveryAttemptFactory } from './recovery-attempt'
+import { createLiveRecoveryResponse } from './recovery-integration'
 import { ResponseHandler, type SdkCompletionPayload } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 import { buildSdkRequestLogPayload } from './sdk-log-payload'
 import { SdkEventStreamIterationError, UpstreamUnexpectedError } from './stream-error'
+import { STREAM_MISSING_COMPLETION_LOG, STREAM_REQUEST_STARTED_LOG } from './stream-log-events'
+
+export { STREAM_MISSING_COMPLETION_LOG, STREAM_REQUEST_STARTED_LOG } from './stream-log-events'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
 type UpstreamWaitPhase = 'SDK response' | 'stream event'
-
-/**
- * Written once per inbound streaming request, unconditionally — it is the
- * denominator every stream-failure rate is measured against, so it must not
- * depend on `enable_log_api_request`. Log-analysis scripts match this exact
- * string; changing it invalidates every window collected before the change.
- */
-export const STREAM_REQUEST_STARTED_LOG = 'Kiro stream request started'
-
-/** Emitted on a clean SDK `done` that never carried completion metadata. */
-export const STREAM_MISSING_COMPLETION_LOG = 'Kiro stream ended without completion metadata'
 
 function describeError(error: unknown, depth = 0): unknown {
   if (!(error instanceof Error)) return String(error)
@@ -314,6 +308,112 @@ export class RequestHandler {
         }
         let sendResolved = false
         try {
+          const liveRecoveryEnabled =
+            sdkPrep.streaming &&
+            !this.config.stream_buffer_until_complete &&
+            this.config.stream_recovery_mode === 'reasoning_restart'
+          if (liveRecoveryEnabled) {
+            const priorStreamFailures = streamFailureCount
+            const availableStreamAttempts = this.config.stream_max_attempts - priorStreamFailures
+            const availableRequestIterations =
+              this.config.max_request_iterations - retryContext.iterations + 1
+            const maxAttempts = Math.max(
+              1,
+              Math.min(availableStreamAttempts, availableRequestIterations)
+            )
+            const attemptFactory = new RecoveryAttemptFactory({
+              config: this.config,
+              request: {
+                body: init?.body,
+                model,
+                think,
+                budget,
+                disableReasoningReplay: handlerContext.disableReasoningReplay === true,
+                inheritedLoopId,
+                signal,
+                priorStreamFailures
+              },
+              initial: {
+                account: acc,
+                auth,
+                prepared: sdkPrep,
+                observer: streamObserver,
+                emitted: emittedOutput,
+                eventCount: upstreamEventCount,
+                startedAt: streamAttemptStartedAt,
+                apiTimestamp
+              },
+              services: {
+                consumeRequestIteration: () => {
+                  const check = this.retryStrategy.shouldContinue(retryContext)
+                  if (!check.canContinue) throw new Error(check.error)
+                },
+                toAuthDetails: (account) => this.accountManager.toAuthDetails(account),
+                refreshAccount: (account, accountAuth) =>
+                  this.tokenRefresher.refreshIfNeeded(account, accountAuth, showToast),
+                wait: (milliseconds, waitSignal) => this.sleep(milliseconds, waitSignal),
+                prepareRequest: (_account, accountAuth) =>
+                  this.prepareSdkRequest(
+                    init?.body,
+                    model,
+                    accountAuth,
+                    think,
+                    budget,
+                    showToast,
+                    handlerContext.disableReasoningReplay === true
+                  ),
+                makeSdkClient: (accountAuth, prepared) =>
+                  this.makeSdkClient(accountAuth, prepared.region, prepared.effort),
+                responseHandler: this.responseHandler,
+                beginUpstreamWait,
+                endUpstreamWait,
+                nextAccountAttemptEpoch: (accountId) => this.nextAccountAttemptEpoch(accountId),
+                isAccountAttemptCurrent: (accountId, epoch) =>
+                  this.accountAttemptEpochs.get(accountId) === epoch,
+                setCurrentAttemptId: (attemptId) => {
+                  currentAttemptId = attemptId
+                },
+                getCurrentAttemptId: () => currentAttemptId,
+                markSuccessful: (account) => this.handleSuccessfulRequest(account),
+                syncUsage: (account, accountAuth, isCurrent) =>
+                  this.usageTracker.syncUsage(account, accountAuth, isCurrent),
+                commitReasoning: (completed, accountId, owningAttemptId, latestAttemptId) =>
+                  this.commitReasoningCorrelation(
+                    completed,
+                    accountId,
+                    owningAttemptId,
+                    latestAttemptId
+                  ),
+                logSdkRequest: (prepared, account, timestamp) =>
+                  this.logSdkRequest(prepared, account, timestamp),
+                logSdkResponse: (prepared, timestamp) => this.logSdkResponse(prepared, timestamp),
+                markSendResolved: () => {
+                  sendResolved = true
+                },
+                describeError
+              }
+            })
+            const response = await createLiveRecoveryResponse({
+              mode: this.config.stream_recovery_mode,
+              maxAttempts,
+              priorStreamFailures,
+              signal,
+              initialAccount: acc,
+              attemptFactory,
+              retryDelay: (failureCount) => this.getStreamRetryDelay(failureCount),
+              wait: (milliseconds, waitSignal) => this.sleep(milliseconds, waitSignal),
+              selectAlternativeAccount: (accountId) =>
+                this.accountSelector.selectAlternativeAccount(new Set([accountId])),
+              describeError,
+              onTerminal: cleanupRequest,
+              onCancel: (reason) => requestController.abort(reason)
+            })
+
+            responseOwnsLifecycle = true
+            sendResolved = true
+            return response
+          }
+
           const client = this.makeSdkClient(auth, sdkPrep.region, sdkPrep.effort)
           const command = new GenerateAssistantResponseCommand({
             conversationState: sdkPrep.conversationState as any,
@@ -338,7 +438,7 @@ export class RequestHandler {
           const accountId = acc.id
           const onStreamComplete = async (completed?: SdkCompletionPayload): Promise<void> => {
             await completeRequest()
-            this.commitReasoningCorrelation(completed, accountId, currentAttemptId)
+            this.commitReasoningCorrelation(completed, accountId, attemptId, currentAttemptId)
           }
 
           let sdkResponse: GenerateAssistantResponseCommandOutput
@@ -414,6 +514,7 @@ export class RequestHandler {
               attemptId,
               ...(inheritedLoopId !== undefined ? { inheritedLoopId } : {}),
               effectiveModel: sdkPrep.effectiveModel,
+              recoveryMode: this.config.stream_recovery_mode,
               onTerminal: cleanupRequest,
               onCancel: (reason) => requestController.abort(reason),
               bufferUntilComplete: this.config.stream_buffer_until_complete,
@@ -735,10 +836,12 @@ export class RequestHandler {
   private commitReasoningCorrelation(
     completed: SdkCompletionPayload | undefined,
     accountId: string,
-    owningAttemptId: string
+    owningAttemptId: string,
+    latestAttemptId: string
   ): void {
     if (!completed || completed.loopId === undefined) return
     if (completed.attemptId === '' || completed.attemptId !== owningAttemptId) return
+    if (owningAttemptId !== latestAttemptId) return
 
     // A final answer ends the loop, so its entries are torn down. A tool-emitting
     // turn that produced no signed envelope merely skips publication — the loop
@@ -747,6 +850,7 @@ export class RequestHandler {
       reasoningCorrelationCache.clearLoop(completed.loopId)
       return
     }
+    if (completed.recovered) return
     if (!completed.envelope) return
 
     reasoningCorrelationCache.publish({
