@@ -224,12 +224,12 @@ describe('buildHistory — reasoning_content recovery', () => {
     const msgs = toolLoopMsgs(['t1', 't2', 't3', 't4'])
     const serialized = JSON.stringify(buildHistory(msgs, MODEL))
     // The loop's first turn and its trailing (uncollapsed) turn keep reasoning;
-    // the intermediate turns are replaced by the existing placeholder.
+    // the intermediate turns are emptied, with no placeholder text left behind.
     expect(serialized).toContain('<thinking>t1</thinking>')
     expect(serialized).toContain('<thinking>t4</thinking>')
     expect(serialized).not.toContain('<thinking>t2</thinking>')
     expect(serialized).not.toContain('<thinking>t3</thinking>')
-    expect(serialized).toContain('[system: tool calling continues]')
+    expect(serialized).not.toContain('tool calling continues')
   })
 })
 

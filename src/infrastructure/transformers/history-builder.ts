@@ -18,6 +18,11 @@ import { deduplicateToolResults } from './tool-transformer.js'
  *
  * Strips text from intermediate ASST(toolUses)→USER(toolResults) pairs, keeping only the
  * first assistant text and all tool_use/tool_result pairs.
+ *
+ * Collapsed turns carry `content: ''`, matching the official Kiro IDE shape for a
+ * tool-only assistant turn. A placeholder string here is not cosmetic: the model reads
+ * it as dozens of in-context examples of what an assistant turn looks like when it is
+ * about to call a tool, and echoes it verbatim instead of emitting a real tool call.
  */
 export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhispererMessage[] {
   if (history.length < 4) return history
@@ -61,7 +66,7 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
             if (!assistantResponse.toolUses) continue
             result.push({
               assistantResponseMessage: {
-                content: '[system: tool calling continues]',
+                content: '',
                 toolUses: assistantResponse.toolUses,
                 ...(assistantResponse.reasoningContent !== undefined
                   ? { reasoningContent: assistantResponse.reasoningContent }

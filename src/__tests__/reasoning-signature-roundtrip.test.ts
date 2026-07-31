@@ -308,7 +308,7 @@ describe('request-side merge and collapse safety', () => {
     expect(firstResponse?.reasoningContent?.reasoningText?.signature).toBe(SIG_A)
     expect(secondResponse?.reasoningContent?.reasoningText?.signature).toBe(SIG_B)
     expect(thirdResponse?.reasoningContent?.reasoningText?.signature).toBe(`${SIG_A}-third`)
-    expect(secondResponse?.content).toBe('[system: tool calling continues]')
+    expect(secondResponse?.content).toBe('')
   })
 
   test('reasoning stays attached to the assistant turn that produced matching tool uses', () => {

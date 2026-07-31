@@ -160,9 +160,10 @@ describe('collapseAgenticLoops', () => {
     ]
     const history = [...mkPair(1), ...mkPair(2)]
     const result = collapseAgenticLoops(history)
-    // First pair keeps its original assistant text; subsequent pair's text is replaced.
+    // First pair keeps its original assistant text; subsequent pair's text is emptied,
+    // matching the official Kiro IDE shape for a tool-only assistant turn.
     expect(result[0]?.assistantResponseMessage?.content).toBe('preamble 1')
-    expect(result[2]?.assistantResponseMessage?.content).toBe('[system: tool calling continues]')
+    expect(result[2]?.assistantResponseMessage?.content).toBe('')
     // toolUses are preserved through the collapse.
     expect(result[2]?.assistantResponseMessage?.toolUses?.[0]?.toolUseId).toBe('u2')
   })
