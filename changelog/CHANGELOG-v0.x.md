@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.16.0...v0.17.0) (2026-07-31)
+
+
+### Features
+
+* 流中断分层恢复与历史污染修复 ([#82](https://github.com/sunerpy/opencode-kiro-auth/issues/82)) ([17f5352](https://github.com/sunerpy/opencode-kiro-auth/commit/17f535207c5d069bd83e2c62c0905d29b20c5d05))
+
 ## [0.16.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.15.4...v0.16.0) (2026-07-30)
 
 
