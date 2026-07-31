@@ -80,7 +80,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       const attempt = completedAttempt
       if (!attempt) throw new Error('No completed Kiro recovery attempt is available')
       await attempt.complete(completion)
-      if (options.priorStreamFailures > 0 || completion.recovered) {
+      if (options.priorStreamFailures > 0 || completion.recoveryTier !== 'none') {
         logger.log(
           'Kiro SDK event stream retry recovered',
           activeLogDetails({
@@ -89,6 +89,15 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
           })
         )
       }
+    },
+    onReplayAttempt: (telemetry) => {
+      logger.log(
+        'Kiro exact replay attempt finished',
+        activeLogDetails({
+          ...telemetry,
+          quotaNote: 'each exact replay attempt consumes one real SDK send'
+        })
+      )
     },
     onTerminal: options.onTerminal,
     onCancel: options.onCancel

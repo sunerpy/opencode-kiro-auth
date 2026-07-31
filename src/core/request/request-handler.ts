@@ -311,7 +311,8 @@ export class RequestHandler {
           const liveRecoveryEnabled =
             sdkPrep.streaming &&
             !this.config.stream_buffer_until_complete &&
-            this.config.stream_recovery_mode === 'reasoning_restart'
+            (this.config.stream_recovery_mode === 'reasoning_restart' ||
+              this.config.stream_recovery_mode === 'exact_replay')
           if (liveRecoveryEnabled) {
             const priorStreamFailures = streamFailureCount
             const availableStreamAttempts = this.config.stream_max_attempts - priorStreamFailures

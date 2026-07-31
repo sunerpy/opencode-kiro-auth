@@ -184,8 +184,13 @@ describe('loadConfig env overrides', () => {
     expect(loadConfig(projectDir).stream_recovery_mode).toBe('reasoning_restart')
   })
 
-  test('invalid recovery mode env falls back to off (schema .catch)', () => {
+  test('KIRO_STREAM_RECOVERY_MODE accepts the exact replay strategy', () => {
     process.env.KIRO_STREAM_RECOVERY_MODE = 'exact_replay'
+    expect(loadConfig(projectDir).stream_recovery_mode).toBe('exact_replay')
+  })
+
+  test('invalid recovery mode env falls back to off (schema .catch)', () => {
+    process.env.KIRO_STREAM_RECOVERY_MODE = 'hybrid_experimental'
     expect(loadConfig(projectDir).stream_recovery_mode).toBe('off')
   })
 
@@ -286,8 +291,13 @@ describe('loadConfig file merge', () => {
     writeUserConfig({ stream_recovery_mode: 'reasoning_restart' })
     expect(loadConfig(projectDir).stream_recovery_mode).toBe('reasoning_restart')
 
-    writeUserConfig({ stream_recovery_mode: 'exact_replay' })
+    writeUserConfig({ stream_recovery_mode: 'hybrid_experimental' })
     expect(loadConfig(projectDir).stream_recovery_mode).toBe('off')
+  })
+
+  test('user file accepts the exact replay recovery mode', () => {
+    writeUserConfig({ stream_recovery_mode: 'exact_replay' })
+    expect(loadConfig(projectDir).stream_recovery_mode).toBe('exact_replay')
   })
 
   test('the config literal union stays assignable to the coordinator mode', () => {

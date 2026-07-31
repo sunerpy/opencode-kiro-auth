@@ -360,7 +360,13 @@ export class ResponseHandler {
       }),
       close,
       complete: (completion) =>
-        this.fireCompletion(lifecycle, reasoning, emitted, model, completion.recovered)
+        this.fireCompletion(
+          lifecycle,
+          reasoning,
+          emitted,
+          model,
+          completion.recoveryTier === 'reasoning_restart'
+        )
     }
   }
 

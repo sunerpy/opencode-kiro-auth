@@ -114,7 +114,7 @@ function buildHandler(opts: {
   streamEventTimeoutEnabled?: boolean
   streamBufferUntilComplete?: boolean
   streamMaxAttempts?: number
-  streamRecoveryMode?: 'off' | 'reasoning_restart'
+  streamRecoveryMode?: 'off' | 'reasoning_restart' | 'exact_replay'
   maxRequestIterations?: number
   sdkResponseTimeoutEnabled?: boolean
   sdkResponseTimeoutMs?: number
@@ -1078,6 +1078,61 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     expect(acc.failCount).toBe(0)
   })
 
+  test('exact replay logs divergence and catch-up volumes without replay content', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [{ assistantResponseEvent: { content: 'prefix-0123456789' } }],
+            new Error('first reset')
+          ),
+          sdkStream([{ assistantResponseEvent: { content: 'preXix-0123456789' } }]),
+          sdkStream([
+            { assistantResponseEvent: { content: 'prefix- suffix' } },
+            { metadataEvent: { tokenUsage: { outputTokens: 2 } } }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'exact_replay'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      expect(logs.log).toHaveBeenCalledWith(
+        'Kiro exact replay attempt finished',
+        expect.objectContaining({
+          matchedReasoningChars: 0,
+          matchedVisibleChars: 3,
+          matchedToolCount: 0,
+          divergenceChannel: 'text',
+          replayOutcome: 'diverged',
+          attempts: 2,
+          quotaNote: 'each exact replay attempt consumes one real SDK send'
+        })
+      )
+      expect(logs.log).toHaveBeenCalledWith(
+        'Kiro exact replay attempt finished',
+        expect.objectContaining({
+          matchedReasoningChars: 0,
+          matchedVisibleChars: 7,
+          matchedToolCount: 0,
+          divergenceChannel: 'none',
+          replayOutcome: 'caught_up',
+          attempts: 3,
+          quotaNote: 'each exact replay attempt consumes one real SDK send'
+        })
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
   test('the first live recovery reuses its account and a later recovery prefers an alternative', async () => {
     const a = makeAccount({ id: 'A' })
     const b = makeAccount({ id: 'B' })
@@ -1597,6 +1652,38 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
 
     expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
     expect(lookupSignedTool('recovered').refusal).toBe('miss')
+  })
+
+  test('a caught-up exact replay publishes its final-attempt envelope', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [
+            { reasoningContentEvent: { text: 'reasoning-exact' } },
+            { reasoningContentEvent: { signature: 'signature-exact' } },
+            { assistantResponseEvent: { content: 'visible-exact' } }
+          ],
+          new Error('late reset')
+        ),
+        sdkStream(signedToolEvents('exact'))
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'exact_replay'
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+    expect(lookupSignedTool('exact').envelope).toEqual({
+      kind: 'reasoningText',
+      text: 'reasoning-exact',
+      signature: 'signature-exact'
+    })
   })
 
   test('a superseded attempt cannot republish after the recovered final answer clears its loop', async () => {

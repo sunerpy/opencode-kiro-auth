@@ -19,10 +19,12 @@ export type Effort = z.infer<typeof EffortSchema>
  * - off: no recovery; behavior is byte-for-byte identical to pre-recovery builds
  * - reasoning_restart: restart the turn from accumulated reasoning instead of
  *   replaying already-emitted content
+ * - exact_replay: includes reasoning_restart, then uses exact three-channel shadow
+ *   replay when visible text or tools have already been delivered
  * The literal strings must stay identical to `StreamRecoveryMode` in
  * src/core/request/stream-recovery.ts (the coordinator consumes this value).
  */
-export const StreamRecoveryModeSchema = z.enum(['off', 'reasoning_restart'])
+export const StreamRecoveryModeSchema = z.enum(['off', 'reasoning_restart', 'exact_replay'])
 export type StreamRecoveryMode = z.infer<typeof StreamRecoveryModeSchema>
 
 export const RegionSchema = z.enum([

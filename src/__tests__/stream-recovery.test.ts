@@ -55,7 +55,9 @@ describe('StreamRecoveryCoordinator', () => {
     // Then
     expect(labels).toEqual(['reasoning-1', 'reasoning-2', 'finish'])
     expect(harness.requestedAttempts).toEqual([1, 2])
-    expect(harness.completions).toEqual([{ attemptIndex: 2, recovered: true }])
+    expect(harness.completions).toEqual([
+      { attemptIndex: 2, recoveryTier: 'reasoning_restart', recovered: true }
+    ])
     expect(harness.terminalCalls()).toBe(1)
   })
 
@@ -193,7 +195,9 @@ describe('StreamRecoveryCoordinator', () => {
     const labels = await collect(harness.coordinator.stream)
     // Then
     expect(labels).toEqual(['reasoning'])
-    expect(harness.completions).toEqual([{ attemptIndex: 2, recovered: true }])
+    expect(harness.completions).toEqual([
+      { attemptIndex: 2, recoveryTier: 'reasoning_restart', recovered: true }
+    ])
     expect(harness.terminalCalls()).toBe(1)
   })
 

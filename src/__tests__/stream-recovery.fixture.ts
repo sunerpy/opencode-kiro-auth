@@ -3,6 +3,7 @@ import {
   StreamRecoveryCoordinator,
   type AttemptHandle,
   type AttemptObservation,
+  type ReplayAttemptTelemetry,
   type StreamRecoveryCompletion,
   type StreamRecoveryMode
 } from '../core/request/stream-recovery.js'
@@ -38,7 +39,7 @@ export const ELIGIBLE = {
 
 export function chunk(
   label: string,
-  delta: Readonly<Record<string, string>> = {},
+  delta: Readonly<Record<string, unknown>> = {},
   finishReason: string | null = null
 ): unknown {
   return { label, choices: [{ delta, finish_reason: finishReason }] }
@@ -81,6 +82,7 @@ export function createHarness(
 ) {
   const requestedAttempts: number[] = []
   const completions: StreamRecoveryCompletion[] = []
+  const replayTelemetry: ReplayAttemptTelemetry[] = []
   let terminalCalls = 0
   const signal = overrides.signal ?? new AbortController().signal
   const coordinator = new StreamRecoveryCoordinator({
@@ -101,6 +103,9 @@ export function createHarness(
     onComplete: (completion) => {
       completions.push(completion)
     },
+    onReplayAttempt: (telemetry) => {
+      replayTelemetry.push(telemetry)
+    },
     onTerminal: () => {
       terminalCalls++
     }
@@ -109,6 +114,7 @@ export function createHarness(
     coordinator,
     requestedAttempts,
     completions,
+    replayTelemetry,
     terminalCalls: () => terminalCalls
   }
 }
