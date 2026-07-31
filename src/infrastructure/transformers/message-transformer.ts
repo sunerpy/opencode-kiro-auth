@@ -98,6 +98,45 @@ export interface ParsedAssistantMessage {
 }
 
 /**
+ * Literal separators this plugin has written into replayed assistant turns.
+ *
+ * They are self-replicating: the model copies them into its own visible output, the
+ * client persists that output as assistant history, and replays it on every later
+ * request. Removing the producer alone therefore leaves existing sessions poisoned
+ * forever, so inbound assistant text is scrubbed as history is rebuilt.
+ */
+const POLLUTION_MARKERS = [
+  '[system: tool calling continues]',
+  '[system: conversation continues]'
+] as const
+
+const POLLUTION_MARKER_PATTERN = /(\s*)\[system: (?:tool calling|conversation) continues\](\s*)/g
+
+function newlineCount(text: string): number {
+  let count = 0
+  for (const ch of text) if (ch === '\n') count += 1
+  return count
+}
+
+/**
+ * Remove replayed pollution markers from one inbound assistant text.
+ *
+ * Text without any marker is returned byte-for-byte. When a marker is removed, the
+ * whitespace it was surrounded by is re-emitted as the smallest separator the two
+ * remaining fragments already had, so real content keeps its own shape.
+ */
+export function stripPollutionMarkers(text: string): string {
+  if (!text || !POLLUTION_MARKERS.some((marker) => text.includes(marker))) return text
+  return text
+    .replace(POLLUTION_MARKER_PATTERN, (_match, before: string, after: string) => {
+      const newlines = Math.min(2, Math.max(newlineCount(before), newlineCount(after)))
+      if (newlines > 0) return '\n'.repeat(newlines)
+      return before.length > 0 || after.length > 0 ? ' ' : ''
+    })
+    .trim()
+}
+
+/**
  * Extract the reasoning text an OpenAI-compatible assistant message carries at
  * the top level.
  *
@@ -138,6 +177,31 @@ export function findActiveToolLoopStart(msgs: any[]): number {
     break
   }
   return start
+}
+
+/**
+ * Index of the single assistant turn allowed to flatten its chain-of-thought into
+ * `<thinking>` text when the reasoning-signature cache misses.
+ *
+ * Flattening reasoning into assistant text on every replayed turn teaches the model,
+ * across dozens of in-context examples, that an assistant turn is its own scratchpad —
+ * which is how a session ends up narrating its next step instead of issuing a tool
+ * call. Both vendors instead require reasoning to be handed back as an untouched
+ * structured object, and Kiro's `AssistantResponseMessage` schema carries no reasoning
+ * field at all. The bound is one turn rather than zero because signature recovery
+ * deliberately misses on every Tier A stream recovery, so dropping the fallback
+ * outright would strip recovered turns of all reasoning continuity.
+ *
+ * The chosen turn is the most recent assistant message, which inside an in-flight tool
+ * loop is by construction that loop's own latest assistant turn, because
+ * `findActiveToolLoopStart` returns the start of a *trailing* run. Returns -1 when the
+ * conversation carries no assistant turn.
+ */
+export function findThinkingTextReplayIndex(msgs: any[]): number {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.role === 'assistant') return i
+  }
+  return -1
 }
 
 function isToolResultMessage(m: any): boolean {
@@ -191,7 +255,11 @@ export function parseAssistantMessage(
 
   if (!thinking && options?.recoverReasoning) thinking = extractReasoningText(m)
 
-  return { content, thinking, toolUses }
+  return {
+    content: stripPollutionMarkers(content),
+    thinking: stripPollutionMarkers(thinking),
+    toolUses
+  }
 }
 
 export function applyThinkingToContent(

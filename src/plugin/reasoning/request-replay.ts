@@ -48,22 +48,33 @@ function resolveSignedReasoning(input: ReplayLookupInput): NativeReasoningConten
   }
 }
 
+export interface AssistantReplayScope {
+  /** Native signed replay is allowed only for one unmerged turn in the active tool loop. */
+  readonly recoverReasoning: boolean
+  /** The signature-miss `<thinking>` text fallback is allowed for one turn only. */
+  readonly allowThinkingText: boolean
+}
+
 /**
  * Rebuild one assistant turn from its inbound OpenAI-compatible shape.
  *
- * Native replay is allowed only for one unmerged source turn in the active
- * tool loop. A cache miss (or any refusal) retains Wave 1's thinking-text
- * fallback byte-for-byte.
+ * A signature hit emits native `reasoningContent` and no thinking text. On a miss the
+ * thinking-text fallback is retained byte-for-byte, but only for the turn the caller
+ * marks with `allowThinkingText`; every other turn keeps its visible content and tool
+ * uses and drops the thinking text. This is the single funnel for both channels the
+ * fallback reaches — `response.content` and the `fallbackContent` the history builder
+ * restores when it merges adjacent assistant turns.
  */
 export function reconstructAssistantResponse(
   message: unknown,
   effectiveModel: string,
-  recoverReasoning: boolean
+  scope: AssistantReplayScope
 ): ReconstructedAssistantResponse {
-  const parsed = parseAssistantMessage(message, { recoverReasoning })
-  const fallbackContent = applyThinkingToContent(parsed.content, parsed.thinking)
+  const parsed = parseAssistantMessage(message, { recoverReasoning: scope.recoverReasoning })
+  const thinkingText = scope.allowThinkingText ? parsed.thinking : ''
+  const fallbackContent = applyThinkingToContent(parsed.content, thinkingText)
   const reasoningContent =
-    recoverReasoning && !spansMultipleAssistantSourceTurns(message)
+    scope.recoverReasoning && !spansMultipleAssistantSourceTurns(message)
       ? resolveSignedReasoning({
           message,
           visibleText: parsed.content,
@@ -72,7 +83,7 @@ export function reconstructAssistantResponse(
         })
       : undefined
   const response: AssistantResponse = {
-    content: applyThinkingToContent(parsed.content, parsed.thinking, reasoningContent !== undefined)
+    content: applyThinkingToContent(parsed.content, thinkingText, reasoningContent !== undefined)
   }
   if (parsed.toolUses.length > 0) response.toolUses = parsed.toolUses
   if (reasoningContent !== undefined) response.reasoningContent = reasoningContent

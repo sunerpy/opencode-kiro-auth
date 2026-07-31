@@ -33,6 +33,7 @@ import type {
 const MODEL = 'claude-opus-5'
 const SIG = `sig-${'A'.repeat(320)}`
 const REASONING = 'private chain of thought that the signature covers'
+const STREAMED_REPLY = 'the streamed reply body that must never reach a log'
 const REDACTED_BYTES = new Uint8Array(
   Array.from({ length: 96 }, (_value, index) => (index * 7 + 13) % 256)
 )
@@ -326,7 +327,11 @@ function makeAccount(): ManagedAccount {
   }
 }
 
-function wireHandler(prep: SdkPreparedRequest, send: () => Promise<unknown>): RequestHandler {
+function wireHandler(
+  prep: SdkPreparedRequest,
+  send: () => Promise<unknown>,
+  configOverrides: Record<string, unknown> = {}
+): RequestHandler {
   const account = makeAccount()
   const accountManager: any = {
     getAccounts: () => [account],
@@ -357,7 +362,8 @@ function wireHandler(prep: SdkPreparedRequest, send: () => Promise<unknown>): Re
     auto_effort_mapping: false,
     token_expiry_buffer_ms: 120000,
     auto_sync_kiro_cli: false,
-    account_selection_strategy: 'sticky'
+    account_selection_strategy: 'sticky',
+    ...configOverrides
   }
   const handler = new RequestHandler(accountManager, config, {
     save: mock(async () => {}),
@@ -377,6 +383,161 @@ function wireHandler(prep: SdkPreparedRequest, send: () => Promise<unknown>): Re
   internals.makeSdkClient = () => ({ send })
   return handler
 }
+
+function streamingPrep(): SdkPreparedRequest {
+  return { ...signedPrep(), streaming: true }
+}
+
+function sdkStreamOf(events: unknown[], failure?: Error): () => Promise<unknown> {
+  return async () => ({
+    generateAssistantResponseResponse: (async function* () {
+      for (const event of events) yield event
+      if (failure) throw failure
+    })()
+  })
+}
+
+async function drain(response: Response): Promise<void> {
+  const reader = response.body!.getReader()
+  try {
+    while (!(await reader.read()).done) {}
+  } catch {}
+}
+
+describe('§6.8 redaction — stream observability fields', () => {
+  test('failure-log channel fields carry volume only, never reasoning or reply text', async () => {
+    const handler = wireHandler(
+      streamingPrep(),
+      sdkStreamOf(
+        [
+          { reasoningContentEvent: { text: REASONING } },
+          { assistantResponseEvent: { content: STREAMED_REPLY } }
+        ],
+        new Error('stream died after output')
+      )
+    )
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    const text = allLogText()
+    expect(text).toContain(`"emittedReasoningChars":${REASONING.length}`)
+    expect(text).toContain(`"emittedVisibleChars":${STREAMED_REPLY.length}`)
+    expect(text).toContain('"emittedToolCount":0')
+    expect(text).toContain('"sawToolIntent":false')
+    expect(text).not.toContain(REASONING)
+    expect(text).not.toContain(STREAMED_REPLY)
+    expectNoLeak(text)
+  })
+
+  test('recovery-path retry and terminal logs carry volume only', async () => {
+    let sends = 0
+    const handler = wireHandler(
+      streamingPrep(),
+      async () => {
+        sends++
+        const attempt = sends
+        return {
+          generateAssistantResponseResponse: (async function* () {
+            yield { reasoningContentEvent: { text: REASONING } }
+            throw new Error(`recovery attempt ${attempt} died`)
+          })()
+        }
+      },
+      { stream_max_attempts: 2, stream_recovery_mode: 'reasoning_restart' }
+    )
+    ;(handler as unknown as { sleep: () => Promise<void> }).sleep = async () => {}
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    expect(sends).toBe(2)
+    const text = allLogText()
+    expect(text).toContain('"outcome":"retrying"')
+    expect(text).toContain('"outcome":"terminated_after_output"')
+    expect(text).toContain(`"emittedReasoningChars":${REASONING.length}`)
+    expect(text).toContain('"emittedVisibleChars":0')
+    expect(text).not.toContain(REASONING)
+    expectNoLeak(text)
+  })
+
+  test('exact replay telemetry carries matched volumes only, never replay text', async () => {
+    const SHADOW_REPLY = `${STREAMED_REPLY.slice(0, -3)}LOG`
+    const MATCHED = STREAMED_REPLY.length - 3
+    let sends = 0
+    const handler = wireHandler(
+      streamingPrep(),
+      async () => {
+        sends++
+        const failing = sends === 1
+        return {
+          generateAssistantResponseResponse: (async function* () {
+            yield { reasoningContentEvent: { text: REASONING } }
+            yield { assistantResponseEvent: { content: failing ? STREAMED_REPLY : SHADOW_REPLY } }
+            if (failing) throw new Error('reset after visible output')
+          })()
+        }
+      },
+      { stream_max_attempts: 2, stream_recovery_mode: 'exact_replay' }
+    )
+    ;(handler as unknown as { sleep: () => Promise<void> }).sleep = async () => {}
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    expect(sends).toBe(2)
+    const text = allLogText()
+    expect(text).toContain('Kiro exact replay attempt finished')
+    expect(text).toContain('"replayOutcome":"diverged"')
+    expect(text).toContain('"divergenceChannel":"text"')
+    expect(text).toContain(`"matchedReasoningChars":${REASONING.length}`)
+    expect(text).toContain(`"matchedVisibleChars":${MATCHED}`)
+    expect(text).not.toContain(REASONING)
+    expect(text).not.toContain(STREAMED_REPLY)
+    expect(text).not.toContain(SHADOW_REPLY)
+    expectNoLeak(text)
+  })
+
+  test('the missing-completion-metadata marker carries volume only', async () => {
+    const handler = wireHandler(
+      streamingPrep(),
+      sdkStreamOf([
+        { reasoningContentEvent: { text: REASONING } },
+        { assistantResponseEvent: { content: STREAMED_REPLY } }
+      ])
+    )
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    const text = allLogText()
+    expect(text).toContain('Kiro stream ended without completion metadata')
+    expect(text).toContain(`"emittedVisibleChars":${STREAMED_REPLY.length}`)
+    expect(text).not.toContain(REASONING)
+    expect(text).not.toContain(STREAMED_REPLY)
+    expectNoLeak(text)
+  })
+})
 
 describe('§6.8 redaction — end to end with enable_log_api_request', () => {
   test('an SDK error thrown while a signed history is in flight leaks nothing', async () => {

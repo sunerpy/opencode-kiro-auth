@@ -7,6 +7,7 @@ import {
   DEFAULT_CONFIG,
   KiroConfigSchema,
   RegionSchema,
+  StreamRecoveryModeSchema,
   type KiroConfig
 } from './schema'
 
@@ -199,6 +200,8 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       config.sdk_response_timeout_ms
     ),
 
+    sdk_http_keep_alive: parseBooleanEnv(env.KIRO_SDK_HTTP_KEEP_ALIVE, config.sdk_http_keep_alive),
+
     stream_event_timeout_enabled: parseBooleanEnv(
       env.KIRO_STREAM_EVENT_TIMEOUT_ENABLED,
       config.stream_event_timeout_enabled
@@ -212,6 +215,10 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
     ),
 
     stream_max_attempts: parseNumberEnv(env.KIRO_STREAM_MAX_ATTEMPTS, config.stream_max_attempts),
+
+    stream_recovery_mode: env.KIRO_STREAM_RECOVERY_MODE
+      ? StreamRecoveryModeSchema.catch('off').parse(env.KIRO_STREAM_RECOVERY_MODE)
+      : config.stream_recovery_mode,
 
     token_expiry_buffer_ms: parseNumberEnv(
       env.KIRO_TOKEN_EXPIRY_BUFFER_MS,

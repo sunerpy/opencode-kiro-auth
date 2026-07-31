@@ -1,12 +1,17 @@
 import { KIRO_CONSTANTS } from '../../constants.js'
 import {
+  MAX_KIRO_IMAGES,
   convertImagesToKiroFormat,
   extractAllImages,
   extractTextFromParts
 } from '../../plugin/image-handler.js'
 import { reconstructAssistantResponse } from '../../plugin/reasoning/request-replay.js'
 import type { CodeWhispererMessage } from '../../plugin/types'
-import { findActiveToolLoopStart, getContentText } from './message-transformer.js'
+import {
+  findActiveToolLoopStart,
+  findThinkingTextReplayIndex,
+  getContentText
+} from './message-transformer.js'
 import { deduplicateToolResults } from './tool-transformer.js'
 
 /**
@@ -18,6 +23,11 @@ import { deduplicateToolResults } from './tool-transformer.js'
  *
  * Strips text from intermediate ASST(toolUses)→USER(toolResults) pairs, keeping only the
  * first assistant text and all tool_use/tool_result pairs.
+ *
+ * Collapsed turns carry `content: ''`, matching the official Kiro IDE shape for a
+ * tool-only assistant turn. A placeholder string here is not cosmetic: the model reads
+ * it as dozens of in-context examples of what an assistant turn looks like when it is
+ * about to call a tool, and echoes it verbatim instead of emitting a real tool call.
  */
 export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhispererMessage[] {
   if (history.length < 4) return history
@@ -61,7 +71,7 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
             if (!assistantResponse.toolUses) continue
             result.push({
               assistantResponseMessage: {
-                content: '[system: tool calling continues]',
+                content: '',
                 toolUses: assistantResponse.toolUses,
                 ...(assistantResponse.reasoningContent !== undefined
                   ? { reasoningContent: assistantResponse.reasoningContent }
@@ -87,6 +97,59 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
   return result
 }
 
+type KiroUserTurn = NonNullable<CodeWhispererMessage['userInputMessage']>
+
+/**
+ * Fold a user-shaped turn into the preceding history entry when that entry is also
+ * user-shaped, reporting whether it was absorbed.
+ *
+ * Kiro expects `history` to alternate user/assistant, yet a transcript legitimately
+ * places two user-shaped entries side by side: a text message followed by tool
+ * results, tool results followed by a fresh instruction, or two client-side user
+ * messages. Synthesizing an assistant turn to separate them puts
+ * system-directive-looking text into assistant content, which the model reads as an
+ * in-context example of its own voice and reproduces verbatim instead of issuing a
+ * real tool call. Merging removes the need for a separator at the root, matching
+ * jwadow/kiro-gateway PR #238 and Kiro-Go's adjacent tool-result merge.
+ *
+ * The surviving entry keeps its position and its own `modelId`/`origin`, so ordering
+ * and wire metadata are untouched. Images are capped at the converter's own per-turn
+ * limit, because two merged turns can otherwise exceed what the API accepts.
+ */
+function mergeIntoPreviousUserTurn(
+  history: CodeWhispererMessage[],
+  incoming: KiroUserTurn
+): boolean {
+  const previous = history[history.length - 1]?.userInputMessage
+  if (!previous) return false
+
+  if (incoming.content) {
+    previous.content = previous.content
+      ? `${previous.content}\n\n${incoming.content}`
+      : incoming.content
+  }
+
+  const incomingResults = incoming.userInputMessageContext?.toolResults
+  if (incomingResults && incomingResults.length > 0) {
+    const context = (previous.userInputMessageContext ??= {})
+    context.toolResults = deduplicateToolResults([
+      ...(context.toolResults ?? []),
+      ...incomingResults
+    ])
+  }
+
+  if (incoming.images && incoming.images.length > 0) {
+    const combined = [...(previous.images ?? []), ...incoming.images]
+    previous.images = combined.slice(0, MAX_KIRO_IMAGES)
+    const omitted = combined.length - previous.images.length
+    if (omitted > 0) {
+      previous.content = `${previous.content}\n\n[${omitted} image(s) omitted due to API limits]`
+    }
+  }
+
+  return true
+}
+
 export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessage[] {
   let history: CodeWhispererMessage[] = []
   const fallbackByAssistant = new Map<
@@ -94,6 +157,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
     string
   >()
   const loopStart = findActiveToolLoopStart(msgs)
+  const thinkingReplayIndex = findThinkingTextReplayIndex(msgs)
   for (let i = 0; i < msgs.length - 1; i++) {
     const m = msgs[i]
     if (!m) continue
@@ -127,10 +191,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
       }
 
       if (trs.length) uim.userInputMessageContext = { toolResults: deduplicateToolResults(trs) }
-      const prev = history[history.length - 1]
-      if (prev && prev.userInputMessage)
-        history.push({ assistantResponseMessage: { content: '[system: conversation continues]' } })
-      history.push({ userInputMessage: uim })
+      if (!mergeIntoPreviousUserTurn(history, uim)) history.push({ userInputMessage: uim })
     } else if (m.role === 'tool') {
       const trs: any[] = []
       if (m.tool_results) {
@@ -147,19 +208,19 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
           toolUseId: m.tool_call_id
         })
       }
-      const prev = history[history.length - 1]
-      if (prev && prev.userInputMessage)
-        history.push({ assistantResponseMessage: { content: '[system: conversation continues]' } })
-      history.push({
-        userInputMessage: {
-          content: '',
-          modelId: resolved,
-          origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR,
-          userInputMessageContext: { toolResults: deduplicateToolResults(trs) }
-        }
-      })
+      const toolTurn: KiroUserTurn = {
+        content: '',
+        modelId: resolved,
+        origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR,
+        userInputMessageContext: { toolResults: deduplicateToolResults(trs) }
+      }
+      if (!mergeIntoPreviousUserTurn(history, toolTurn))
+        history.push({ userInputMessage: toolTurn })
     } else if (m.role === 'assistant') {
-      const reconstructed = reconstructAssistantResponse(m, resolved, i >= loopStart)
+      const reconstructed = reconstructAssistantResponse(m, resolved, {
+        recoverReasoning: i >= loopStart,
+        allowThinkingText: i === thinkingReplayIndex
+      })
       const arm = reconstructed.response
 
       if (!arm.content && !arm.toolUses && !arm.reasoningContent) {

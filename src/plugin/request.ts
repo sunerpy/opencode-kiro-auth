@@ -9,6 +9,7 @@ import {
 } from '../infrastructure/transformers/history-builder.js'
 import {
   findOriginalToolCall,
+  findThinkingTextReplayIndex,
   getContentText,
   mergeAdjacentMessages
 } from '../infrastructure/transformers/message-transformer.js'
@@ -103,6 +104,7 @@ function buildCodeWhispererRequest(
   const lastMsg = msgs[msgs.length - 1]
   if (lastMsg && lastMsg.role === 'assistant' && getContentText(lastMsg) === '{') msgs.pop()
   const cwTools = tools ? convertToolsToCodeWhisperer(tools) : []
+  const thinkingReplayIndex = findThinkingTextReplayIndex(msgs)
   let history = buildHistory(msgs, resolved)
 
   const curMsg = msgs[msgs.length - 1]
@@ -118,7 +120,10 @@ function buildCodeWhispererRequest(
       const lastHistEntry = history[history.length - 1]
       const historyEndsWithUser = lastHistEntry?.userInputMessage
       if (historyEndsWithUser) {
-        const reconstructed = reconstructAssistantResponse(prevMsg, resolved, false)
+        const reconstructed = reconstructAssistantResponse(prevMsg, resolved, {
+          recoverReasoning: false,
+          allowThinkingText: msgs.length - 2 === thinkingReplayIndex
+        })
         const arm = reconstructed.response
         if (arm.content || arm.toolUses || arm.reasoningContent) {
           history.push({ assistantResponseMessage: arm })
@@ -133,7 +138,10 @@ function buildCodeWhispererRequest(
   const curImgs: any[] = []
 
   if (curMsg.role === 'assistant') {
-    const arm = reconstructAssistantResponse(curMsg, resolved, true).response
+    const arm = reconstructAssistantResponse(curMsg, resolved, {
+      recoverReasoning: true,
+      allowThinkingText: msgs.length - 1 === thinkingReplayIndex
+    }).response
 
     if (arm.content || arm.toolUses || arm.reasoningContent) {
       history.push({ assistantResponseMessage: arm })
@@ -141,8 +149,14 @@ function buildCodeWhispererRequest(
     curContent = '[system: conversation continues]'
   } else {
     const prev = history[history.length - 1]
+    // `currentMessage` is always a user turn, so a trailing user-shaped history entry
+    // breaks Kiro's alternation. Unlike two adjacent history turns this pair cannot be
+    // merged: they straddle the history/currentMessage boundary, and the trailing entry
+    // is usually the injected system-prompt turn, which has to stay in history. An
+    // empty assistant turn is the official tool-only shape and, unlike a placeholder
+    // string, gives the model no text of its own voice to reproduce.
     if (prev && !prev.assistantResponseMessage)
-      history.push({ assistantResponseMessage: { content: '[system: conversation continues]' } })
+      history.push({ assistantResponseMessage: { content: '' } })
     if (curMsg.role === 'tool') {
       if (curMsg.tool_results) {
         for (const tr of curMsg.tool_results)

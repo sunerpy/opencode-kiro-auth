@@ -11,20 +11,37 @@ interface ClientCacheEntry {
   client: CodeWhispererStreamingClient
   token: string
   effort?: Effort
+  keepAlive: boolean
 }
 
 const clientCache = new Map<string, ClientCacheEntry>()
 const KIRO_CLI_MAX_ATTEMPTS = 3
+const SDK_MAX_SOCKETS = 50
+
+export interface SdkTransportOptions {
+  /**
+   * Controls reuse only after a request completes. It does not cap concurrent
+   * active streams; maxSockets remains at the Smithy default of 50.
+   */
+  keepAlive?: boolean
+}
 
 export function createSdkClient(
   auth: KiroAuthDetails,
   region: string,
-  effort?: Effort
+  effort?: Effort,
+  transport: SdkTransportOptions = {}
 ): CodeWhispererStreamingClient {
-  const cacheKey = `${region}:${auth.email || 'default'}:${effort || 'none'}`
+  const keepAlive = transport.keepAlive ?? false
+  const cacheKey = `${region}:${auth.email || 'default'}:${effort || 'none'}:${keepAlive ? 'keep' : 'fresh'}`
   const cached = clientCache.get(cacheKey)
 
-  if (cached && cached.token === auth.access && cached.effort === effort) {
+  if (
+    cached &&
+    cached.token === auth.access &&
+    cached.effort === effort &&
+    cached.keepAlive === keepAlive
+  ) {
     return cached.client
   }
 
@@ -35,6 +52,12 @@ export function createSdkClient(
     token: () => Promise.resolve({ token }),
     maxAttempts: KIRO_CLI_MAX_ATTEMPTS,
     retryMode: 'standard',
+    requestHandler: {
+      httpsAgent: {
+        keepAlive,
+        maxSockets: SDK_MAX_SOCKETS
+      }
+    },
     customUserAgent: [[KIRO_CONSTANTS.USER_AGENT]]
   })
 
@@ -68,7 +91,7 @@ export function createSdkClient(
     )
   }
 
-  clientCache.set(cacheKey, { client, token, effort })
+  clientCache.set(cacheKey, { client, token, effort, keepAlive })
   return client
 }
 

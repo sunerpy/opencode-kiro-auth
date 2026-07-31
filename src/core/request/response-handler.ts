@@ -7,8 +7,14 @@ import { parseEventStream } from '../../plugin/response'
 import { transformKiroStream } from '../../plugin/streaming/index.js'
 import { ReasoningAccumulator } from '../../plugin/streaming/reasoning-accumulator.js'
 import { transformSdkStream } from '../../plugin/streaming/sdk-stream-transformer.js'
+import type { StreamObserver } from '../../plugin/streaming/stream-observer.js'
 import type { KiroReasoningContent } from '../../plugin/types.js'
 import { SdkEventStreamIterationError } from './stream-error.js'
+import type {
+  AttemptHandle,
+  StreamRecoveryCompletion,
+  StreamRecoveryMode
+} from './stream-recovery.js'
 
 /**
  * What a completed SDK stream hands back to the request layer.
@@ -26,6 +32,19 @@ export interface SdkCompletionPayload {
   attemptId: string
   loopId?: string
   effectiveModel: string
+  recovered?: boolean
+}
+
+export type SdkStreamingAttempt = AttemptHandle & {
+  readonly complete: (completion: StreamRecoveryCompletion) => Promise<void>
+}
+
+export type SdkStreamingAttemptInput = {
+  readonly sdkResponse: unknown
+  readonly model: string
+  readonly conversationId: string
+  readonly lifecycle: SdkResponseLifecycle
+  readonly recoveryMode: StreamRecoveryMode
 }
 
 export interface SdkResponseLifecycle {
@@ -43,11 +62,30 @@ export interface SdkResponseLifecycle {
   /** Loop root recovered from inbound history, if any. */
   inheritedLoopId?: string
   effectiveModel?: string
+  /**
+   * Owned by the caller so the ingestion-time signals stay readable after this
+   * attempt fails — the streaming branch only feeds it.
+   */
+  streamObserver?: StreamObserver
+  /**
+   * Owned by the caller for the same reason as `streamObserver`: the emitted
+   * per-channel volume has to stay readable after the attempt fails. Defaults to
+   * an internal instance when absent, so callers that do not observe are unchanged.
+   */
+  emittedOutput?: EmittedOutputAccumulator
+  /**
+   * The SDK iterator reached a clean `done` without ever delivering completion
+   * metadata. Observation only — success handling proceeds exactly as before.
+   */
+  onCleanEofWithoutCompletionMetadata?: () => void
+  recoveryMode?: StreamRecoveryMode
 }
 
 interface WrappedSdkStream {
   response: any
   closeRaw: () => Promise<void>
+  /** Whether a `metadataEvent.tokenUsage` event was seen so far on this attempt. */
+  completionMetadataSeen: () => boolean
 }
 
 function abortReason(signal: AbortSignal): unknown {
@@ -76,7 +114,7 @@ function wrapSdkEventStream(
 ): WrappedSdkStream {
   const eventStream = sdkResponse.generateAssistantResponseResponse
   if (!eventStream || typeof eventStream[Symbol.asyncIterator] !== 'function') {
-    return { response: sdkResponse, closeRaw: async () => {} }
+    return { response: sdkResponse, closeRaw: async () => {}, completionMetadataSeen: () => false }
   }
 
   const rawIterator = eventStream[Symbol.asyncIterator]() as AsyncIterator<unknown>
@@ -160,7 +198,8 @@ function wrapSdkEventStream(
 
   return {
     response: { ...sdkResponse, generateAssistantResponseResponse: wrappedStream },
-    closeRaw
+    closeRaw,
+    completionMetadataSeen: () => completionMetadataSeen
   }
 }
 
@@ -173,8 +212,23 @@ function isSemanticChunk(chunk: any): boolean {
   )
 }
 
-function encodeSseChunk(chunk: unknown): Uint8Array {
+export function encodeSseChunk(chunk: unknown): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`)
+}
+
+class SemanticStreamTruncationError extends Error {
+  readonly name = 'SemanticStreamTruncationError'
+
+  constructor() {
+    super('Kiro SDK event stream ended with an unclosed tool intent')
+  }
+}
+
+function isSemanticTruncation(
+  mode: StreamRecoveryMode,
+  observer: StreamObserver | undefined
+): boolean {
+  return mode !== 'off' && observer?.hasOpenToolIntent === true
 }
 
 function bufferedSseResponse(chunks: Uint8Array[]): Response {
@@ -199,7 +253,8 @@ export class ResponseHandler {
     lifecycle: SdkResponseLifecycle,
     reasoning: ReasoningAccumulator,
     emitted: EmittedOutputAccumulator,
-    model: string
+    model: string,
+    recovered: boolean
   ): Promise<void> {
     if (!lifecycle.onComplete) return
     const toolUses = emitted.toolUses()
@@ -212,8 +267,100 @@ export class ResponseHandler {
       toolUses,
       attemptId: lifecycle.attemptId ?? '',
       ...(resolved.loopId !== undefined ? { loopId: resolved.loopId } : {}),
-      effectiveModel: lifecycle.effectiveModel ?? model
+      effectiveModel: lifecycle.effectiveModel ?? model,
+      recovered
     })
+  }
+
+  async prepareSdkStreamingAttempt(input: SdkStreamingAttemptInput): Promise<SdkStreamingAttempt> {
+    const { sdkResponse, model, conversationId, lifecycle, recoveryMode } = input
+    const wrapped = wrapSdkEventStream(
+      sdkResponse,
+      lifecycle.signal,
+      lifecycle.onUpstreamWaitStart,
+      lifecycle.onUpstreamWaitEnd,
+      lifecycle.onIterationError
+    )
+    const reasoning = new ReasoningAccumulator()
+    const emitted = lifecycle.emittedOutput ?? new EmittedOutputAccumulator()
+    const transformed = transformSdkStream(
+      wrapped.response,
+      model,
+      conversationId,
+      reasoning,
+      lifecycle.streamObserver,
+      recoveryMode !== 'off'
+    )
+    const prefetched: unknown[] = []
+    let prefetchIndex = 0
+    let drained = false
+    let closed = false
+
+    const close = async (): Promise<void> => {
+      if (closed) return
+      closed = true
+      await Promise.allSettled([transformed.return(undefined)])
+      await wrapped.closeRaw()
+    }
+    const readNext = async (): Promise<IteratorResult<unknown>> => {
+      if (drained) return { done: true, value: undefined }
+      const item = await transformed.next()
+      if (item.done) {
+        if (!wrapped.completionMetadataSeen()) lifecycle.onCleanEofWithoutCompletionMetadata?.()
+        if (isSemanticTruncation(recoveryMode, lifecycle.streamObserver)) {
+          throw new SdkEventStreamIterationError(new SemanticStreamTruncationError())
+        }
+        drained = true
+        return { done: true, value: undefined }
+      }
+      emitted.observeChunk(item.value)
+      return item
+    }
+
+    try {
+      while (true) {
+        const item = await readNext()
+        if (item.done) break
+        prefetched.push(item.value)
+        if (isSemanticChunk(item.value)) break
+      }
+    } catch (error) {
+      await close()
+      throw error
+    }
+
+    return {
+      chunks: {
+        next: async () => {
+          if (prefetchIndex < prefetched.length) {
+            const prefetchedChunk = prefetched[prefetchIndex]
+            prefetchIndex++
+            return { done: false, value: prefetchedChunk }
+          }
+          return readNext()
+        },
+        return: async () => {
+          await close()
+          return { done: true, value: undefined }
+        }
+      },
+      observed: () => ({
+        emitted: {
+          visibleChars: emitted.visibleText.length,
+          toolCount: emitted.toolUses().length
+        },
+        sawToolIntent: lifecycle.streamObserver?.sawToolIntent ?? false
+      }),
+      close,
+      complete: (completion) =>
+        this.fireCompletion(
+          lifecycle,
+          reasoning,
+          emitted,
+          model,
+          completion.recoveryTier === 'reasoning_restart'
+        )
+    }
   }
 
   async handleSuccess(
@@ -278,13 +425,27 @@ export class ResponseHandler {
       lifecycle.onIterationError
     )
     const reasoning = new ReasoningAccumulator()
-    const emitted = new EmittedOutputAccumulator()
-    const transformed = transformSdkStream(wrapped.response, model, conversationId, reasoning)
+    const emitted = lifecycle.emittedOutput ?? new EmittedOutputAccumulator()
+    const transformed = transformSdkStream(
+      wrapped.response,
+      model,
+      conversationId,
+      reasoning,
+      lifecycle.streamObserver,
+      (lifecycle.recoveryMode ?? 'off') !== 'off'
+    )
     const buffered: Uint8Array[] = []
     // One shared publication point for all three completion paths. Duplicating it
-    // per site is how the live pull-driven path silently stops populating.
-    const complete = async (): Promise<void> =>
-      this.fireCompletion(lifecycle, reasoning, emitted, model)
+    // per site is how the live pull-driven path silently stops populating. It is
+    // also the only place a clean `done` is observable, so the missing-completion
+    // marker fires here, before completion, rather than at each `item.done`.
+    const complete = async (): Promise<void> => {
+      if (!wrapped.completionMetadataSeen()) lifecycle.onCleanEofWithoutCompletionMetadata?.()
+      if (isSemanticTruncation(lifecycle.recoveryMode ?? 'off', lifecycle.streamObserver)) {
+        throw new SdkEventStreamIterationError(new SemanticStreamTruncationError())
+      }
+      return this.fireCompletion(lifecycle, reasoning, emitted, model, false)
+    }
 
     if (lifecycle.bufferUntilComplete) {
       try {
@@ -435,7 +596,7 @@ export class ResponseHandler {
             toolCalls.push(event.toolUseEvent)
           }
           if (event.metadataEvent?.tokenUsage) {
-            inputTokens = event.metadataEvent.tokenUsage.inputTokens || 0
+            inputTokens = event.metadataEvent.tokenUsage.uncachedInputTokens || 0
             outputTokens = event.metadataEvent.tokenUsage.outputTokens || 0
           }
         }

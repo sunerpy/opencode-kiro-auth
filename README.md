@@ -109,13 +109,15 @@ multi-account or long-idle setups, enable
 (`token_keepalive_enabled: true`) to keep idle accounts' tokens fresh while
 OpenCode is running.
 
-For long-running agent tasks that are frequently interrupted by upstream
-`ECONNRESET` event-stream failures, enable
-`"stream_buffer_until_complete": true`. The plugin then withholds a failed
-attempt from OpenCode and safely retries it instead of exposing a partial
-assistant response or partial tool call. See
-[stream recovery configuration](docs/CONFIGURATION.md#options) for the latency
-and quota tradeoffs.
+The SDK transport uses fresh HTTP sockets by default
+(`"sdk_http_keep_alive": false`) to reduce Bun stale-connection
+`ECONNRESET` failures without serializing requests or delaying live tokens.
+Each request pays one additional TCP/TLS handshake, while active streams and
+multiple OpenCode processes remain concurrent. For workloads that prefer task
+continuity over live output even after a mid-stream failure,
+`"stream_buffer_until_complete": true` remains available. See
+[stream recovery configuration](docs/CONFIGURATION.md#options) for the
+different latency and quota tradeoffs.
 
 Paid-overage protection is on by default; see
 [Overage protection](docs/CONFIGURATION.md#overage-protection) before disabling

@@ -113,19 +113,15 @@ describe('buildHistory', () => {
     expect(history.some((h) => h.assistantResponseMessage)).toBe(false)
   })
 
-  test('consecutive user turns get a synthetic assistant separator injected', () => {
+  test('consecutive user turns are merged into one instead of separated', () => {
     const msgs = [
       { role: 'user', content: 'u1' },
       { role: 'user', content: 'u2' },
       { role: 'user', content: 'trailing' }
     ]
-    // mergeAdjacentMessages is NOT applied inside buildHistory, so two user turns
-    // in a row trigger the [system: conversation continues] separator.
     const history = buildHistory(msgs, MODEL)
     expect(history).toEqual([
-      { userInputMessage: { content: 'u1', modelId: MODEL, origin: 'AI_EDITOR' } },
-      { assistantResponseMessage: { content: '[system: conversation continues]' } },
-      { userInputMessage: { content: 'u2', modelId: MODEL, origin: 'AI_EDITOR' } }
+      { userInputMessage: { content: 'u1\n\nu2', modelId: MODEL, origin: 'AI_EDITOR' } }
     ])
   })
 })
@@ -160,9 +156,10 @@ describe('collapseAgenticLoops', () => {
     ]
     const history = [...mkPair(1), ...mkPair(2)]
     const result = collapseAgenticLoops(history)
-    // First pair keeps its original assistant text; subsequent pair's text is replaced.
+    // First pair keeps its original assistant text; subsequent pair's text is emptied,
+    // matching the official Kiro IDE shape for a tool-only assistant turn.
     expect(result[0]?.assistantResponseMessage?.content).toBe('preamble 1')
-    expect(result[2]?.assistantResponseMessage?.content).toBe('[system: tool calling continues]')
+    expect(result[2]?.assistantResponseMessage?.content).toBe('')
     // toolUses are preserved through the collapse.
     expect(result[2]?.assistantResponseMessage?.toolUses?.[0]?.toolUseId).toBe('u2')
   })

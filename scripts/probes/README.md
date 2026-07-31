@@ -27,8 +27,8 @@ Contents:
   without it at turn 5) and per-request `conversationId`. **A later replication batch (1280 more real
   calls, investigation §11) reproduced the baseline (19.6%, p = 0.42), the empty-string trap (7.8% at
   turn 5) and the explicit-instruction variant (0/128), but did NOT reproduce `'[tool results]'` at 0%
-  — it measured 24/256 = 9.4% there, in two independent batches of exactly 12/128. The fix was
-  therefore NOT implemented; production still sends `'Tool results provided.'`.** Do not cite the
+  — it measured 24/256 = 9.4% there, in two independent batches of exactly 12/128. That value was
+  therefore NOT implemented, and as of §11 production still sent `'Tool results provided.'`.** Do not cite the
   "three replacements all reach 0%" sentence without §11.
   **A third batch (1922 more real calls, investigation §12–§13) then found the answer by research
   first: the real Kiro IDE, the official `aws/amazon-q-developer-cli`, and eight independent
@@ -39,8 +39,11 @@ Contents:
   turn 2 and 0/256 at turn 5, each as two independent n=128 batches. That also dissolves §11's
   apparent contradiction: `''` was only ever a trap when the current message was emptied while
   history kept the English sentence (V1 = 12/128 at turn 5 vs C5 = 0/256, p < 1e-4) — an
-  inconsistent state no real client emits. Production is STILL unchanged; §13.7 is the reviewable
-  proposal.**
+  inconsistent state no real client emits. §13.7 was the reviewable proposal, and it HAS SINCE
+  BEEN IMPLEMENTED in commit `017e662` (`fix(request): 工具结果回合改用空 content 以避免模型提前结束回合`,
+  #81): both filler sites now send `''`, so the sentence "production still sent
+  `'Tool results provided.'`" above is HISTORICAL — it describes the state during §11, not HEAD.
+  Verify with `grep -rn 'Tool results provided' src` (expects zero non-test hits).**
   `capture-inbound.ts` is worth knowing about on
   its own: it records the exact OpenAI-shaped body the plugin's custom `fetch` receives, for **zero**
   quota, by standing a local mock where the plugin normally sits — which is the only way to see the
