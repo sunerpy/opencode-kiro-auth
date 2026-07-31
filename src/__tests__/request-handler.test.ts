@@ -2386,6 +2386,74 @@ describe('RequestHandler.handle — cancellation and queue release', () => {
     expect(sendCalls).toBe(3)
   })
 
+  test('an initial recovery open failure keeps caller cancellation live for the retried attempt', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler } = buildHandler({
+      selectResults: [acc, acc],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+    const internals = handler as unknown as {
+      makeSdkClient: () => {
+        send: (command: unknown, options: { abortSignal: AbortSignal }) => Promise<object>
+      }
+    }
+    let sendCalls = 0
+    let retrySignal: AbortSignal | undefined
+    let notifyRetrySendStarted: (() => void) | undefined
+    const retrySendStarted = new Promise<void>((resolve) => {
+      notifyRetrySendStarted = resolve
+    })
+    internals.makeSdkClient = () => ({
+      send: async (_command, options) => {
+        sendCalls++
+        if (sendCalls === 1) {
+          return sdkStream([], new Error('upstream reset before the first event'))
+        }
+        if (sendCalls === 2) {
+          retrySignal = options.abortSignal
+          notifyRetrySendStarted?.()
+          return new Promise<object>((_resolve, reject) => {
+            options.abortSignal.addEventListener(
+              'abort',
+              () => reject(options.abortSignal.reason),
+              { once: true }
+            )
+          })
+        }
+        return sdkStream([
+          { assistantResponseEvent: { content: 'queued request succeeds' } },
+          { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+        ])
+      }
+    })
+    const controller = new AbortController()
+    const request = handler.handle(
+      KIRO_URL,
+      { body: JSON.stringify({}), signal: controller.signal },
+      noToast
+    )
+
+    await retrySendStarted
+    const reason = new DOMException('cancelled during the retried attempt', 'AbortError')
+    controller.abort(reason)
+
+    expect(retrySignal?.aborted).toBe(true)
+    expect(retrySignal?.reason).toBe(reason)
+    const caught = await request.then(
+      () => undefined,
+      (error: unknown) => error
+    )
+    expect(caught).toBe(reason)
+    expect(sendCalls).toBe(2)
+
+    const next = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(streamedText(await next.text())).toBe('queued request succeeds')
+    expect(sendCalls).toBe(3)
+  })
+
   test('periodic upstream activity allows a thinking stream to outlive the timeout window', async () => {
     const acc = makeAccount({ id: 'A' })
     const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -3177,7 +3245,7 @@ describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix',
           (call) => call[0] === STREAM_FAILURE_LOG
         )
       ).toBe(false)
-      // The truncation predicate needs reasoning or content, so a zero-event
+      // The truncation predicate requires an unclosed tool intent, so a zero-event
       // stream is only ever marked, never turned into a recoverable failure.
       expect(records(logs.warn, STREAM_MISSING_COMPLETION_LOG)[0]).toMatchObject({
         outcome: 'clean_eof_without_completion_metadata',

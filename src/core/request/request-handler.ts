@@ -407,6 +407,10 @@ export class RequestHandler {
                 this.accountSelector.selectAlternativeAccount(new Set([accountId])),
               describeError,
               onTerminal: cleanupRequest,
+              // Attempt-level only: an initial-open failure is pre-output and is
+              // retried below, so request-level cleanup (which detaches the inbound
+              // abort listener) must stay with the outer finally.
+              onInitialOpenFailure: endUpstreamWait,
               onCancel: (reason) => requestController.abort(reason)
             })
 

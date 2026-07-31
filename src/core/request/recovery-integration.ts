@@ -16,7 +16,19 @@ export type LiveRecoveryOptions = {
   readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>
   readonly selectAlternativeAccount: (excludedAccountId: string) => Promise<ManagedAccount | null>
   readonly describeError: (error: unknown) => unknown
+  /**
+   * Request-level terminal ownership. Lifecycle ownership transfers to the
+   * Response, so this only ever fires on a path where the Response was actually
+   * delivered to the caller — i.e. from the coordinator, exactly once.
+   */
   readonly onTerminal: () => void
+  /**
+   * Attempt-level release for an initial `openAttempt(1)` failure. That failure is
+   * pre-output and is re-thrown for the caller's outer retry loop, so ownership has
+   * NOT transferred: this callback must not run request-level cleanup and must not
+   * detach the inbound abort listener, or the retry loses caller cancellation.
+   */
+  readonly onInitialOpenFailure: () => void
   readonly onCancel: (reason: unknown) => void
 }
 
@@ -47,7 +59,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   try {
     initialAttempt = await openAttempt(1)
   } catch (error) {
-    finishTerminal()
+    options.onInitialOpenFailure()
     throw error
   }
   const coordinator = new StreamRecoveryCoordinator({
