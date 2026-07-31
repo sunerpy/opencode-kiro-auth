@@ -113,19 +113,15 @@ describe('buildHistory', () => {
     expect(history.some((h) => h.assistantResponseMessage)).toBe(false)
   })
 
-  test('consecutive user turns get a synthetic assistant separator injected', () => {
+  test('consecutive user turns are merged into one instead of separated', () => {
     const msgs = [
       { role: 'user', content: 'u1' },
       { role: 'user', content: 'u2' },
       { role: 'user', content: 'trailing' }
     ]
-    // mergeAdjacentMessages is NOT applied inside buildHistory, so two user turns
-    // in a row trigger the [system: conversation continues] separator.
     const history = buildHistory(msgs, MODEL)
     expect(history).toEqual([
-      { userInputMessage: { content: 'u1', modelId: MODEL, origin: 'AI_EDITOR' } },
-      { assistantResponseMessage: { content: '[system: conversation continues]' } },
-      { userInputMessage: { content: 'u2', modelId: MODEL, origin: 'AI_EDITOR' } }
+      { userInputMessage: { content: 'u1\n\nu2', modelId: MODEL, origin: 'AI_EDITOR' } }
     ])
   })
 })

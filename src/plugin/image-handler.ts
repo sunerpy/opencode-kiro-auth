@@ -3,7 +3,7 @@ interface UnifiedImage {
   data: string
 }
 
-const MAX_KIRO_IMAGES = 4
+export const MAX_KIRO_IMAGES = 4
 const MAX_KIRO_IMAGE_BYTES = 3_750_000
 
 interface KiroImage {

@@ -149,8 +149,14 @@ function buildCodeWhispererRequest(
     curContent = '[system: conversation continues]'
   } else {
     const prev = history[history.length - 1]
+    // `currentMessage` is always a user turn, so a trailing user-shaped history entry
+    // breaks Kiro's alternation. Unlike two adjacent history turns this pair cannot be
+    // merged: they straddle the history/currentMessage boundary, and the trailing entry
+    // is usually the injected system-prompt turn, which has to stay in history. An
+    // empty assistant turn is the official tool-only shape and, unlike a placeholder
+    // string, gives the model no text of its own voice to reproduce.
     if (prev && !prev.assistantResponseMessage)
-      history.push({ assistantResponseMessage: { content: '[system: conversation continues]' } })
+      history.push({ assistantResponseMessage: { content: '' } })
     if (curMsg.role === 'tool') {
       if (curMsg.tool_results) {
         for (const tr of curMsg.tool_results)
