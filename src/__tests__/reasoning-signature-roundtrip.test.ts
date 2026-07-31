@@ -400,7 +400,8 @@ describe('request-side merge and collapse safety', () => {
 
     expect(responses).toHaveLength(1)
     expect(responses[0]?.reasoningContent).toBeUndefined()
-    expect(responses[0]?.content).toContain('<thinking>reasoning-1</thinking>')
+    expect(responses[0]?.content).toContain('answer-1')
+    expect(responses[0]?.content).not.toContain('<thinking>reasoning-1</thinking>')
     expect(responses[0]?.content).toContain('<thinking>reasoning-2</thinking>')
   })
 })

@@ -9,6 +9,7 @@ import {
 } from '../infrastructure/transformers/history-builder.js'
 import {
   findOriginalToolCall,
+  findThinkingTextReplayIndex,
   getContentText,
   mergeAdjacentMessages
 } from '../infrastructure/transformers/message-transformer.js'
@@ -103,6 +104,7 @@ function buildCodeWhispererRequest(
   const lastMsg = msgs[msgs.length - 1]
   if (lastMsg && lastMsg.role === 'assistant' && getContentText(lastMsg) === '{') msgs.pop()
   const cwTools = tools ? convertToolsToCodeWhisperer(tools) : []
+  const thinkingReplayIndex = findThinkingTextReplayIndex(msgs)
   let history = buildHistory(msgs, resolved)
 
   const curMsg = msgs[msgs.length - 1]
@@ -118,7 +120,10 @@ function buildCodeWhispererRequest(
       const lastHistEntry = history[history.length - 1]
       const historyEndsWithUser = lastHistEntry?.userInputMessage
       if (historyEndsWithUser) {
-        const reconstructed = reconstructAssistantResponse(prevMsg, resolved, false)
+        const reconstructed = reconstructAssistantResponse(prevMsg, resolved, {
+          recoverReasoning: false,
+          allowThinkingText: msgs.length - 2 === thinkingReplayIndex
+        })
         const arm = reconstructed.response
         if (arm.content || arm.toolUses || arm.reasoningContent) {
           history.push({ assistantResponseMessage: arm })
@@ -133,7 +138,10 @@ function buildCodeWhispererRequest(
   const curImgs: any[] = []
 
   if (curMsg.role === 'assistant') {
-    const arm = reconstructAssistantResponse(curMsg, resolved, true).response
+    const arm = reconstructAssistantResponse(curMsg, resolved, {
+      recoverReasoning: true,
+      allowThinkingText: msgs.length - 1 === thinkingReplayIndex
+    }).response
 
     if (arm.content || arm.toolUses || arm.reasoningContent) {
       history.push({ assistantResponseMessage: arm })

@@ -152,11 +152,12 @@ describe('findActiveToolLoopStart', () => {
 })
 
 describe('buildHistory — reasoning_content recovery', () => {
-  test('string content + reasoning_content becomes <thinking> content', () => {
+  test('reasoning_content becomes <thinking> content on the loop-latest turn only', () => {
     const msgs = toolLoopMsgs(['thought one', 'thought two'])
     const history = buildHistory(msgs, MODEL)
     const asst = asstEntries(history)
-    expect(asst[0]?.content).toBe('<thinking>thought one</thinking>\n\nstep 1')
+    expect(asst.at(-1)?.content).toBe('<thinking>thought two</thinking>\n\nstep 2')
+    expect(asst[0]?.content).toBe('step 1')
     expect(asst[0]?.toolUses).toEqual([{ input: { n: 1 }, name: 'calc', toolUseId: 'tu1' }])
   })
 
@@ -223,10 +224,8 @@ describe('buildHistory — reasoning_content recovery', () => {
   test('collapseAgenticLoops still strips intermediate turns, bounding replay cost', () => {
     const msgs = toolLoopMsgs(['t1', 't2', 't3', 't4'])
     const serialized = JSON.stringify(buildHistory(msgs, MODEL))
-    // The loop's first turn and its trailing (uncollapsed) turn keep reasoning;
-    // the intermediate turns are emptied, with no placeholder text left behind.
-    expect(serialized).toContain('<thinking>t1</thinking>')
     expect(serialized).toContain('<thinking>t4</thinking>')
+    expect(serialized).not.toContain('<thinking>t1</thinking>')
     expect(serialized).not.toContain('<thinking>t2</thinking>')
     expect(serialized).not.toContain('<thinking>t3</thinking>')
     expect(serialized).not.toContain('tool calling continues')

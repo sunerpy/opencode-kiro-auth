@@ -6,7 +6,11 @@ import {
 } from '../../plugin/image-handler.js'
 import { reconstructAssistantResponse } from '../../plugin/reasoning/request-replay.js'
 import type { CodeWhispererMessage } from '../../plugin/types'
-import { findActiveToolLoopStart, getContentText } from './message-transformer.js'
+import {
+  findActiveToolLoopStart,
+  findThinkingTextReplayIndex,
+  getContentText
+} from './message-transformer.js'
 import { deduplicateToolResults } from './tool-transformer.js'
 
 /**
@@ -99,6 +103,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
     string
   >()
   const loopStart = findActiveToolLoopStart(msgs)
+  const thinkingReplayIndex = findThinkingTextReplayIndex(msgs)
   for (let i = 0; i < msgs.length - 1; i++) {
     const m = msgs[i]
     if (!m) continue
@@ -164,7 +169,10 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
         }
       })
     } else if (m.role === 'assistant') {
-      const reconstructed = reconstructAssistantResponse(m, resolved, i >= loopStart)
+      const reconstructed = reconstructAssistantResponse(m, resolved, {
+        recoverReasoning: i >= loopStart,
+        allowThinkingText: i === thinkingReplayIndex
+      })
       const arm = reconstructed.response
 
       if (!arm.content && !arm.toolUses && !arm.reasoningContent) {
