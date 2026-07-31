@@ -68,6 +68,7 @@ describe('config backfill: additive new-key insertion', () => {
     expect(written.token_keepalive_enabled).toBe(false)
     expect(written.token_keepalive_interval_ms).toBe(600000)
     expect(written.auto_sync_kiro_cli).toBe(false)
+    expect(written.stream_recovery_mode).toBe('off')
     // every DEFAULT_CONFIG key is now present
     for (const key of Object.keys(DEFAULT_CONFIG)) {
       expect(key in written).toBe(true)
@@ -93,13 +94,20 @@ describe('config backfill: value-preservation guarantees', () => {
   test('never flips an explicit false to the default', () => {
     // token_keepalive_enabled default is false; set it TRUE explicitly and ensure
     // backfill does not touch it. auto_sync default is false; set TRUE explicitly.
-    writeUserConfigRaw(JSON.stringify({ token_keepalive_enabled: true, auto_sync_kiro_cli: true }))
+    writeUserConfigRaw(
+      JSON.stringify({
+        token_keepalive_enabled: true,
+        auto_sync_kiro_cli: true,
+        stream_recovery_mode: 'reasoning_restart'
+      })
+    )
 
     loadConfig(projectDir)
 
     const written = JSON.parse(readUser())
     expect(written.token_keepalive_enabled).toBe(true)
     expect(written.auto_sync_kiro_cli).toBe(true)
+    expect(written.stream_recovery_mode).toBe('reasoning_restart')
   })
 
   test('preserves unknown/custom keys not in the schema', () => {

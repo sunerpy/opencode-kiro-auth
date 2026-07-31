@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { StreamRecoveryMode as CoordinatorStreamRecoveryMode } from '../core/request/stream-recovery.js'
 import { loadConfig } from '../plugin/config/loader.js'
-import { DEFAULT_CONFIG } from '../plugin/config/schema.js'
+import { DEFAULT_CONFIG, KiroConfigSchema } from '../plugin/config/schema.js'
 import { getUserConfigPath } from '../plugin/paths.js'
 
 // loadConfig reads:
@@ -25,6 +26,7 @@ const KIRO_ENV_KEYS = [
   'KIRO_STREAM_EVENT_TIMEOUT_ENABLED',
   'KIRO_STREAM_BUFFER_UNTIL_COMPLETE',
   'KIRO_STREAM_MAX_ATTEMPTS',
+  'KIRO_STREAM_RECOVERY_MODE',
   'KIRO_SDK_RESPONSE_TIMEOUT_ENABLED',
   'KIRO_SDK_RESPONSE_TIMEOUT_MS',
   'KIRO_SDK_HTTP_KEEP_ALIVE',
@@ -100,6 +102,7 @@ describe('loadConfig defaults', () => {
     expect(cfg.stream_event_timeout_enabled).toBe(false)
     expect(cfg.stream_buffer_until_complete).toBe(false)
     expect(cfg.stream_max_attempts).toBe(3)
+    expect(cfg.stream_recovery_mode).toBe('off')
     expect(cfg.sdk_response_timeout_enabled).toBe(false)
     expect(cfg.sdk_response_timeout_ms).toBe(300000)
     expect(cfg.sdk_http_keep_alive).toBe(false)
@@ -111,6 +114,14 @@ describe('loadConfig defaults', () => {
     expect(cfg.log_max_total_size_mb).toBe(512)
     expect(cfg.log_compress_after_days).toBe(1)
     expect(cfg.log_segment_size_mb).toBe(16)
+  })
+
+  test('the zod default and the DEFAULT_CONFIG literal agree on the recovery mode', () => {
+    // loadConfig only ever runs KiroConfigSchema.partial(), which strips zod
+    // defaults, so DEFAULT_CONFIG is the operative default and the two sources
+    // can drift apart silently.
+    expect(KiroConfigSchema.parse({}).stream_recovery_mode).toBe('off')
+    expect(DEFAULT_CONFIG.stream_recovery_mode).toBe('off')
   })
 })
 
@@ -166,6 +177,16 @@ describe('loadConfig env overrides', () => {
   test('KIRO_STREAM_BUFFER_UNTIL_COMPLETE opts into replay-safe stream delivery', () => {
     process.env.KIRO_STREAM_BUFFER_UNTIL_COMPLETE = 'true'
     expect(loadConfig(projectDir).stream_buffer_until_complete).toBe(true)
+  })
+
+  test('KIRO_STREAM_RECOVERY_MODE selects a recovery strategy', () => {
+    process.env.KIRO_STREAM_RECOVERY_MODE = 'reasoning_restart'
+    expect(loadConfig(projectDir).stream_recovery_mode).toBe('reasoning_restart')
+  })
+
+  test('invalid recovery mode env falls back to off (schema .catch)', () => {
+    process.env.KIRO_STREAM_RECOVERY_MODE = 'exact_replay'
+    expect(loadConfig(projectDir).stream_recovery_mode).toBe('off')
   })
 
   test('number env overrides parse numerically', () => {
@@ -259,5 +280,19 @@ describe('loadConfig file merge', () => {
     writeUserConfig({ quota_reserve_threshold: 5 })
     const cfg = loadConfig(projectDir)
     expect(cfg.quota_reserve_threshold).toBe(DEFAULT_CONFIG.quota_reserve_threshold)
+  })
+
+  test('user file overrides the recovery mode; an out-of-enum value is rejected', () => {
+    writeUserConfig({ stream_recovery_mode: 'reasoning_restart' })
+    expect(loadConfig(projectDir).stream_recovery_mode).toBe('reasoning_restart')
+
+    writeUserConfig({ stream_recovery_mode: 'exact_replay' })
+    expect(loadConfig(projectDir).stream_recovery_mode).toBe('off')
+  })
+
+  test('the config literal union stays assignable to the coordinator mode', () => {
+    const forCoordinator: CoordinatorStreamRecoveryMode =
+      loadConfig(projectDir).stream_recovery_mode
+    expect(forCoordinator).toBe('off')
   })
 })

@@ -7,6 +7,7 @@ import {
   DEFAULT_CONFIG,
   KiroConfigSchema,
   RegionSchema,
+  StreamRecoveryModeSchema,
   type KiroConfig
 } from './schema'
 
@@ -214,6 +215,10 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
     ),
 
     stream_max_attempts: parseNumberEnv(env.KIRO_STREAM_MAX_ATTEMPTS, config.stream_max_attempts),
+
+    stream_recovery_mode: env.KIRO_STREAM_RECOVERY_MODE
+      ? StreamRecoveryModeSchema.catch('off').parse(env.KIRO_STREAM_RECOVERY_MODE)
+      : config.stream_recovery_mode,
 
     token_expiry_buffer_ms: parseNumberEnv(
       env.KIRO_TOKEN_EXPIRY_BUFFER_MS,

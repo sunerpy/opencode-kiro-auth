@@ -14,6 +14,17 @@ export type AccountSelectionStrategy = z.infer<typeof AccountSelectionStrategySc
 export const EffortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
 export type Effort = z.infer<typeof EffortSchema>
 
+/**
+ * Recovery strategy applied when an upstream event stream fails after output.
+ * - off: no recovery; behavior is byte-for-byte identical to pre-recovery builds
+ * - reasoning_restart: restart the turn from accumulated reasoning instead of
+ *   replaying already-emitted content
+ * The literal strings must stay identical to `StreamRecoveryMode` in
+ * src/core/request/stream-recovery.ts (the coordinator consumes this value).
+ */
+export const StreamRecoveryModeSchema = z.enum(['off', 'reasoning_restart'])
+export type StreamRecoveryMode = z.infer<typeof StreamRecoveryModeSchema>
+
 export const RegionSchema = z.enum([
   'us-east-1',
   'us-east-2',
@@ -153,6 +164,13 @@ export const KiroConfigSchema = z.object({
    */
   stream_max_attempts: z.number().int().min(1).max(10).default(3),
 
+  /**
+   * Recovery strategy for an upstream event stream that fails after output.
+   * Defaults to 'off' during Phase 1 rollout; the default flips to
+   * 'reasoning_restart' only after Phase 1 acceptance.
+   */
+  stream_recovery_mode: StreamRecoveryModeSchema.default('off'),
+
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
 
   /**
@@ -242,6 +260,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   request_timeout_ms: 120000,
   stream_buffer_until_complete: false,
   stream_max_attempts: 3,
+  stream_recovery_mode: 'off',
   token_expiry_buffer_ms: 300000,
   token_keepalive_enabled: false,
   token_keepalive_interval_ms: 600000,
