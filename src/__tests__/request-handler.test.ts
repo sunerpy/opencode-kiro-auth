@@ -1545,6 +1545,36 @@ describe('RequestHandler.handle — reasoning signature safety gates', () => {
     })
   })
 
+  test('recovery mode leaves two healthy concurrent requests on one account publishing', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc, acc],
+      sdkResults: [
+        sdkStream(signedToolEvents('live-one')),
+        sdkStream(signedToolEvents('live-two'))
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+
+    const first = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const second = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await Promise.all([first.text(), second.text()])
+
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+    expect(lookupSignedTool('live-one').envelope).toEqual({
+      kind: 'reasoningText',
+      text: 'reasoning-live-one',
+      signature: 'signature-live-one'
+    })
+    expect(lookupSignedTool('live-two').envelope).toEqual({
+      kind: 'reasoningText',
+      text: 'reasoning-live-two',
+      signature: 'signature-live-two'
+    })
+  })
+
   test('a recovered tool completion does not publish its final-attempt envelope', async () => {
     const acc = makeAccount({ id: 'A' })
     const { handler, fakes } = buildHandler({
@@ -2558,6 +2588,369 @@ describe('RequestHandler.handle — API request logging', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.message).toBe('bad request')
+  })
+})
+
+describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix', () => {
+  function sseFrames(body: string): Array<Record<string, any>> {
+    const raw = body.split('\n\n')
+    expect(raw.at(-1)).toBe('')
+    return raw.slice(0, -1).map((frame) => {
+      expect(frame.startsWith('data: ')).toBe(true)
+      return JSON.parse(frame.slice('data: '.length)) as Record<string, any>
+    })
+  }
+
+  function records(
+    spy: ReturnType<typeof captureLogger>['warn'],
+    message: string
+  ): Array<Record<string, unknown>> {
+    return spy.mock.calls
+      .filter((call) => call[0] === message)
+      .map((call) => call[1] as Record<string, unknown>)
+  }
+
+  const STREAM_FAILURE_LOG = 'Kiro SDK event stream iteration failed'
+
+  test('row 1: a pre-output failure in recovery mode stays on the legacy retry path', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([], new Error('pre-output decode failure')),
+          sdkStream([
+            { assistantResponseEvent: { content: 'second attempt answer' } },
+            { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const frames = sseFrames(await response.text())
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(frames.map((frame) => frame.choices?.[0]?.delta?.content ?? '').join('')).toBe(
+        'second attempt answer'
+      )
+      expect(frames.filter((frame) => frame.choices?.[0]?.finish_reason !== null)).toHaveLength(1)
+
+      const retrying = records(logs.warn, STREAM_FAILURE_LOG)
+      expect(retrying).toHaveLength(1)
+      expect(retrying[0]).toMatchObject({
+        outcome: 'retrying',
+        emittedReasoningChars: 0,
+        emittedVisibleChars: 0
+      })
+      // The legacy pre-output retry is the only path that attaches the failure
+      // cause to its `retrying` record; the coordinator's backoff never does.
+      expect(retrying[0]!['error']).toMatchObject({
+        name: 'SdkEventStreamIterationError',
+        cause: { message: 'pre-output decode failure' }
+      })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row 3: reasoning closed before any text is still eligible for restart', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          // The inline dialect closes the reasoning block without emitting any
+          // visible text, so the break lands after reasoning ended, before text.
+          sdkStream(
+            [{ assistantResponseEvent: { content: '<thinking>closed reasoning</thinking>' } }],
+            new Error('reset after reasoning closed')
+          ),
+          sdkStream([
+            { reasoningContentEvent: { text: 'restarted reasoning' } },
+            { assistantResponseEvent: { content: 'final answer' } },
+            { metadataEvent: { tokenUsage: { outputTokens: 2 } } }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const frames = sseFrames(await response.text())
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(
+        frames.map((frame) => frame.choices?.[0]?.delta?.reasoning_content ?? '').join('')
+      ).toBe('closed reasoningrestarted reasoning')
+      expect(frames.map((frame) => frame.choices?.[0]?.delta?.content ?? '').join('')).toBe(
+        'final answer'
+      )
+      expect(records(logs.warn, STREAM_FAILURE_LOG)[0]).toMatchObject({
+        outcome: 'retrying',
+        emittedReasoningChars: 'closed reasoning'.length,
+        emittedVisibleChars: 0
+      })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row 7: a break after completion metadata stays ignored in recovery mode', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const terminated = new TypeError('terminated', {
+        cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+      })
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [
+              { assistantResponseEvent: { content: 'complete response' } },
+              { metadataEvent: { tokenUsage: { inputTokens: 4, outputTokens: 2 } } }
+            ],
+            terminated
+          ),
+          sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const body = await response.text()
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+      expect(streamedText(body)).toBe('complete response')
+      expect(body).toContain('"finish_reason":"stop"')
+      expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+      expect(
+        records(logs.log, 'Kiro SDK event stream closed after completion metadata')[0]
+      ).toMatchObject({ outcome: 'ignored_after_completion_metadata' })
+      expect(
+        [...logs.log.mock.calls, ...logs.warn.mock.calls, ...logs.error.mock.calls].some(
+          (call) => call[0] === STREAM_FAILURE_LOG
+        )
+      ).toBe(false)
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('row 8: caller abort while a recovery attempt is iterating issues no further send', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler } = buildHandler({
+      selectResults: [acc, acc],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+    const internals = handler as unknown as {
+      makeSdkClient: () => { send: () => Promise<object> }
+    }
+    let sendCalls = 0
+    const iterationStalled = Promise.withResolvers<void>()
+    internals.makeSdkClient = () => ({
+      send: async () => {
+        sendCalls++
+        if (sendCalls === 1) {
+          return sdkStream(
+            [{ reasoningContentEvent: { text: 'partial reasoning' } }],
+            new Error('late reset')
+          )
+        }
+        if (sendCalls === 2) {
+          return {
+            generateAssistantResponseResponse: (async function* () {
+              yield { reasoningContentEvent: { text: 'recovered reasoning' } }
+              iterationStalled.resolve()
+              await new Promise<void>(() => {})
+            })()
+          }
+        }
+        return sdkStream([
+          { assistantResponseEvent: { content: 'later request succeeds' } },
+          { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+        ])
+      }
+    })
+
+    const controller = new AbortController()
+    const response = await handler.handle(
+      KIRO_URL,
+      { body: JSON.stringify({}), signal: controller.signal },
+      noToast
+    )
+    const reading = response.text()
+
+    await iterationStalled.promise
+    controller.abort(new DOMException('cancelled during recovery iteration', 'AbortError'))
+
+    await expect(reading).rejects.toMatchObject({ name: 'AbortError' })
+    expect(sendCalls).toBe(2)
+    const next = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    expect(streamedText(await next.text())).toBe('later request succeeds')
+    expect(sendCalls).toBe(3)
+  })
+
+  test('row 9: exhaustion sends exactly stream_max_attempts times and terminates once', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const failure = new Error('persistent reasoning failure')
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([{ reasoningContentEvent: { text: 'attempt one' } }], failure),
+          sdkStream([{ reasoningContentEvent: { text: 'attempt two' } }], failure),
+          sdkStream([{ reasoningContentEvent: { text: 'attempt three' } }], failure),
+          sdkStream([{ assistantResponseEvent: { content: 'must not be sent' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart',
+        streamMaxAttempts: 3
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      await expect(response.text()).rejects.toMatchObject({
+        name: 'UpstreamUnexpectedError',
+        emittedOutput: true
+      })
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(3)
+      expect(records(logs.warn, STREAM_FAILURE_LOG)).toHaveLength(2)
+      const terminal = records(logs.error, STREAM_FAILURE_LOG)
+      expect(terminal).toHaveLength(1)
+      expect(terminal[0]).toMatchObject({ outcome: 'terminated_after_output', emittedOutput: true })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('an empty upstream stream in recovery mode stays a success, not a truncation', async () => {
+    const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [sdkStream([]), sdkStream([{ assistantResponseEvent: { content: 'unused' } }])],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      const frames = sseFrames(await response.text())
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+      expect(frames.map((frame) => frame.choices?.[0]?.finish_reason)).toEqual(['stop'])
+      expect(acc.failCount).toBe(0)
+      expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
+      expect(
+        [...logs.warn.mock.calls, ...logs.error.mock.calls].some(
+          (call) => call[0] === STREAM_FAILURE_LOG
+        )
+      ).toBe(false)
+      // The truncation predicate needs reasoning or content, so a zero-event
+      // stream is only ever marked, never turned into a recoverable failure.
+      expect(records(logs.warn, STREAM_MISSING_COMPLETION_LOG)[0]).toMatchObject({
+        outcome: 'clean_eof_without_completion_metadata',
+        emittedReasoningChars: 0,
+        emittedVisibleChars: 0
+      })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('a recovered stream is one well-framed SSE sequence with a single terminal chunk', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream(
+          [{ reasoningContentEvent: { text: 'first half ' } }],
+          new Error('reset mid reasoning')
+        ),
+        sdkStream([
+          { reasoningContentEvent: { text: 'second half' } },
+          { assistantResponseEvent: { content: 'final answer' } },
+          { metadataEvent: { tokenUsage: { outputTokens: 2, totalTokens: 2 } } }
+        ])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    const frames = sseFrames(await response.text())
+
+    expect(frames.map((frame) => frame.choices?.[0]?.delta?.reasoning_content ?? '').join('')).toBe(
+      'first half second half'
+    )
+    expect(frames.map((frame) => frame.choices?.[0]?.delta?.content ?? '').join('')).toBe(
+      'final answer'
+    )
+    const terminalPositions = frames
+      .map((frame, index) => ({ index, finish: frame.choices?.[0]?.finish_reason }))
+      .filter((entry) => entry.finish !== null && entry.finish !== undefined)
+    expect(terminalPositions).toEqual([{ index: frames.length - 1, finish: 'stop' }])
+    const lastReasoning = frames.findLastIndex(
+      (frame) => frame.choices?.[0]?.delta?.reasoning_content !== undefined
+    )
+    const firstContent = frames.findIndex(
+      (frame) => frame.choices?.[0]?.delta?.content !== undefined
+    )
+    expect(lastReasoning).toBeLessThan(firstContent)
+  })
+
+  test('a live recovery writes no extra stream-start record', async () => {
+    const acc = makeAccount({ id: 'A' })
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream(
+            [{ reasoningContentEvent: { text: 'partial reasoning' } }],
+            new Error('late reset')
+          ),
+          sdkStream([
+            { assistantResponseEvent: { content: 'recovered answer' } },
+            { metadataEvent: { tokenUsage: { outputTokens: 1 } } }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart'
+      })
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(records(logs.log, STREAM_REQUEST_STARTED_LOG)).toHaveLength(1)
+    } finally {
+      logs.restore()
+    }
   })
 })
 

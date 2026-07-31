@@ -327,7 +327,11 @@ function makeAccount(): ManagedAccount {
   }
 }
 
-function wireHandler(prep: SdkPreparedRequest, send: () => Promise<unknown>): RequestHandler {
+function wireHandler(
+  prep: SdkPreparedRequest,
+  send: () => Promise<unknown>,
+  configOverrides: Record<string, unknown> = {}
+): RequestHandler {
   const account = makeAccount()
   const accountManager: any = {
     getAccounts: () => [account],
@@ -358,7 +362,8 @@ function wireHandler(prep: SdkPreparedRequest, send: () => Promise<unknown>): Re
     auto_effort_mapping: false,
     token_expiry_buffer_ms: 120000,
     auto_sync_kiro_cli: false,
-    account_selection_strategy: 'sticky'
+    account_selection_strategy: 'sticky',
+    ...configOverrides
   }
   const handler = new RequestHandler(accountManager, config, {
     save: mock(async () => {}),
@@ -427,6 +432,42 @@ describe('§6.8 redaction — stream observability fields', () => {
     expect(text).toContain('"sawToolIntent":false')
     expect(text).not.toContain(REASONING)
     expect(text).not.toContain(STREAMED_REPLY)
+    expectNoLeak(text)
+  })
+
+  test('recovery-path retry and terminal logs carry volume only', async () => {
+    let sends = 0
+    const handler = wireHandler(
+      streamingPrep(),
+      async () => {
+        sends++
+        const attempt = sends
+        return {
+          generateAssistantResponseResponse: (async function* () {
+            yield { reasoningContentEvent: { text: REASONING } }
+            throw new Error(`recovery attempt ${attempt} died`)
+          })()
+        }
+      },
+      { stream_max_attempts: 2, stream_recovery_mode: 'reasoning_restart' }
+    )
+    ;(handler as unknown as { sleep: () => Promise<void> }).sleep = async () => {}
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'go' }] }) },
+        noToast
+      )
+    )
+
+    expect(sends).toBe(2)
+    const text = allLogText()
+    expect(text).toContain('"outcome":"retrying"')
+    expect(text).toContain('"outcome":"terminated_after_output"')
+    expect(text).toContain(`"emittedReasoningChars":${REASONING.length}`)
+    expect(text).toContain('"emittedVisibleChars":0')
+    expect(text).not.toContain(REASONING)
     expectNoLeak(text)
   })
 
