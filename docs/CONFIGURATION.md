@@ -139,10 +139,18 @@ because moving a live database during an upgrade is unsafe.
   process-local Kiro request queue until the upstream response completes.
   Override with `KIRO_STREAM_BUFFER_UNTIL_COMPLETE`.
 - `stream_max_attempts`: Maximum complete event-stream attempts (`1`-`10`,
-  default: `3`). In normal live-stream mode, retries remain limited to failures
-  before semantic output. With `stream_buffer_until_complete` enabled, this
-  limit also covers failures after upstream output because none of that attempt
-  has reached OpenCode yet. Override with `KIRO_STREAM_MAX_ATTEMPTS`.
+  default: `3`). This caps the total SDK sends for **one** inbound provider
+  request — the initial send plus any pre-output stream retries — so `3` means
+  at most three `generateAssistantResponse` calls for that request. It is
+  distinct from `max_request_iterations`, which bounds the overall per-request
+  loop that also covers HTTP-error retries and account switches. Both budgets
+  apply at the same time: a stream retry is refused once `stream_max_attempts`
+  is reached even if loop iterations remain, and the loop still stops at
+  `max_request_iterations` regardless of remaining stream attempts. In normal
+  live-stream mode, retries remain limited to failures before semantic output.
+  With `stream_buffer_until_complete` enabled, this limit also covers failures
+  after upstream output because none of that attempt has reached OpenCode yet.
+  Override with `KIRO_STREAM_MAX_ATTEMPTS`.
 - `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms, default:
   `300000`). An access token within this window of expiry is treated as expired
   and refreshed on next use.
@@ -209,6 +217,58 @@ records for failed upstream requests are still retained for diagnosis. All log
 settings can also be overridden with `KIRO_LOG_RETENTION_DAYS`,
 `KIRO_LOG_MAX_TOTAL_SIZE_MB`, `KIRO_LOG_COMPRESS_AFTER_DAYS`, and
 `KIRO_LOG_SEGMENT_SIZE_MB`.
+
+## Stream observability logging
+
+Stream health is tracked in `plugin.log` independently from
+`enable_log_api_request`, so you can measure upstream stream failures without
+recording prompt or tool payloads. Two records anchor that measurement, and
+every stream log line carries a fixed set of volume-only fields.
+
+**`Kiro stream request started`** (INFO) is written exactly once per inbound
+streaming request, unconditionally — it does not depend on
+`enable_log_api_request`, and non-streaming requests are not recorded. Fields:
+`conversationId`, `model`, `effectiveModel`, `processId`. This is the
+denominator every stream-failure rate is measured against, so an account switch
+or HTTP-error retry inside the same inbound request still produces only one
+record. The string is a grep target for log-analysis scripts; it is exported as
+`STREAM_REQUEST_STARTED_LOG` from `src/core/request/request-handler.ts` and is
+treated as a stable contract.
+
+**`Kiro stream ended without completion metadata`** (WARN, exported as
+`STREAM_MISSING_COMPLETION_LOG`, `outcome:
+'clean_eof_without_completion_metadata'`) fires when the upstream event stream
+ends cleanly but never sent completion metadata. The response still completes
+normally, exactly as before — this record adds no behavior change, it only makes
+a case visible that previously left no trace at all. A rising count here means
+upstream is closing streams early without erroring, which is worth watching even
+though nothing fails today.
+
+Every stream log record — the clean-EOF warning above and each stream failure
+outcome (`retrying`, `exhausted`, `terminated_after_output`,
+`ignored_after_completion_metadata`, `recovered`) — carries these shared fields:
+
+| Field                                       | Meaning                                                                          |
+| ------------------------------------------- | -------------------------------------------------------------------------------- |
+| `conversationId`, `model`, `effectiveModel` | Request identity and the resolved wire model                                     |
+| `region`, `account`, `accountId`            | Which account and region served the attempt                                      |
+| `streamAttempt`, `maxStreamAttempts`        | Attempt number and the `stream_max_attempts` cap                                 |
+| `streamDeliveryMode`                        | `buffered` or `live`, from `stream_buffer_until_complete`                        |
+| `sdkHttpKeepAlive`                          | The effective `sdk_http_keep_alive` value                                        |
+| `processId`, `bunVersion`                   | OS process id and the Bun runtime version                                        |
+| `upstreamEventCount`                        | Raw upstream events seen in this attempt                                         |
+| `streamElapsedMs`                           | Wall time from the start of this stream attempt                                  |
+| `emittedReasoningChars`                     | Character count of reasoning text already emitted                                |
+| `emittedVisibleChars`                       | Character count of visible reply text already emitted                            |
+| `emittedToolCount`                          | Number of tool calls already emitted                                             |
+| `sawToolIntent`                             | Whether upstream showed tool intent, including a partial or discarded tool event |
+
+The last four are lengths, counts, and a boolean only. No reasoning text, reply
+text, or tool arguments are ever written to these records — a character count
+cannot reconstruct content. They exist so a failed attempt can be classified
+after the fact: an attempt with zero emitted characters, zero tool calls, and no
+tool intent is safe to reason about differently from one that already put output
+in front of you.
 
 ## Account distribution across processes
 
