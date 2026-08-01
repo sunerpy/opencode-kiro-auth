@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.17.0...v0.18.0) (2026-08-01)
+
+
+### Features
+
+* 账号健康管理、流终态可观测性与用量刷新菜单 ([#84](https://github.com/sunerpy/opencode-kiro-auth/issues/84)) ([9267f2f](https://github.com/sunerpy/opencode-kiro-auth/commit/9267f2f25103ee64b2bac9d3aa9946da0c9df955))
+
 ## [0.17.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.16.0...v0.17.0) (2026-07-31)
 
 
