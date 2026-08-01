@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { ResponseHandler } from '../core/request/response-handler.js'
+import { StreamObserver } from '../plugin/streaming/stream-observer.js'
 
 function makeSdkResponse(events: any[]): any {
   return {
@@ -190,6 +191,27 @@ describe('handleSdkSuccess — non-streaming', () => {
 })
 
 describe('handleSdkSuccess — streaming', () => {
+  test('live-recovery transformer failure records stream_processing_failure on its observer', async () => {
+    const observer = new StreamObserver()
+    const malformedEvent = {
+      get reasoningContentEvent(): unknown {
+        throw new Error('live recovery transformer failed')
+      }
+    }
+
+    await expect(
+      new ResponseHandler().prepareSdkStreamingAttempt({
+        sdkResponse: makeSdkResponse([malformedEvent]),
+        model: 'auto',
+        conversationId: 'live-recovery-transform-failure',
+        lifecycle: { streamObserver: observer },
+        recoveryMode: 'reasoning_restart'
+      })
+    ).rejects.toThrow('live recovery transformer failed')
+
+    expect(observer.snapshot().terminalSource).toBe('stream_processing_failure')
+  })
+
   test('streaming=true returns an SSE Response with text deltas', async () => {
     const events = [
       { assistantResponseEvent: { content: 'A' } },

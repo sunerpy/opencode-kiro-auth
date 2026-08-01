@@ -23,6 +23,16 @@ type HealthPersistenceMethod =
   | 'markRateLimited'
   | 'markUnhealthy'
 
+type HealthWrite = {
+  readonly snapshot: ManagedAccount
+  readonly method: HealthPersistenceMethod
+}
+
+type HealthWriteState = {
+  current: HealthWrite
+  pending?: HealthWrite
+}
+
 export function createDeterministicAccountId(
   email: string,
   method: string,
@@ -51,7 +61,7 @@ export class AccountManager {
   private lastHealthDataVersion: number | undefined
   private lastHealthRefreshAt: number
   private pendingHealthWriteCounts = new Map<string, number>()
-  private healthWriteChains = new Map<string, Promise<void>>()
+  private healthWriteStates = new Map<string, HealthWriteState>()
   private invalidateAccountCache?: (accountId: string) => void
   constructor(
     accounts: ManagedAccount[],
@@ -352,43 +362,58 @@ export class AccountManager {
     method: HealthPersistenceMethod
   ): void {
     const accountId = account.id
-    const pendingCount = this.pendingHealthWriteCounts.get(accountId) ?? 0
-    this.pendingHealthWriteCounts.set(accountId, pendingCount + 1)
-    const persistedSnapshot = { ...account }
-    const previousWrite = this.healthWriteChains.get(accountId) ?? Promise.resolve()
-    const deferredStart = new Promise<void>((resolve) => setTimeout(resolve, 0))
-    let write: Promise<void>
-    write = previousWrite
-      .catch(() => {})
-      .then(() => deferredStart)
-      .then(() => kiroDb.upsertAccount(persistedSnapshot))
-      .then(() => {
+    const write: HealthWrite = { snapshot: { ...account }, method }
+    const activeState = this.healthWriteStates.get(accountId)
+    if (activeState) {
+      activeState.pending = write
+      this.pendingHealthWriteCounts.set(accountId, 2)
+      return
+    }
+
+    const state: HealthWriteState = { current: write }
+    this.healthWriteStates.set(accountId, state)
+    this.pendingHealthWriteCounts.set(accountId, 1)
+    void this.drainHealthWrites(accountId, state)
+  }
+
+  private async drainHealthWrites(accountId: string, state: HealthWriteState): Promise<void> {
+    while (this.healthWriteStates.get(accountId) === state) {
+      // Yield immediately before every transaction starts. Pending mutations do
+      // not create timers while queued, so a drained backlog cannot collapse
+      // into one uninterrupted microtask chain.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      const { snapshot, method } = state.current
+      try {
+        await kiroDb.upsertAccount(snapshot)
         try {
           this.invalidateAccountCache?.(accountId)
         } catch (error) {
           logger.warn('Account cache invalidation failed', {
             method,
-            email: account.email,
+            email: snapshot.email,
             error: error instanceof Error ? error.message : String(error)
           })
         }
-      })
-      .catch((error) =>
+      } catch (error) {
         logger.warn('DB write failed', {
           method,
-          email: account.email,
+          email: snapshot.email,
           error: error instanceof Error ? error.message : String(error)
         })
-      )
-      .finally(() => {
-        const remaining = (this.pendingHealthWriteCounts.get(accountId) ?? 1) - 1
-        if (remaining > 0) this.pendingHealthWriteCounts.set(accountId, remaining)
-        else this.pendingHealthWriteCounts.delete(accountId)
-        if (this.healthWriteChains.get(accountId) === write) {
-          this.healthWriteChains.delete(accountId)
-        }
-      })
-    this.healthWriteChains.set(accountId, write)
+      }
+
+      const pending = state.pending
+      if (pending) {
+        state.current = pending
+        delete state.pending
+        this.pendingHealthWriteCounts.set(accountId, 1)
+        continue
+      }
+
+      this.healthWriteStates.delete(accountId)
+      this.pendingHealthWriteCounts.delete(accountId)
+      return
+    }
   }
   updateUsage(
     id: string,

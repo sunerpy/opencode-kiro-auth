@@ -63,30 +63,38 @@ describe('AccountManager account-health refresh', () => {
     }
   })
 
-  test('serializes deferred health writes for the same account', async () => {
+  test('coalesces rapid same-account mutations to one in-flight write plus the latest snapshot', async () => {
     const suffix = crypto.randomUUID()
     const account = makeAccount(`health-write-order-${suffix}`)
     const manager = new AccountManager([account], 'sticky')
     const firstWrite = Promise.withResolvers<void>()
-    const persistedCooldowns: number[] = []
+    const persistedSnapshots: ManagedAccount[] = []
     const upsert = spyOn(kiroDb, 'upsertAccount').mockImplementation((candidate) => {
-      persistedCooldowns.push(candidate.rateLimitResetTime)
-      return persistedCooldowns.length === 1 ? firstWrite.promise : Promise.resolve()
+      persistedSnapshots.push({ ...candidate })
+      return persistedSnapshots.length === 1 ? firstWrite.promise : Promise.resolve()
     })
 
     try {
       manager.markRateLimited(account, 30_000)
-      manager.markRateLimited(account, 60_000)
-
       expect(upsert).not.toHaveBeenCalled()
 
       await waitForMacrotask()
-      expect(persistedCooldowns).toHaveLength(1)
+      expect(persistedSnapshots).toHaveLength(1)
+
+      manager.markRateLimited(account, 40_000)
+      manager.markRateLimited(account, 50_000)
+      manager.markRateLimited(account, 60_000)
+      const finalCooldown = account.rateLimitResetTime
+      await waitForMacrotask()
+      expect(persistedSnapshots).toHaveLength(1)
 
       firstWrite.resolve()
       await drainMicrotasks()
-      expect(persistedCooldowns).toHaveLength(2)
-      expect(persistedCooldowns[1]).toBeGreaterThan(persistedCooldowns[0] ?? 0)
+      await waitForMacrotask()
+      await drainMicrotasks()
+
+      expect(persistedSnapshots).toHaveLength(2)
+      expect(persistedSnapshots[1]?.rateLimitResetTime).toBe(finalCooldown)
     } finally {
       firstWrite.resolve()
       await waitForMacrotask()
@@ -195,8 +203,11 @@ describe('AccountManager account-health refresh', () => {
 
       expect(refreshedA?.failCount).toBe(1)
     } finally {
+      await waitForMacrotask()
+      expect(upsert).toHaveBeenCalledTimes(1)
       pendingWrite.resolve()
       await drainMicrotasks()
+      expect(upsert).toHaveBeenCalledTimes(1)
       upsert.mockRestore()
       externalConnection.close()
     }
@@ -228,8 +239,11 @@ describe('AccountManager account-health refresh', () => {
       expect(refreshedA?.rateLimitResetTime).toBeGreaterThan(Date.now())
       expect(selected?.id).toBe(accountB.id)
     } finally {
+      await waitForMacrotask()
+      expect(upsert).toHaveBeenCalledTimes(1)
       pendingWrite.resolve()
       await drainMicrotasks()
+      expect(upsert).toHaveBeenCalledTimes(1)
       upsert.mockRestore()
       externalConnection.close()
     }
