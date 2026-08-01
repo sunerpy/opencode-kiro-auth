@@ -172,6 +172,108 @@ describe('parseTextToolCalls — phantom / false-positive negatives', () => {
   })
 })
 
+describe('parseTextToolCalls — fenced code range regressions', () => {
+  test('unclosed backtick fence with a complete invoke → none, no call, text unchanged', () => {
+    const text =
+      'Example:\n```xml\n<invoke name="wb1_complete"><parameter name="path">/demo</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('unclosed backtick fence with a half invoke intentionally resolves none, not incomplete', () => {
+    const text = 'Example:\n```xml\n<invoke name="wb1_half"><parameter name="path">/demo'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('unclosed fenced invoke streams byte-identically for every incomplete-dialect setting', async () => {
+    const text =
+      'Example:\n```xml\n<invoke name="wb1_stream"><parameter name="path">/demo</parameter></invoke>'
+    const settings = [true, false, undefined] as const
+    const results = await Promise.all(
+      settings.map((setting) =>
+        collectSdkChunks([{ assistantResponseEvent: { content: text } }], setting)
+      )
+    )
+
+    for (const chunks of results) {
+      expect(joinedContent(chunks)).toBe(text)
+      expect(toolCallChunks(chunks)).toHaveLength(0)
+      expect(finishReasons(chunks)).toEqual(['stop'])
+    }
+    expect(results.map(joinedContent)).toEqual([text, text, text])
+  })
+
+  test('real invoke before an unclosed fence is parsed while the fenced example is preserved', () => {
+    const realCall = '<invoke name="wb1_real"><parameter name="path">/real</parameter></invoke>'
+    const fencedExample =
+      '\nExample:\n```xml\n<invoke name="wb1_example"><parameter name="path">/demo</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(realCall + fencedExample)
+
+    expect(resolution).toBe('complete')
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0]!.name).toBe('wb1_real')
+    expect(toolCalls[0]!.input).toEqual({ path: '/real' })
+    expect(cleanedText).toBe(fencedExample)
+  })
+
+  test('out-of-fence half invoke remains incomplete', () => {
+    const text = 'partial <invoke name="wb1_outside"><parameter name="path">/half'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('incomplete')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('four-backtick fence is not closed by an embedded three-backtick run', () => {
+    const text =
+      'Example:\n````text\nembedded ``` sequence\n<invoke name="wb1_four"><parameter name="path">/demo</parameter></invoke>\n````'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('closed tilde fence containing an invoke → none, no call, text unchanged', () => {
+    const text =
+      'Example:\n~~~xml\n<invoke name="wb1_tilde_closed"><parameter name="path">/demo</parameter></invoke>\n~~~'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('unclosed tilde fence containing an invoke → none, no call, text unchanged', () => {
+    const text =
+      'Example:\n~~~xml\n<invoke name="wb1_tilde_unclosed"><parameter name="path">/demo</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('lone unclosed inline backtick does not hide a following invoke', () => {
+    const text =
+      'Example: `<invoke name="wb1_inline"><parameter name="path">/real</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('complete')
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0]!.name).toBe('wb1_inline')
+    expect(cleanedText).toBe('Example: `')
+  })
+})
+
 describe('streaming suppression — no dialect leaks into delta.content', () => {
   function assertNoDialectLeak(chunks: any[]): void {
     const streamedText = chunks

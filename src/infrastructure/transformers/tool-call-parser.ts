@@ -14,7 +14,7 @@ export function parseBracketToolCalls(text: string): ToolCall[] {
     try {
       const args = JSON.parse(argsStr)
       toolCalls.push({
-        toolUseId: `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        toolUseId: `tool_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
         name: funcName,
         input: args
       })
@@ -98,24 +98,40 @@ function genToolUseId(): string {
 }
 
 /**
- * Compute char ranges that are inside fenced code blocks (``` ... ```) or
- * inline code spans (` ... `). Candidates overlapping any of these are skipped
- * so a model *explaining* or *showing* tool-call syntax is never executed.
+ * Compute char ranges that are inside fenced code blocks (3+ backticks or
+ * tildes) or inline code spans (` ... `). A fence closes only on the same
+ * character with at least the opener's length; an unclosed fence extends to
+ * end-of-text. Candidates overlapping any of these are skipped so a model
+ * *explaining* or *showing* tool-call syntax is never executed.
  */
 function computeCodeRanges(text: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = []
 
-  const fence = /```[\s\S]*?```/g
-  let m: RegExpExecArray | null
-  while ((m = fence.exec(text)) !== null) {
-    ranges.push([m.index, m.index + m[0].length])
+  const fence = /(`{3,}|~{3,})/g
+  let fenceMatch: RegExpExecArray | null
+  while ((fenceMatch = fence.exec(text)) !== null) {
+    const opener = fenceMatch[0]
+    const fenceCharacter = opener[0]
+    if (fenceCharacter === undefined) continue
+
+    const closingFence = new RegExp(`${fenceCharacter}{${opener.length},}`, 'g')
+    closingFence.lastIndex = fence.lastIndex
+    const closingMatch = closingFence.exec(text)
+    const end = closingMatch === null ? text.length : closingMatch.index + closingMatch[0].length
+    ranges.push([fenceMatch.index, end])
+
+    if (closingMatch === null) break
+    fence.lastIndex = end
   }
 
   const inFence = (i: number): boolean => ranges.some(([s, e]) => i >= s && i < e)
 
   const inline = /`[^`\n]+`/g
-  while ((m = inline.exec(text)) !== null) {
-    if (!inFence(m.index)) ranges.push([m.index, m.index + m[0].length])
+  let inlineMatch: RegExpExecArray | null
+  while ((inlineMatch = inline.exec(text)) !== null) {
+    if (!inFence(inlineMatch.index)) {
+      ranges.push([inlineMatch.index, inlineMatch.index + inlineMatch[0].length])
+    }
   }
 
   return ranges
