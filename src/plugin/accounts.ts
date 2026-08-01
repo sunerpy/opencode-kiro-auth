@@ -14,7 +14,14 @@ import type {
 const ACCOUNT_HEALTH_REFRESH_INTERVAL_MS = 1_000
 
 type HealthPersistenceMethod =
-  'updateUsage' | 'addAccount' | 'updateFromAuth' | 'markRateLimited' | 'markUnhealthy'
+  | 'updateUsage'
+  | 'addAccount'
+  | 'updateFromAuth'
+  | 'recoverUnhealthy'
+  | 'recordFailure'
+  | 'markHealthy'
+  | 'markRateLimited'
+  | 'markUnhealthy'
 
 export function createDeterministicAccountId(
   email: string,
@@ -44,6 +51,7 @@ export class AccountManager {
   private lastHealthDataVersion: number | undefined
   private lastHealthRefreshAt: number
   private pendingHealthWriteCounts = new Map<string, number>()
+  private invalidateAccountCache?: (accountId: string) => void
   constructor(
     accounts: ManagedAccount[],
     strategy: AccountSelectionStrategy = 'sticky',
@@ -54,6 +62,7 @@ export class AccountManager {
       overageThreshold?: number
       startIndex?: number
       perRequestSpread?: boolean
+      invalidateAccountCache?: (accountId: string) => void
     }
   ) {
     this.accounts = accounts
@@ -65,6 +74,7 @@ export class AccountManager {
     this.overageThreshold = opts?.overageThreshold ?? 0
     this.startIndex = opts?.startIndex ?? 0
     this.perRequestSpread = opts?.perRequestSpread ?? false
+    this.invalidateAccountCache = opts?.invalidateAccountCache
     this.rrCursor = this.startIndex
     this.lastHealthRefreshAt = Date.now()
     try {
@@ -82,6 +92,7 @@ export class AccountManager {
       overageThreshold?: number
       distributeAcrossProcesses?: boolean
       perRequestSpread?: boolean
+      invalidateAccountCache?: (accountId: string) => void
     }
   ): Promise<AccountManager> {
     const rows = kiroDb.getAccounts()
@@ -195,12 +206,14 @@ export class AccountManager {
           a.isHealthy = true
           delete a.unhealthyReason
           delete a.recoveryTime
+          this.persistLocalHealthMutation(a, 'recoverUnhealthy')
           return true
         }
         if (a.failCount < 10 && a.recoveryTime && now >= a.recoveryTime) {
           a.isHealthy = true
           delete a.unhealthyReason
           delete a.recoveryTime
+          this.persistLocalHealthMutation(a, 'recoverUnhealthy')
           return true
         }
         return false
@@ -278,6 +291,7 @@ export class AccountManager {
         fallback.isHealthy = true
         delete fallback.unhealthyReason
         delete fallback.recoveryTime
+        this.persistLocalHealthMutation(fallback, 'recoverUnhealthy')
         selected = fallback
       }
     }
@@ -342,6 +356,17 @@ export class AccountManager {
 
     kiroDb
       .upsertAccount(persistedSnapshot)
+      .then(() => {
+        try {
+          this.invalidateAccountCache?.(persistedSnapshot.id)
+        } catch (error) {
+          logger.warn('Account cache invalidation failed', {
+            method,
+            email: account.email,
+            error: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })
       .catch((error) =>
         logger.warn('DB write failed', {
           method,
@@ -407,8 +432,8 @@ export class AccountManager {
     if (!account) return
 
     const candidate = this.createAuthCandidate(account, auth)
-    this.publishAuthCandidate(candidate, false)
     this.persistLocalHealthMutation(candidate, 'updateFromAuth')
+    this.publishAuthCandidate(candidate, false)
     this.writeAuthCandidateToKiroCli(candidate)
   }
   createAuthCandidate(a: ManagedAccount, auth: KiroAuthDetails): ManagedAccount {
@@ -446,6 +471,22 @@ export class AccountManager {
         error: e instanceof Error ? e.message : String(e)
       })
     )
+  }
+  recordFailure(a: ManagedAccount): number {
+    const acc = this.accounts.find((x) => x.id === a.id) ?? a
+    acc.failCount = (acc.failCount || 0) + 1
+    this.persistLocalHealthMutation(acc, 'recordFailure')
+    return acc.failCount
+  }
+  markHealthy(a: ManagedAccount): void {
+    const acc = this.accounts.find((x) => x.id === a.id)
+    if (!acc || !acc.failCount || isPermanentError(acc.unhealthyReason)) return
+
+    acc.failCount = 0
+    acc.isHealthy = true
+    delete acc.unhealthyReason
+    delete acc.recoveryTime
+    this.persistLocalHealthMutation(acc, 'markHealthy')
   }
   markRateLimited(a: ManagedAccount, ms: number): void {
     const acc = this.accounts.find((x) => x.id === a.id)

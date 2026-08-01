@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
+import { AccountCache } from '../infrastructure/database/account-cache.js'
+import { AccountRepository } from '../infrastructure/database/account-repository.js'
 import { AccountManager } from '../plugin/accounts.js'
 import { createDatabase, DB_PATH, kiroDb } from '../plugin/storage/sqlite.js'
 import type { ManagedAccount } from '../plugin/types.js'
@@ -31,6 +33,71 @@ afterEach(async () => {
 })
 
 describe('AccountManager account-health refresh', () => {
+  test('persisted health recovery invalidates the repository cache immediately', async () => {
+    const suffix = crypto.randomUUID()
+    const account = makeAccount(`health-cache-${suffix}`)
+    account.failCount = 2
+    account.isHealthy = false
+    account.unhealthyReason = 'transient server error'
+    await kiroDb.upsertAccount(account)
+    const repository = new AccountRepository(new AccountCache(60_000))
+    const cachedBefore = (await repository.findById(account.id)) as ManagedAccount | null
+    const persisted = Promise.withResolvers<void>()
+    const realUpsert = kiroDb.upsertAccount.bind(kiroDb)
+    const upsert = spyOn(kiroDb, 'upsertAccount').mockImplementation(async (candidate) => {
+      await realUpsert(candidate)
+      if (candidate.id === account.id) persisted.resolve()
+    })
+    const manager = new AccountManager([account], 'sticky', {
+      invalidateAccountCache: (accountId) => repository.invalidateAccount(accountId)
+    })
+
+    try {
+      expect(cachedBefore?.failCount).toBe(2)
+
+      manager.markHealthy(account)
+      await persisted.promise
+      await drainMicrotasks()
+      const observedAfter = (await repository.findById(account.id)) as ManagedAccount | null
+
+      expect(observedAfter?.failCount).toBe(0)
+      expect(observedAfter?.isHealthy).toBe(true)
+      expect(observedAfter?.unhealthyReason ?? undefined).toBeUndefined()
+    } finally {
+      upsert.mockRestore()
+    }
+  })
+
+  test('does not revert a 500-driven fail count while its persistence is pending', async () => {
+    const suffix = crypto.randomUUID()
+    const accountA = makeAccount(`health-failure-A-${suffix}`)
+    const accountB = makeAccount(`health-failure-B-${suffix}`)
+    const unrelated = makeAccount(`health-failure-unrelated-${suffix}`)
+    await kiroDb.batchUpsertAccounts([accountA, accountB])
+    const manager = new AccountManager([accountA, accountB], 'sticky')
+    const externalConnection = createDatabase(DB_PATH)
+    const pendingWrite = Promise.withResolvers<void>()
+    const realUpsert = kiroDb.upsertAccount.bind(kiroDb)
+    const upsert = spyOn(kiroDb, 'upsertAccount').mockImplementation((account) =>
+      account.id === accountA.id ? pendingWrite.promise : realUpsert(account)
+    )
+
+    try {
+      expect(manager.recordFailure(accountA)).toBe(1)
+      await externalConnection.upsertAccount(unrelated)
+
+      manager.getCurrentOrNext()
+      const refreshedA = manager.getAccounts().find((account) => account.id === accountA.id)
+
+      expect(refreshedA?.failCount).toBe(1)
+    } finally {
+      pendingWrite.resolve()
+      await drainMicrotasks()
+      upsert.mockRestore()
+      externalConnection.close()
+    }
+  })
+
   test('does not revert a local cooldown while its same-process persistence is pending', async () => {
     const suffix = crypto.randomUUID()
     const accountA = makeAccount(`health-pending-A-${suffix}`)

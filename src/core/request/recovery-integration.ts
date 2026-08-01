@@ -5,8 +5,11 @@ import { classifyAccountFailure, type AccountFailureClass } from './account-fail
 import type { RecoveryAttemptFactory, RecoveryAttemptResult } from './recovery-attempt'
 import { encodeSseChunk, type SdkStreamingAttempt } from './response-handler'
 import { UpstreamUnexpectedError } from './stream-error'
-import { STREAM_TERMINAL_LOG } from './stream-log-events'
-import { StreamRecoveryCoordinator, type StreamRecoveryMode } from './stream-recovery'
+import {
+  StreamRecoveryCoordinator,
+  type StreamRecoveryMode,
+  type StreamRecoveryTerminationReason
+} from './stream-recovery'
 
 const RECOVERY_QUOTA_COOLDOWN_MS = 30_000
 
@@ -30,7 +33,7 @@ export type LiveRecoveryOptions = {
    * Response, so this only ever fires on a path where the Response was actually
    * delivered to the caller — i.e. from the coordinator, exactly once.
    */
-  readonly onTerminal: () => void
+  readonly onTerminal: (details: RecoveryTerminalLogDetails) => void
   /**
    * Attempt-level release for an initial `openAttempt(1)` failure. That failure is
    * pre-output and is re-thrown for the caller's outer retry loop, so ownership has
@@ -39,6 +42,10 @@ export type LiveRecoveryOptions = {
    */
   readonly onInitialOpenFailure: () => void
   readonly onCancel: (reason: unknown) => void
+}
+
+type RecoveryTerminalLogDetails = Readonly<Record<string, unknown>> & {
+  readonly terminalSource: StreamTerminalSource
 }
 
 type RecoveryFailurePhase = 'pre_stream_open' | 'stream_iteration'
@@ -161,33 +168,44 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     }
   }
 
-  const finishTerminal = (): void => {
+  const finishTerminal = (terminationReason: StreamRecoveryTerminationReason): void => {
     if (terminalFinished) return
     terminalFinished = true
-    if (currentAttempt?.logDetails) {
-      const observed = observedTerminalSource(currentAttempt.logDetails())
+    if (currentAttempt) {
+      const observed = currentAttempt.logDetails
+        ? observedTerminalSource(currentAttempt.logDetails())
+        : null
       const terminalSource: StreamTerminalSource = options.signal.aborted
         ? 'caller_abort'
         : observed === 'semantic_truncation'
           ? observed
-          : currentAttempt.attemptIndex >= options.maxAttempts &&
-              (observed === null || observed === 'iterator_failure')
+          : terminationReason === 'attempt_budget_exhausted'
             ? 'stream_attempt_budget_exhausted'
             : (observed ?? 'iterator_failure')
-      const phase: RecoveryLogPhase =
-        terminalSource === 'clean_eof_without_completion_metadata' ||
-        terminalSource === 'completion_metadata_received'
+      const phase: RecoveryLogPhase = currentAttempt.openFailed
+        ? 'pre_stream_open'
+        : terminalSource === 'clean_eof_without_completion_metadata' ||
+            terminalSource === 'completion_metadata_received'
           ? 'completed'
           : 'stream_iteration'
-      logger.log(
-        STREAM_TERMINAL_LOG,
-        attemptLogDetails(currentAttempt, phase, undefined, {
+      options.onTerminal({
+        ...attemptLogDetails(currentAttempt, phase, undefined, {
           outcome: 'terminal',
           terminalSource
-        })
-      )
+        }),
+        terminalSource
+      })
+      return
     }
-    options.onTerminal()
+    options.onTerminal({
+      outcome: 'terminal',
+      phase: 'stream_iteration',
+      terminalSource: options.signal.aborted
+        ? 'caller_abort'
+        : terminationReason === 'attempt_budget_exhausted'
+          ? 'stream_attempt_budget_exhausted'
+          : 'iterator_failure'
+    })
   }
 
   const openAttempt = async (attemptIndex: number): Promise<SdkStreamingAttempt> => {

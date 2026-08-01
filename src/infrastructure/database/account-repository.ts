@@ -72,4 +72,8 @@ export class AccountRepository {
   invalidateCache(): void {
     this.cache.invalidateAll()
   }
+
+  invalidateAccount(id: string): void {
+    this.cache.invalidate(id)
+  }
 }

@@ -9,13 +9,23 @@ import type { DialectToolResolution } from '../../infrastructure/transformers/to
  */
 export type ReasoningPhase = 'none' | 'active' | 'ended'
 export type ObservedDialectResolution = DialectToolResolution | 'not_finalized'
-export type StreamTerminalSource =
-  | 'clean_eof_without_completion_metadata'
-  | 'completion_metadata_received'
-  | 'iterator_failure'
-  | 'semantic_truncation'
-  | 'caller_abort'
-  | 'stream_attempt_budget_exhausted'
+export const STREAM_TERMINAL_SOURCES = [
+  'clean_eof_without_completion_metadata',
+  'completion_metadata_received',
+  'iterator_failure',
+  'semantic_truncation',
+  'caller_abort',
+  'stream_attempt_budget_exhausted'
+] as const
+export type StreamTerminalSource = (typeof STREAM_TERMINAL_SOURCES)[number]
+
+export const REQUEST_TERMINAL_SOURCES = [
+  ...STREAM_TERMINAL_SOURCES,
+  'http_error',
+  'network_error',
+  'request_error'
+] as const
+export type RequestTerminalSource = (typeof REQUEST_TERMINAL_SOURCES)[number]
 
 export interface StreamObservedState {
   /**

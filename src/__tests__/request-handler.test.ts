@@ -126,6 +126,13 @@ function buildHandler(opts: {
 
   const accountManager: any = {
     getAccounts: mock(() => accounts),
+    markHealthy: mock((acc: ManagedAccount) => {
+      if (!acc.failCount) return
+      acc.failCount = 0
+      acc.isHealthy = true
+      delete acc.unhealthyReason
+      delete acc.recoveryTime
+    }),
     toAuthDetails: mock((acc: ManagedAccount) => ({
       access: acc.accessToken,
       refresh: acc.refreshToken,
@@ -1480,6 +1487,57 @@ describe('RequestHandler.handle — unconditional stream-start record', () => {
 
       expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
       expect(startRecords(logs.log)).toHaveLength(1)
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('HTTP and non-retryable network exits each reconcile one start with one terminal', async () => {
+    const httpAccount = makeAccount({ id: 'terminal-http' })
+    const networkAccount = makeAccount({ id: 'terminal-network' })
+    const httpError = Object.assign(new Error('invalid request'), {
+      name: 'ValidationException',
+      $metadata: { httpStatusCode: 400 }
+    })
+    const networkError = new TypeError('socket closed before response')
+    const logs = captureLogger()
+
+    try {
+      const { handler: httpHandler } = buildHandler({
+        selectResults: [httpAccount],
+        sdkResults: [httpError],
+        errorHandleResults: [{ shouldRetry: false }],
+        streaming: true
+      })
+      const httpResponse = await httpHandler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      const { handler: networkHandler } = buildHandler({
+        selectResults: [networkAccount],
+        sdkResults: [networkError],
+        streaming: true
+      })
+      await expect(
+        networkHandler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      ).rejects.toBe(networkError)
+
+      expect(httpResponse.status).toBe(400)
+      expect(startRecords(logs.log)).toHaveLength(2)
+      const terminalRecords = records(logs.log, STREAM_TERMINAL_LOG)
+      expect(terminalRecords).toHaveLength(2)
+      expect(terminalRecords.filter((record) => record['accountId'] === httpAccount.id)).toEqual([
+        expect.objectContaining({
+          phase: 'pre_stream_open',
+          terminalSource: 'http_error'
+        })
+      ])
+      expect(terminalRecords.filter((record) => record['accountId'] === networkAccount.id)).toEqual(
+        [
+          expect.objectContaining({
+            phase: 'pre_stream_open',
+            terminalSource: 'network_error'
+          })
+        ]
+      )
     } finally {
       logs.restore()
     }
@@ -3009,6 +3067,7 @@ describe('RequestHandler.handle — re-auth path', () => {
     const accounts = [dead]
     const accountManager: any = {
       getAccounts: mock(() => accounts),
+      markHealthy: mock(() => {}),
       addAccount: mock((a: ManagedAccount) => {
         accounts.length = 0
         accounts.push(a)
@@ -3092,6 +3151,7 @@ describe('RequestHandler.handle — API request logging', () => {
     }
     const accountManager: any = {
       getAccounts: mock(() => [acc]),
+      markHealthy: mock(() => {}),
       toAuthDetails: mock(() => ({ access: acc.accessToken, region: acc.region, email: acc.email }))
     }
     const handler = new RequestHandler(accountManager, logConfig, {

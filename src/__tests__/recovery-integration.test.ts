@@ -39,9 +39,11 @@ function recoveryOptions(
 ): {
   readonly options: LiveRecoveryOptions
   readonly terminalCalls: () => number
+  readonly terminalRecords: () => readonly Record<string, unknown>[]
   readonly initialFailureCalls: () => number
 } {
   let terminalCalls = 0
+  const terminalRecords: Record<string, unknown>[] = []
   let initialFailureCalls = 0
   return {
     options: {
@@ -57,8 +59,9 @@ function recoveryOptions(
       selectAlternativeAccount: async () => null,
       markRateLimited: () => {},
       describeError: (error) => error,
-      onTerminal: () => {
+      onTerminal: (details) => {
         terminalCalls++
+        terminalRecords.push(details)
       },
       onInitialOpenFailure: () => {
         initialFailureCalls++
@@ -66,6 +69,7 @@ function recoveryOptions(
       onCancel: () => {}
     },
     terminalCalls: () => terminalCalls,
+    terminalRecords: () => terminalRecords,
     initialFailureCalls: () => initialFailureCalls
   }
 }
@@ -178,6 +182,92 @@ describe('createLiveRecoveryResponse — initial attempt terminal ownership', ()
 })
 
 describe('createLiveRecoveryResponse — account rotation', () => {
+  test('final recovery open failure emits one terminal record with carried request identity', async () => {
+    const streamFailure = new TestStreamFailure('initial stream interrupted')
+    const openFailure = new Error('final recovery open failed')
+    const attemptFactory: Pick<RecoveryAttemptFactory, 'open'> = {
+      open: async (attemptIndex, selectedAccount) => {
+        if (attemptIndex === 2) throw openFailure
+        return {
+          account: selectedAccount,
+          logDetails: (details = {}) => ({
+            conversationId: 'conversation-open-terminal',
+            model: 'claude-opus-5-max',
+            processId: 45678,
+            ...details
+          }),
+          handle: {
+            ...makeAttempt({ output: [], failure: streamFailure }),
+            complete: async () => {}
+          }
+        }
+      }
+    }
+    const harness = recoveryOptions(attemptFactory)
+
+    const response = await createLiveRecoveryResponse({
+      ...harness.options,
+      maxAttempts: 2
+    })
+    await rejectionOf(response.text())
+
+    expect(harness.terminalRecords()).toEqual([
+      expect.objectContaining({
+        conversationId: 'conversation-open-terminal',
+        model: 'claude-opus-5-max',
+        processId: 45678,
+        identitySource: 'previous_attempt',
+        attemptIndex: 2,
+        phase: 'pre_stream_open',
+        outcome: 'terminal',
+        terminalSource: 'stream_attempt_budget_exhausted'
+      })
+    ])
+    expect(harness.terminalCalls()).toBe(1)
+  })
+
+  test('final exact replay early end outranks the attempt clean EOF terminal source', async () => {
+    const streamFailure = new TestStreamFailure('initial exact replay stream interrupted')
+    const attemptFactory: Pick<RecoveryAttemptFactory, 'open'> = {
+      open: async (attemptIndex, selectedAccount) => ({
+        account: selectedAccount,
+        logDetails: (details = {}) => ({
+          conversationId: 'conversation-early-end-terminal',
+          model: 'claude-opus-5-max',
+          terminalSource:
+            attemptIndex === 1 ? 'iterator_failure' : 'clean_eof_without_completion_metadata',
+          ...details
+        }),
+        handle: {
+          ...(attemptIndex === 1
+            ? makeAttempt({
+                output: [chunk('early-end-prefix', { content: 'delivered prefix' })],
+                failure: streamFailure
+              })
+            : makeAttempt({ output: [] })),
+          complete: async () => {}
+        }
+      })
+    }
+    const harness = recoveryOptions(attemptFactory)
+
+    const response = await createLiveRecoveryResponse({
+      ...harness.options,
+      mode: 'exact_replay',
+      maxAttempts: 2
+    })
+    await rejectionOf(response.text())
+
+    expect(harness.terminalRecords()).toEqual([
+      expect.objectContaining({
+        conversationId: 'conversation-early-end-terminal',
+        phase: 'stream_iteration',
+        outcome: 'terminal',
+        terminalSource: 'stream_attempt_budget_exhausted'
+      })
+    ])
+  })
+
   test('rotates from A through quota-exhausted B to C without retrying B', async () => {
     const accountA = makeAccount('A')
     const accountB = makeAccount('B')

@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { DSML_MARKER } from '../infrastructure/transformers/tool-call-parser.js'
 import { transformSdkStream } from '../plugin/streaming/sdk-stream-transformer.js'
-import { StreamObserver } from '../plugin/streaming/stream-observer.js'
+import {
+  REQUEST_TERMINAL_SOURCES,
+  STREAM_TERMINAL_SOURCES,
+  StreamObserver
+} from '../plugin/streaming/stream-observer.js'
 
 // Same fake-SDK shape the other transformer suites use: transformSdkStream reads
 // `sdkResponse.generateAssistantResponseResponse` as an async iterable of events.
@@ -221,6 +225,34 @@ describe('StreamObserver — raw upstream event counts', () => {
       metadataEvent: 1
     })
     expect(JSON.stringify(snapshot.eventTypeCounts)).not.toContain('private reasoning')
+  })
+})
+
+describe('StreamObserver — terminal-source precedence', () => {
+  test('request scope declares the observer and pre-stream terminal sources in one set', () => {
+    expect(STREAM_TERMINAL_SOURCES).toEqual([
+      'clean_eof_without_completion_metadata',
+      'completion_metadata_received',
+      'iterator_failure',
+      'semantic_truncation',
+      'caller_abort',
+      'stream_attempt_budget_exhausted'
+    ])
+    expect(REQUEST_TERMINAL_SOURCES).toEqual([
+      ...STREAM_TERMINAL_SOURCES,
+      'http_error',
+      'network_error',
+      'request_error'
+    ])
+  })
+
+  test('semantic truncation is not overwritten by its iterator-failure wrapper', () => {
+    const observer = new StreamObserver()
+
+    observer.noteTerminalSource('semantic_truncation')
+    observer.noteTerminalSource('iterator_failure')
+
+    expect(observer.snapshot().terminalSource).toBe('semantic_truncation')
   })
 })
 

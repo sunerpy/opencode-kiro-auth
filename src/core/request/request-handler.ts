@@ -13,7 +13,11 @@ import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output'
 import { deriveInheritedLoopId, normalizeToolArguments } from '../../plugin/reasoning/turn-identity'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
-import { StreamObserver, type StreamTerminalSource } from '../../plugin/streaming/stream-observer'
+import {
+  StreamObserver,
+  type RequestTerminalSource,
+  type StreamTerminalSource
+} from '../../plugin/streaming/stream-observer'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import { AccountSelector } from '../account/account-selector'
@@ -43,6 +47,9 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
 type UpstreamWaitPhase = 'SDK response' | 'stream event'
+type RequestTerminalLogDetails = Readonly<Record<string, unknown>> & {
+  readonly terminalSource: RequestTerminalSource
+}
 
 function describeError(error: unknown, depth = 0): unknown {
   if (!(error instanceof Error)) return String(error)
@@ -180,6 +187,18 @@ export class RequestHandler {
     let handlerContext: RequestContext = { retry: 0, forcedRefreshAccountIds: new Set<string>() }
     let consecutiveNullAccounts = 0
     let streamStartRecorded = false
+    let terminalSummaryRecorded = false
+    let latestStreamLogDetails:
+      ((details?: Record<string, unknown>) => Record<string, unknown>) | undefined
+    const logTerminalSummary = (details: RequestTerminalLogDetails): void => {
+      if (terminalSummaryRecorded || !streamStartRecorded) return
+      terminalSummaryRecorded = true
+      const terminalDetails = { outcome: 'terminal', ...details }
+      logger.log(
+        STREAM_TERMINAL_LOG,
+        latestStreamLogDetails ? latestStreamLogDetails(terminalDetails) : terminalDetails
+      )
+    }
     let streamFailureCount = 0
     const failedAccountIds = new Set<string>()
     let forcedStreamAccount: ManagedAccount | null = null
@@ -294,12 +313,7 @@ export class RequestHandler {
             ...details
           }
         }
-        let terminalSummaryRecorded = false
-        const logTerminalSummary = (details: Record<string, unknown> = {}): void => {
-          if (terminalSummaryRecorded || !sdkPrep.streaming) return
-          terminalSummaryRecorded = true
-          logger.log(STREAM_TERMINAL_LOG, streamLogDetails({ outcome: 'terminal', ...details }))
-        }
+        latestStreamLogDetails = streamLogDetails
 
         if (sdkPrep.streaming && streamAttempt === 1 && !streamStartRecorded) {
           streamStartRecorded = true
@@ -440,7 +454,10 @@ export class RequestHandler {
               markRateLimited: (account, milliseconds) =>
                 this.accountManager.markRateLimited(account, milliseconds),
               describeError,
-              onTerminal: cleanupRequest,
+              onTerminal: (details) => {
+                logTerminalSummary(details)
+                cleanupRequest()
+              },
               // Attempt-level only: an initial-open failure is pre-output and is
               // retried below, so request-level cleanup (which detaches the inbound
               // abort listener) must stay with the outer finally.
@@ -556,7 +573,9 @@ export class RequestHandler {
               effectiveModel: sdkPrep.effectiveModel,
               recoveryMode: this.config.stream_recovery_mode,
               onTerminal: () => {
-                logTerminalSummary()
+                logTerminalSummary({
+                  terminalSource: streamObserver.snapshot().terminalSource ?? 'iterator_failure'
+                })
                 cleanupRequest()
               },
               onCancel: (reason) => requestController.abort(reason),
@@ -591,7 +610,7 @@ export class RequestHandler {
         } catch (e: any) {
           if (signal.aborted) {
             streamObserver.noteTerminalSource('caller_abort')
-            logTerminalSummary()
+            logTerminalSummary({ terminalSource: 'caller_abort' })
             throw signal.reason
           }
 
@@ -615,7 +634,7 @@ export class RequestHandler {
                   error: describeError(e)
                 })
               )
-              logTerminalSummary()
+              logTerminalSummary({ terminalSource })
               return streamError.toResponse()
             }
 
@@ -655,7 +674,14 @@ export class RequestHandler {
             continue
           }
 
-          if (sendResolved) throw e
+          if (sendResolved) {
+            logTerminalSummary({
+              phase: 'stream_iteration',
+              terminalSource: 'request_error',
+              error: describeError(e)
+            })
+            throw e
+          }
 
           const httpStatus = e?.$metadata?.httpStatusCode
 
@@ -707,6 +733,13 @@ export class RequestHandler {
             const terminalStatus =
               httpStatus === 400 && isKiroContextOverflowBody(e.message ?? '') ? 413 : httpStatus
 
+            logTerminalSummary({
+              phase: 'pre_stream_open',
+              terminalSource: 'http_error',
+              httpStatus: terminalStatus,
+              error: describeError(e)
+            })
+
             return new Response(errorBody, {
               status: terminalStatus,
               statusText: errorStatusText,
@@ -728,11 +761,22 @@ export class RequestHandler {
             continue
           }
 
+          logTerminalSummary({
+            phase: 'pre_stream_open',
+            terminalSource: 'network_error',
+            error: describeError(e)
+          })
           throw e
         }
       }
     } finally {
-      if (!responseOwnsLifecycle) cleanupRequest()
+      if (!responseOwnsLifecycle) {
+        logTerminalSummary({
+          phase: 'pre_stream_open',
+          terminalSource: signal.aborted ? 'caller_abort' : 'request_error'
+        })
+        cleanupRequest()
+      }
     }
   }
 
@@ -768,15 +812,7 @@ export class RequestHandler {
   }
 
   private handleSuccessfulRequest(acc: ManagedAccount): void {
-    if (acc.failCount && acc.failCount > 0) {
-      if (!isPermanentError(acc.unhealthyReason)) {
-        acc.failCount = 0
-        acc.isHealthy = true
-        delete acc.unhealthyReason
-        delete acc.recoveryTime
-        this.repository.save(acc).catch(() => {})
-      }
-    }
+    this.accountManager.markHealthy(acc)
   }
 
   private logSdkRequest(prep: SdkPreparedRequest, acc: ManagedAccount, timestamp: string): void {

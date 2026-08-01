@@ -130,7 +130,7 @@ export class ErrorHandler {
     }
 
     if (response.status === 500) {
-      account.failCount = (account.failCount || 0) + 1
+      const failCount = this.accountManager.recordFailure(account)
       let errorMessage = 'Internal Server Error'
       try {
         const errorBody = await response.text()
@@ -142,8 +142,8 @@ export class ErrorHandler {
         }
       } catch {}
 
-      if (account.failCount < 5) {
-        const delay = 1000 * Math.pow(2, account.failCount - 1)
+      if (failCount < 5) {
+        const delay = 1000 * Math.pow(2, failCount - 1)
         showToast(`500: ${errorMessage}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
         await this.sleep(delay, signal)
         return { shouldRetry: true }

@@ -56,6 +56,14 @@ export type ReplayAttemptTelemetry = ReplayMatchProgress & {
   readonly attempts: number
 }
 
+export type StreamRecoveryTerminationReason =
+  | 'completed'
+  | 'caller_abort'
+  | 'consumer_cancel'
+  | 'recovery_unavailable'
+  | 'attempt_budget_exhausted'
+  | 'coordinator_failure'
+
 export type StreamRecoveryOptions = {
   readonly mode: StreamRecoveryMode
   readonly maxAttempts: number
@@ -68,7 +76,7 @@ export type StreamRecoveryOptions = {
   readonly mapError: (failure: unknown) => Error
   readonly encodeChunk: (chunk: unknown) => Uint8Array
   readonly onComplete: (completion: StreamRecoveryCompletion) => void | Promise<void>
-  readonly onTerminal: () => void
+  readonly onTerminal: (reason: StreamRecoveryTerminationReason) => void
   readonly onCancel?: (reason: unknown) => void
   readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry, failure?: Error) => void
 }
@@ -163,7 +171,7 @@ export class StreamRecoveryCoordinator {
     this.abortListener = () => {
       if (this.terminal) return
       const reason = abortReason(this.options.signal)
-      this.finish()
+      this.finish('caller_abort')
       controller.error(reason)
       void this.closeActiveAttempt()
     }
@@ -181,7 +189,7 @@ export class StreamRecoveryCoordinator {
       if (this.terminal) return
       await this.closeActiveAttempt()
       if (this.terminal) return
-      this.finish()
+      this.finish('coordinator_failure')
       controller.error(this.options.signal.aborted ? abortReason(this.options.signal) : error)
     }
   }
@@ -306,7 +314,11 @@ export class StreamRecoveryCoordinator {
       sawToolIntent: this.sawToolIntent
     })
     if (tier === 'none' || this.attemptIndex >= this.options.maxAttempts) {
-      this.finish()
+      this.finish(
+        this.attemptIndex >= this.options.maxAttempts
+          ? 'attempt_budget_exhausted'
+          : 'recovery_unavailable'
+      )
       controller.error(this.options.mapError(failure))
       return false
     }
@@ -368,7 +380,7 @@ export class StreamRecoveryCoordinator {
       controller.enqueue(this.options.encodeChunk(chunk))
     }
     this.pendingTerminalChunks.length = 0
-    this.finish()
+    this.finish('completed')
     controller.close()
   }
 
@@ -378,7 +390,7 @@ export class StreamRecoveryCoordinator {
     // consumer cancellation is recorded as caller_abort rather than a transport end.
     this.options.onCancel?.(reason)
     const closing = this.closeActiveAttempt()
-    this.finish()
+    this.finish('consumer_cancel')
     await closing
   }
 
@@ -389,13 +401,13 @@ export class StreamRecoveryCoordinator {
     await Promise.allSettled([attempt.close()])
   }
 
-  private finish(): void {
+  private finish(reason: StreamRecoveryTerminationReason): void {
     if (this.terminal) return
     this.terminal = true
     if (this.abortListener) {
       this.options.signal.removeEventListener('abort', this.abortListener)
       this.abortListener = undefined
     }
-    this.options.onTerminal()
+    this.options.onTerminal(reason)
   }
 }
