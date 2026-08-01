@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
+import { ErrorHandler } from '../core/request/error-handler.js'
 import { AccountCache } from '../infrastructure/database/account-cache.js'
 import { AccountRepository } from '../infrastructure/database/account-repository.js'
 import { AccountManager } from '../plugin/accounts.js'
@@ -9,6 +10,10 @@ const createdAccountIds = new Set<string>()
 
 async function drainMicrotasks(turns = 20): Promise<void> {
   for (let turn = 0; turn < turns; turn++) await Promise.resolve()
+}
+
+async function waitForMacrotask(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
 
 function makeAccount(id: string): ManagedAccount {
@@ -33,6 +38,105 @@ afterEach(async () => {
 })
 
 describe('AccountManager account-health refresh', () => {
+  test('returns recovered account selection before starting its database write', async () => {
+    const suffix = crypto.randomUUID()
+    const account = makeAccount(`health-sync-selection-${suffix}`)
+    account.failCount = 1
+    account.isHealthy = false
+    account.unhealthyReason = 'transient server error'
+    account.recoveryTime = Date.now() - 1
+    const manager = new AccountManager([account], 'sticky')
+    const upsert = spyOn(kiroDb, 'upsertAccount').mockResolvedValue()
+
+    try {
+      const selected = manager.getCurrentOrNext()
+
+      expect(selected?.id).toBe(account.id)
+      expect(upsert).not.toHaveBeenCalled()
+
+      await waitForMacrotask()
+      expect(upsert).toHaveBeenCalledTimes(1)
+    } finally {
+      await waitForMacrotask()
+      await drainMicrotasks()
+      upsert.mockRestore()
+    }
+  })
+
+  test('serializes deferred health writes for the same account', async () => {
+    const suffix = crypto.randomUUID()
+    const account = makeAccount(`health-write-order-${suffix}`)
+    const manager = new AccountManager([account], 'sticky')
+    const firstWrite = Promise.withResolvers<void>()
+    const persistedCooldowns: number[] = []
+    const upsert = spyOn(kiroDb, 'upsertAccount').mockImplementation((candidate) => {
+      persistedCooldowns.push(candidate.rateLimitResetTime)
+      return persistedCooldowns.length === 1 ? firstWrite.promise : Promise.resolve()
+    })
+
+    try {
+      manager.markRateLimited(account, 30_000)
+      manager.markRateLimited(account, 60_000)
+
+      expect(upsert).not.toHaveBeenCalled()
+
+      await waitForMacrotask()
+      expect(persistedCooldowns).toHaveLength(1)
+
+      firstWrite.resolve()
+      await drainMicrotasks()
+      expect(persistedCooldowns).toHaveLength(2)
+      expect(persistedCooldowns[1]).toBeGreaterThan(persistedCooldowns[0] ?? 0)
+    } finally {
+      firstWrite.resolve()
+      await waitForMacrotask()
+      await drainMicrotasks()
+      upsert.mockRestore()
+    }
+  })
+
+  test('does not let a database refresh undo a single-account permanent failure', async () => {
+    const suffix = crypto.randomUUID()
+    const account = makeAccount(`health-permanent-${suffix}`)
+    const unrelated = makeAccount(`health-permanent-unrelated-${suffix}`)
+    await kiroDb.upsertAccount(account)
+    const manager = new AccountManager([account], 'sticky')
+    const repository = new AccountRepository(new AccountCache(60_000))
+    const handler = new ErrorHandler(
+      { rate_limit_max_retries: 3, rate_limit_retry_delay_ms: 5_000 },
+      manager,
+      repository
+    )
+    const externalConnection = createDatabase(DB_PATH)
+
+    try {
+      const result = await handler.handle(
+        new Error('suspended'),
+        new Response(JSON.stringify({ reason: 'TEMPORARILY_SUSPENDED', message: 'suspended' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' }
+        }),
+        account,
+        { retry: 0 },
+        () => {}
+      )
+      await externalConnection.upsertAccount(unrelated)
+
+      const selected = manager.getCurrentOrNext()
+      const observed = manager.getAccounts().find((candidate) => candidate.id === account.id)
+
+      expect(result.shouldRetry).toBe(false)
+      expect(selected).toBeNull()
+      expect(observed?.failCount).toBe(10)
+      expect(observed?.isHealthy).toBe(false)
+      expect(observed?.unhealthyReason).toContain('Account Suspended')
+    } finally {
+      await waitForMacrotask()
+      await drainMicrotasks()
+      externalConnection.close()
+    }
+  })
+
   test('persisted health recovery invalidates the repository cache immediately', async () => {
     const suffix = crypto.randomUUID()
     const account = makeAccount(`health-cache-${suffix}`)
@@ -151,6 +255,7 @@ describe('AccountManager account-health refresh', () => {
       await externalConnection.upsertAccount(unrelated)
       manager.getCurrentOrNext()
 
+      await waitForMacrotask()
       pendingWrite.reject(new Error('simulated cooldown persistence failure'))
       await drainMicrotasks()
 

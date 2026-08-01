@@ -243,12 +243,12 @@ export class ErrorHandler {
       }
 
       if (isPermanent) {
-        account.failCount = 10
+        this.accountManager.markUnhealthy(account, toDeadReason(errorReason))
       }
 
       if (this.accountManager.getAccountCount() > 1) {
         showToast(`${response.status}: ${errorReason}. Switching account...`, 'warning')
-        this.accountManager.markUnhealthy(account, errorReason)
+        if (!isPermanent) this.accountManager.markUnhealthy(account, errorReason)
         await this.repository.batchSave(this.accountManager.getAccounts())
         return { shouldRetry: true, switchAccount: true }
       }

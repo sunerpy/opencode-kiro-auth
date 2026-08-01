@@ -162,6 +162,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       case 'semantic_truncation':
       case 'caller_abort':
       case 'stream_attempt_budget_exhausted':
+      case 'stream_processing_failure':
         return source
       default:
         return null
@@ -177,11 +178,13 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
         : null
       const terminalSource: StreamTerminalSource = options.signal.aborted
         ? 'caller_abort'
-        : observed === 'semantic_truncation'
-          ? observed
+        : terminationReason === 'coordinator_failure'
+          ? 'stream_processing_failure'
           : terminationReason === 'attempt_budget_exhausted'
             ? 'stream_attempt_budget_exhausted'
-            : (observed ?? 'iterator_failure')
+            : observed === 'semantic_truncation'
+              ? observed
+              : (observed ?? 'iterator_failure')
       const phase: RecoveryLogPhase = currentAttempt.openFailed
         ? 'pre_stream_open'
         : terminalSource === 'clean_eof_without_completion_metadata' ||
@@ -202,9 +205,11 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       phase: 'stream_iteration',
       terminalSource: options.signal.aborted
         ? 'caller_abort'
-        : terminationReason === 'attempt_budget_exhausted'
-          ? 'stream_attempt_budget_exhausted'
-          : 'iterator_failure'
+        : terminationReason === 'coordinator_failure'
+          ? 'stream_processing_failure'
+          : terminationReason === 'attempt_budget_exhausted'
+            ? 'stream_attempt_budget_exhausted'
+            : 'iterator_failure'
     })
   }
 

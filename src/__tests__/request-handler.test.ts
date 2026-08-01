@@ -1000,6 +1000,40 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
   })
 
+  test('a post-output transformation fault is not logged as an SDK iterator failure', async () => {
+    const acc = makeAccount({ id: 'transform-terminal' })
+    const malformedEvent = {
+      get reasoningContentEvent() {
+        throw new Error('transformer failed after semantic output')
+      }
+    }
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([{ assistantResponseEvent: { content: 'first chunk' } }, malformedEvent])
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await expect(response.text()).rejects.toThrow('transformer failed after semantic output')
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+      expect(records(logs.log, STREAM_TERMINAL_LOG)).toEqual([
+        expect.objectContaining({
+          accountId: acc.id,
+          phase: 'stream_iteration',
+          terminalSource: 'stream_processing_failure'
+        })
+      ])
+    } finally {
+      logs.restore()
+    }
+  })
+
   test('an exhausted attempt reports how much of each channel was already emitted', async () => {
     const acc = makeAccount({ id: 'A' })
     const logs = captureLogger()

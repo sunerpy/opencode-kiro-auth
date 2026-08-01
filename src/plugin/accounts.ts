@@ -51,6 +51,7 @@ export class AccountManager {
   private lastHealthDataVersion: number | undefined
   private lastHealthRefreshAt: number
   private pendingHealthWriteCounts = new Map<string, number>()
+  private healthWriteChains = new Map<string, Promise<void>>()
   private invalidateAccountCache?: (accountId: string) => void
   constructor(
     accounts: ManagedAccount[],
@@ -350,15 +351,20 @@ export class AccountManager {
     account: ManagedAccount,
     method: HealthPersistenceMethod
   ): void {
-    const pendingCount = this.pendingHealthWriteCounts.get(account.id) ?? 0
-    this.pendingHealthWriteCounts.set(account.id, pendingCount + 1)
+    const accountId = account.id
+    const pendingCount = this.pendingHealthWriteCounts.get(accountId) ?? 0
+    this.pendingHealthWriteCounts.set(accountId, pendingCount + 1)
     const persistedSnapshot = { ...account }
-
-    kiroDb
-      .upsertAccount(persistedSnapshot)
+    const previousWrite = this.healthWriteChains.get(accountId) ?? Promise.resolve()
+    const deferredStart = new Promise<void>((resolve) => setTimeout(resolve, 0))
+    let write: Promise<void>
+    write = previousWrite
+      .catch(() => {})
+      .then(() => deferredStart)
+      .then(() => kiroDb.upsertAccount(persistedSnapshot))
       .then(() => {
         try {
-          this.invalidateAccountCache?.(persistedSnapshot.id)
+          this.invalidateAccountCache?.(accountId)
         } catch (error) {
           logger.warn('Account cache invalidation failed', {
             method,
@@ -375,10 +381,14 @@ export class AccountManager {
         })
       )
       .finally(() => {
-        const remaining = (this.pendingHealthWriteCounts.get(account.id) ?? 1) - 1
-        if (remaining > 0) this.pendingHealthWriteCounts.set(account.id, remaining)
-        else this.pendingHealthWriteCounts.delete(account.id)
+        const remaining = (this.pendingHealthWriteCounts.get(accountId) ?? 1) - 1
+        if (remaining > 0) this.pendingHealthWriteCounts.set(accountId, remaining)
+        else this.pendingHealthWriteCounts.delete(accountId)
+        if (this.healthWriteChains.get(accountId) === write) {
+          this.healthWriteChains.delete(accountId)
+        }
       })
+    this.healthWriteChains.set(accountId, write)
   }
   updateUsage(
     id: string,

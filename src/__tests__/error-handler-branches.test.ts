@@ -288,7 +288,13 @@ describe('ErrorHandler 402 / 403 quota & permanence', () => {
   })
 
   test('TEMPORARILY_SUSPENDED is permanent: failCount forced to 10, no retry (single account)', async () => {
-    const handler = new ErrorHandler(CONFIG, makeAccountManager(1), makeRepository())
+    const manager = makeAccountManager(1)
+    manager.markUnhealthy.mockImplementation((account: ManagedAccount, reason: string) => {
+      account.failCount = 10
+      account.isHealthy = false
+      account.unhealthyReason = reason
+    })
+    const handler = new ErrorHandler(CONFIG, manager, makeRepository())
     const account = makeAccount()
     const res = await handler.handle(
       new Error('susp'),
@@ -298,6 +304,8 @@ describe('ErrorHandler 402 / 403 quota & permanence', () => {
       noopToast
     )
     expect(account.failCount).toBe(10)
+    expect(account.unhealthyReason).toContain('Account Suspended')
+    expect(manager.markUnhealthy).toHaveBeenCalledTimes(1)
     expect(res.shouldRetry).toBe(false)
   })
 

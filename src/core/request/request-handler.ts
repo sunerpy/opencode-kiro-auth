@@ -574,7 +574,9 @@ export class RequestHandler {
               recoveryMode: this.config.stream_recovery_mode,
               onTerminal: () => {
                 logTerminalSummary({
-                  terminalSource: streamObserver.snapshot().terminalSource ?? 'iterator_failure'
+                  phase: 'stream_iteration',
+                  terminalSource:
+                    streamObserver.snapshot().terminalSource ?? 'stream_processing_failure'
                 })
                 cleanupRequest()
               },
@@ -675,9 +677,11 @@ export class RequestHandler {
           }
 
           if (sendResolved) {
+            const terminalSource =
+              streamObserver.snapshot().terminalSource ?? 'stream_processing_failure'
             logTerminalSummary({
               phase: 'stream_iteration',
-              terminalSource: 'request_error',
+              terminalSource,
               error: describeError(e)
             })
             throw e

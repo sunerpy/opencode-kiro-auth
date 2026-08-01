@@ -15,7 +15,8 @@ export const STREAM_TERMINAL_SOURCES = [
   'iterator_failure',
   'semantic_truncation',
   'caller_abort',
-  'stream_attempt_budget_exhausted'
+  'stream_attempt_budget_exhausted',
+  'stream_processing_failure'
 ] as const
 export type StreamTerminalSource = (typeof STREAM_TERMINAL_SOURCES)[number]
 

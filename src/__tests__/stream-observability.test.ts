@@ -236,7 +236,8 @@ describe('StreamObserver — terminal-source precedence', () => {
       'iterator_failure',
       'semantic_truncation',
       'caller_abort',
-      'stream_attempt_budget_exhausted'
+      'stream_attempt_budget_exhausted',
+      'stream_processing_failure'
     ])
     expect(REQUEST_TERMINAL_SOURCES).toEqual([
       ...STREAM_TERMINAL_SOURCES,

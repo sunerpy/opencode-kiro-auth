@@ -268,6 +268,40 @@ describe('createLiveRecoveryResponse — account rotation', () => {
     ])
   })
 
+  test('coordinator serialization failure outranks an observer-recorded clean EOF', async () => {
+    const circularChunk: Record<string, unknown> = {
+      choices: [{ delta: { content: 'unserializable' }, finish_reason: null }]
+    }
+    circularChunk['self'] = circularChunk
+    const attemptFactory: Pick<RecoveryAttemptFactory, 'open'> = {
+      open: async (_attemptIndex, selectedAccount) => ({
+        account: selectedAccount,
+        logDetails: (details = {}) => ({
+          conversationId: 'conversation-coordinator-failure',
+          terminalSource: 'clean_eof_without_completion_metadata',
+          ...details
+        }),
+        handle: {
+          ...makeAttempt({ output: [circularChunk] }),
+          complete: async () => {}
+        }
+      })
+    }
+    const harness = recoveryOptions(attemptFactory)
+
+    const response = await createLiveRecoveryResponse(harness.options)
+    await rejectionOf(response.text())
+
+    expect(harness.terminalRecords()).toEqual([
+      expect.objectContaining({
+        conversationId: 'conversation-coordinator-failure',
+        phase: 'stream_iteration',
+        outcome: 'terminal',
+        terminalSource: 'stream_processing_failure'
+      })
+    ])
+  })
+
   test('rotates from A through quota-exhausted B to C without retrying B', async () => {
     const accountA = makeAccount('A')
     const accountB = makeAccount('B')
@@ -393,8 +427,14 @@ describe('createLiveRecoveryResponse — account rotation', () => {
             conversationId: 'conversation-log-correlation',
             model: 'claude-opus-5-max',
             processId: 34567,
+            streamAttempt: 7,
+            region: 'eu-west-1',
+            streamStartedAt: 'stale-start',
+            eventTypeCounts: { staleEvent: 2 },
             upstreamEventCount: 17,
+            emittedReasoningChars: 4,
             emittedVisibleChars: 6,
+            emittedToolCount: 1,
             sawToolIntent: true,
             ...details
           }),
@@ -442,7 +482,13 @@ describe('createLiveRecoveryResponse — account rotation', () => {
         attemptedAccountId: accountB.id
       })
       expect(preStreamRecord).not.toHaveProperty('upstreamEventCount')
+      expect(preStreamRecord).not.toHaveProperty('streamAttempt')
+      expect(preStreamRecord).not.toHaveProperty('region')
+      expect(preStreamRecord).not.toHaveProperty('streamStartedAt')
+      expect(preStreamRecord).not.toHaveProperty('eventTypeCounts')
+      expect(preStreamRecord).not.toHaveProperty('emittedReasoningChars')
       expect(preStreamRecord).not.toHaveProperty('emittedVisibleChars')
+      expect(preStreamRecord).not.toHaveProperty('emittedToolCount')
       expect(preStreamRecord).not.toHaveProperty('sawToolIntent')
     } finally {
       warn.mockRestore()

@@ -236,6 +236,8 @@ function noteStreamFailure(lifecycle: SdkResponseLifecycle, error: unknown): voi
     lifecycle.streamObserver?.noteTerminalSource('caller_abort')
   } else if (error instanceof SdkEventStreamIterationError) {
     lifecycle.streamObserver?.noteTerminalSource('iterator_failure')
+  } else {
+    lifecycle.streamObserver?.noteTerminalSource('stream_processing_failure')
   }
 }
 
