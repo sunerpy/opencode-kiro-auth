@@ -279,6 +279,7 @@ function records(
 
 const STREAM_FAILURE_LOG = 'Kiro SDK event stream iteration failed'
 const REPLAY_TELEMETRY_LOG = 'Kiro exact replay attempt finished'
+const STREAM_TERMINAL_LOG = 'Kiro stream request terminal'
 
 function installImmediateStreamBackoff(handler: RequestHandler): void {
   const internals = handler as unknown as {
@@ -470,6 +471,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
         'Kiro SDK event stream iteration failed',
         expect.objectContaining({
           outcome: 'exhausted',
+          terminalSource: 'stream_attempt_budget_exhausted',
           conversationId: 'c1',
           account: 'A@example.com',
           accountId: 'A',
@@ -518,6 +520,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
         'Kiro SDK event stream iteration failed',
         expect.objectContaining({
           outcome: 'terminated_after_output',
+          terminalSource: 'iterator_failure',
           conversationId: 'c1',
           account: 'A@example.com',
           accountId: 'A',
@@ -1535,9 +1538,20 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
           emittedReasoningChars: 0,
           emittedVisibleChars: 'partial answer'.length,
           emittedToolCount: 0,
-          sawToolIntent: false
+          sawToolIntent: false,
+          terminalSource: 'clean_eof_without_completion_metadata',
+          eventTypeCounts: { assistantResponseEvent: 1 },
+          dialectMarkerIndex: null,
+          dialectMarkerInCodeRegion: null,
+          dialectResolution: 'none'
         })
       )
+      const terminal = records(logs.log, STREAM_TERMINAL_LOG)
+      expect(terminal).toHaveLength(1)
+      expect(terminal[0]).not.toHaveProperty('sessionId')
+      expect(terminal[0]).not.toHaveProperty('sessionID')
+      expect(terminal[0]).not.toHaveProperty('messageId')
+      expect(terminal[0]).not.toHaveProperty('messageID')
     } finally {
       logs.restore()
     }
@@ -1569,6 +1583,14 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
       expect(logs.warn.mock.calls.some((call) => call[0] === STREAM_MISSING_COMPLETION_LOG)).toBe(
         false
       )
+      expect(records(logs.log, STREAM_TERMINAL_LOG)).toEqual([
+        expect.objectContaining({
+          terminalSource: 'completion_metadata_received',
+          eventTypeCounts: { assistantResponseEvent: 1, metadataEvent: 1 },
+          upstreamEventCount: 2,
+          dialectResolution: 'none'
+        })
+      ])
     } finally {
       logs.restore()
     }
@@ -1599,6 +1621,90 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
           streamDeliveryMode: 'buffered'
         })
       )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('caller abort logs the terminal source without replaying or fabricating identity', async () => {
+    const acc = makeAccount({ id: 'abort-log' })
+    const controller = new AbortController()
+    const streamStarted = Promise.withResolvers<void>()
+    const logs = captureLogger()
+    try {
+      const stalled = {
+        generateAssistantResponseResponse: (async function* () {
+          yield { reasoningContentEvent: { text: 'started' } }
+          streamStarted.resolve()
+          await new Promise<void>(() => {})
+        })()
+      }
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [stalled],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({}), signal: controller.signal },
+        noToast
+      )
+      const reading = response.text()
+      await streamStarted.promise
+      controller.abort(new DOMException('caller stopped the turn', 'AbortError'))
+
+      await expect(reading).rejects.toMatchObject({ name: 'AbortError' })
+      expect(records(logs.log, STREAM_TERMINAL_LOG)).toEqual([
+        expect.objectContaining({
+          terminalSource: 'caller_abort',
+          conversationId: 'c1',
+          accountId: 'abort-log',
+          eventTypeCounts: { reasoningContentEvent: 1 }
+        })
+      ])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('semantic truncation reports marker diagnostics and keeps its own terminal source', async () => {
+    const acc = makeAccount({ id: 'semantic-log' })
+    const logs = captureLogger()
+    try {
+      const prefix = 'before '
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([
+            {
+              assistantResponseEvent: {
+                content: prefix + '<invoke name="read"><parameter name="path">/unfinished'
+              }
+            }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamBufferUntilComplete: true,
+        streamRecoveryMode: 'reasoning_restart',
+        streamMaxAttempts: 1
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      expect(response.status).toBe(503)
+      expect(records(logs.error, STREAM_FAILURE_LOG)).toEqual([
+        expect.objectContaining({
+          terminalSource: 'semantic_truncation',
+          dialectMarkerIndex: prefix.length,
+          dialectMarkerInCodeRegion: false,
+          dialectResolution: 'incomplete',
+          hasOpenToolIntent: true,
+          eventTypeCounts: { assistantResponseEvent: 1 }
+        })
+      ])
     } finally {
       logs.restore()
     }

@@ -1,9 +1,11 @@
 import * as logger from '../../plugin/logger'
+import type { StreamTerminalSource } from '../../plugin/streaming/stream-observer'
 import type { ManagedAccount } from '../../plugin/types'
 import { classifyAccountFailure, type AccountFailureClass } from './account-failure-classifier'
 import type { RecoveryAttemptFactory, RecoveryAttemptResult } from './recovery-attempt'
 import { encodeSseChunk, type SdkStreamingAttempt } from './response-handler'
 import { UpstreamUnexpectedError } from './stream-error'
+import { STREAM_TERMINAL_LOG } from './stream-log-events'
 import { StreamRecoveryCoordinator, type StreamRecoveryMode } from './stream-recovery'
 
 const RECOVERY_QUOTA_COOLDOWN_MS = 30_000
@@ -75,11 +77,6 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   let latestRequestLogIdentity: RequestLogIdentity | undefined
   const failedAccountIds = options.failedAccountIds
   let terminalFinished = false
-  const finishTerminal = (): void => {
-    if (terminalFinished) return
-    terminalFinished = true
-    options.onTerminal()
-  }
 
   const getCurrentAttempt = (): RecoveryAttemptContext => {
     if (!currentAttempt) throw new Error('No active Kiro recovery attempt context is available')
@@ -145,6 +142,52 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       cause: cause === undefined ? null : options.describeError(cause),
       ...(cause === undefined ? {} : { failureClass: classifyAccountFailure(cause) })
     }
+  }
+
+  const observedTerminalSource = (
+    details: Record<string, unknown>
+  ): StreamTerminalSource | null => {
+    const source = details['terminalSource']
+    switch (source) {
+      case 'clean_eof_without_completion_metadata':
+      case 'completion_metadata_received':
+      case 'iterator_failure':
+      case 'semantic_truncation':
+      case 'caller_abort':
+      case 'stream_attempt_budget_exhausted':
+        return source
+      default:
+        return null
+    }
+  }
+
+  const finishTerminal = (): void => {
+    if (terminalFinished) return
+    terminalFinished = true
+    if (currentAttempt?.logDetails) {
+      const observed = observedTerminalSource(currentAttempt.logDetails())
+      const terminalSource: StreamTerminalSource = options.signal.aborted
+        ? 'caller_abort'
+        : observed === 'semantic_truncation'
+          ? observed
+          : currentAttempt.attemptIndex >= options.maxAttempts &&
+              (observed === null || observed === 'iterator_failure')
+            ? 'stream_attempt_budget_exhausted'
+            : (observed ?? 'iterator_failure')
+      const phase: RecoveryLogPhase =
+        terminalSource === 'clean_eof_without_completion_metadata' ||
+        terminalSource === 'completion_metadata_received'
+          ? 'completed'
+          : 'stream_iteration'
+      logger.log(
+        STREAM_TERMINAL_LOG,
+        attemptLogDetails(currentAttempt, phase, undefined, {
+          outcome: 'terminal',
+          terminalSource
+        })
+      )
+    }
+    options.onTerminal()
   }
 
   const openAttempt = async (attemptIndex: number): Promise<SdkStreamingAttempt> => {

@@ -153,6 +153,77 @@ describe('StreamObserver — ingestion-time tool intent', () => {
   })
 })
 
+describe('StreamObserver — dialect diagnostics', () => {
+  test('records the first executable marker offset, code-region state, and complete resolution', async () => {
+    const observer = new StreamObserver()
+    const prefix = 'before '
+    await collectAll(
+      [
+        {
+          assistantResponseEvent: {
+            content:
+              prefix + '<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>'
+          }
+        }
+      ],
+      observer
+    )
+
+    const snapshot = observer.snapshot() as unknown as Record<string, unknown>
+    expect(snapshot.dialectMarkerIndex).toBe(prefix.length)
+    expect(snapshot.dialectMarkerInCodeRegion).toBe(false)
+    expect(snapshot.dialectResolution).toBe('complete')
+  })
+
+  test('records a demonstrated marker as inside a code region with none resolution', async () => {
+    const observer = new StreamObserver()
+    const prefix = 'Example:\n```xml\n'
+    await collectAll(
+      [
+        {
+          assistantResponseEvent: {
+            content:
+              prefix + '<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>\n```'
+          }
+        }
+      ],
+      observer
+    )
+
+    const snapshot = observer.snapshot() as unknown as Record<string, unknown>
+    expect(snapshot.dialectMarkerIndex).toBe(prefix.length)
+    expect(snapshot.dialectMarkerInCodeRegion).toBe(true)
+    expect(snapshot.dialectResolution).toBe('none')
+  })
+})
+
+describe('StreamObserver — raw upstream event counts', () => {
+  test('aggregates event discriminator names without retaining payloads', async () => {
+    const observer = new StreamObserver()
+    await collectAll(
+      [
+        { reasoningContentEvent: { text: 'private reasoning' } },
+        { assistantResponseEvent: { content: 'first' } },
+        { assistantResponseEvent: { content: 'second' } },
+        { contextUsageEvent: { contextUsagePercentage: 10 } },
+        { meteringEvent: { unit: 'credit' } },
+        { metadataEvent: { tokenUsage: { inputTokens: 3, outputTokens: 2 } } }
+      ],
+      observer
+    )
+
+    const snapshot = observer.snapshot() as unknown as Record<string, unknown>
+    expect(snapshot.eventTypeCounts).toEqual({
+      reasoningContentEvent: 1,
+      assistantResponseEvent: 2,
+      contextUsageEvent: 1,
+      meteringEvent: 1,
+      metadataEvent: 1
+    })
+    expect(JSON.stringify(snapshot.eventTypeCounts)).not.toContain('private reasoning')
+  })
+})
+
 describe('StreamObserver — reasoning phase', () => {
   test('pure reasoning then break: phase active, no tool intent', async () => {
     const observer = new StreamObserver()
@@ -196,7 +267,12 @@ describe('StreamObserver — reasoning phase', () => {
       sawToolIntent: false,
       hasOpenToolIntent: false,
       reasoningPhase: 'none',
-      dialectActive: false
+      dialectActive: false,
+      dialectMarkerIndex: null,
+      dialectMarkerInCodeRegion: null,
+      dialectResolution: 'none',
+      eventTypeCounts: { assistantResponseEvent: 1 },
+      terminalSource: null
     })
   })
 

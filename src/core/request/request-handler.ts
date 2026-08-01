@@ -13,7 +13,7 @@ import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output'
 import { deriveInheritedLoopId, normalizeToolArguments } from '../../plugin/reasoning/turn-identity'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
-import { StreamObserver } from '../../plugin/streaming/stream-observer'
+import { StreamObserver, type StreamTerminalSource } from '../../plugin/streaming/stream-observer'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import { AccountSelector } from '../account/account-selector'
@@ -26,9 +26,17 @@ import { ResponseHandler, type SdkCompletionPayload } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 import { buildSdkRequestLogPayload } from './sdk-log-payload'
 import { SdkEventStreamIterationError, UpstreamUnexpectedError } from './stream-error'
-import { STREAM_MISSING_COMPLETION_LOG, STREAM_REQUEST_STARTED_LOG } from './stream-log-events'
+import {
+  STREAM_MISSING_COMPLETION_LOG,
+  STREAM_REQUEST_STARTED_LOG,
+  STREAM_TERMINAL_LOG
+} from './stream-log-events'
 
-export { STREAM_MISSING_COMPLETION_LOG, STREAM_REQUEST_STARTED_LOG } from './stream-log-events'
+export {
+  STREAM_MISSING_COMPLETION_LOG,
+  STREAM_REQUEST_STARTED_LOG,
+  STREAM_TERMINAL_LOG
+} from './stream-log-events'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
@@ -242,34 +250,56 @@ export class RequestHandler {
         )
         const streamAttempt = streamFailureCount + 1
         const streamAttemptStartedAt = Date.now()
+        const streamStartedAt = new Date(streamAttemptStartedAt).toISOString()
         const streamObserver = new StreamObserver()
         const emittedOutput = new EmittedOutputAccumulator()
         let upstreamEventCount = 0
+        // OpenCode's provider fetch boundary supplies only input/init; it exposes
+        // no session/message hook context. Keep real transport correlation below
+        // rather than emitting permanently empty sessionId/messageId fields.
         const streamLogDetails = (
           details: Record<string, unknown> = {}
-        ): Record<string, unknown> => ({
-          conversationId: sdkPrep.conversationId,
-          model,
-          effectiveModel: sdkPrep.effectiveModel,
-          region: sdkPrep.region,
-          account: acc.email,
-          accountId: acc.id,
-          streamAttempt,
-          maxStreamAttempts: this.config.stream_max_attempts,
-          streamDeliveryMode: this.config.stream_buffer_until_complete ? 'buffered' : 'live',
-          sdkHttpKeepAlive: this.config.sdk_http_keep_alive,
-          processId: process.pid,
-          bunVersion: process.versions.bun,
-          upstreamEventCount,
-          streamElapsedMs: Date.now() - streamAttemptStartedAt,
-          // Volume only, never content: the same redaction rule the API log sink
-          // follows. A char count cannot reconstruct reasoning or reply text.
-          emittedReasoningChars: emittedOutput.reasoningText.length,
-          emittedVisibleChars: emittedOutput.visibleText.length,
-          emittedToolCount: emittedOutput.toolUses().length,
-          sawToolIntent: streamObserver.sawToolIntent,
-          ...details
-        })
+        ): Record<string, unknown> => {
+          const observed = streamObserver.snapshot()
+          return {
+            conversationId: sdkPrep.conversationId,
+            model,
+            effectiveModel: sdkPrep.effectiveModel,
+            region: sdkPrep.region,
+            account: acc.email,
+            accountId: acc.id,
+            streamAttempt,
+            maxStreamAttempts: this.config.stream_max_attempts,
+            streamDeliveryMode: this.config.stream_buffer_until_complete ? 'buffered' : 'live',
+            sdkHttpKeepAlive: this.config.sdk_http_keep_alive,
+            processId: process.pid,
+            bunVersion: process.versions.bun,
+            streamStartedAt,
+            upstreamEventCount,
+            eventTypeCounts: observed.eventTypeCounts,
+            streamElapsedMs: Date.now() - streamAttemptStartedAt,
+            // Volume only, never content: the same redaction rule the API log sink
+            // follows. A char count cannot reconstruct reasoning or reply text.
+            emittedReasoningChars: emittedOutput.reasoningText.length,
+            emittedVisibleChars: emittedOutput.visibleText.length,
+            emittedToolCount: emittedOutput.toolUses().length,
+            sawToolIntent: observed.sawToolIntent,
+            hasOpenToolIntent: observed.hasOpenToolIntent,
+            reasoningPhase: observed.reasoningPhase,
+            dialectActive: observed.dialectActive,
+            dialectMarkerIndex: observed.dialectMarkerIndex,
+            dialectMarkerInCodeRegion: observed.dialectMarkerInCodeRegion,
+            dialectResolution: observed.dialectResolution,
+            terminalSource: observed.terminalSource,
+            ...details
+          }
+        }
+        let terminalSummaryRecorded = false
+        const logTerminalSummary = (details: Record<string, unknown> = {}): void => {
+          if (terminalSummaryRecorded || !sdkPrep.streaming) return
+          terminalSummaryRecorded = true
+          logger.log(STREAM_TERMINAL_LOG, streamLogDetails({ outcome: 'terminal', ...details }))
+        }
 
         if (sdkPrep.streaming && streamAttempt === 1 && !streamStartRecorded) {
           streamStartRecorded = true
@@ -501,6 +531,7 @@ export class RequestHandler {
               onUpstreamWaitEnd: endUpstreamWait,
               onIterationError: (error, afterCompletionMetadata) => {
                 if (!afterCompletionMetadata) return
+                streamObserver.noteTerminalSource('completion_metadata_received')
                 logger.log(
                   'Kiro SDK event stream closed after completion metadata',
                   streamLogDetails({
@@ -524,7 +555,10 @@ export class RequestHandler {
               ...(inheritedLoopId !== undefined ? { inheritedLoopId } : {}),
               effectiveModel: sdkPrep.effectiveModel,
               recoveryMode: this.config.stream_recovery_mode,
-              onTerminal: cleanupRequest,
+              onTerminal: () => {
+                logTerminalSummary()
+                cleanupRequest()
+              },
               onCancel: (reason) => requestController.abort(reason),
               bufferUntilComplete: this.config.stream_buffer_until_complete,
               mapError: (error) => {
@@ -555,13 +589,23 @@ export class RequestHandler {
           }
           return response
         } catch (e: any) {
-          if (signal.aborted) throw signal.reason
+          if (signal.aborted) {
+            streamObserver.noteTerminalSource('caller_abort')
+            logTerminalSummary()
+            throw signal.reason
+          }
 
           if (e instanceof SdkEventStreamIterationError) {
             streamFailureCount++
             failedAccountIds.add(acc.id)
             const streamError = new UpstreamUnexpectedError(e, false)
             if (streamFailureCount >= this.config.stream_max_attempts) {
+              const observedSource = streamObserver.snapshot().terminalSource
+              const terminalSource: StreamTerminalSource =
+                observedSource === 'semantic_truncation'
+                  ? 'semantic_truncation'
+                  : 'stream_attempt_budget_exhausted'
+              streamObserver.noteTerminalSource(terminalSource)
               logger.error(
                 'Kiro SDK event stream iteration failed',
                 streamLogDetails({
@@ -571,6 +615,7 @@ export class RequestHandler {
                   error: describeError(e)
                 })
               )
+              logTerminalSummary()
               return streamError.toResponse()
             }
 

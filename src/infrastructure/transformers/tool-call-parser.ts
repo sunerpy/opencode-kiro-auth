@@ -85,6 +85,15 @@ export const TEXT_TOOL_CALL_OPENING_MARKERS = [
 
 export type DialectToolResolution = 'none' | 'complete' | 'incomplete'
 
+export interface TextToolCallMarkerObservation {
+  /** Earliest opening marker of any kind, including examples inside code. */
+  index: number | null
+  /** Null only when no opening marker exists. */
+  inCodeRegion: boolean | null
+  /** Earliest marker that is eligible for dialect parsing and execution. */
+  executableIndex: number
+}
+
 /** A matched dialect span in `text`, with the tool calls it yields (may be empty for strip-only). */
 interface DialectMatch {
   start: number
@@ -154,6 +163,30 @@ function openingMarkerStarts(text: string, codeRanges: Array<[number, number]>):
     }
   }
   return starts
+}
+
+/**
+ * Locate the earliest raw and executable opening markers in one code-range pass.
+ * The raw position is diagnostic only; parsing continues to use executableIndex.
+ */
+export function observeTextToolCallOpeningMarker(text: string): TextToolCallMarkerObservation {
+  const codeRanges = computeCodeRanges(text)
+  let index: number | null = null
+  let inCodeRegion: boolean | null = null
+
+  for (const marker of TEXT_TOOL_CALL_OPENING_MARKERS) {
+    const markerIndex = text.indexOf(marker)
+    if (markerIndex === -1 || (index !== null && markerIndex >= index)) continue
+    index = markerIndex
+    inCodeRegion = overlapsCode(markerIndex, markerIndex + marker.length, codeRanges)
+  }
+
+  const executableStarts = openingMarkerStarts(text, codeRanges)
+  return {
+    index,
+    inCodeRegion,
+    executableIndex: executableStarts.length === 0 ? -1 : Math.min(...executableStarts)
+  }
 }
 
 /** Opening-marker offsets outside every fenced or inline code region. */

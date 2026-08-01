@@ -62,6 +62,7 @@ export async function* transformSdkStream(
     if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
       const safe = dialectGate.push(ev.delta.text ?? '')
       if (dialectGate.suppressing) observer?.noteDialectGateActive()
+      observer?.noteDialectMarker(dialectGate.markerIndex, dialectGate.markerInCodeRegion)
       observer?.noteDialectToolIntent(dialectGate.hasToolIntent)
       if (!safe) return null
       const gated: StreamEvent = { ...ev, delta: { ...ev.delta, text: safe } }
@@ -83,6 +84,7 @@ export async function* transformSdkStream(
   }
 
   for await (const event of eventStream) {
+    observer?.noteRawEvent(event)
     if (event.reasoningContentEvent) {
       const reasoningEvent = event.reasoningContentEvent as ReasoningContentEventLike
       reasoningAccumulator?.observe(reasoningEvent)

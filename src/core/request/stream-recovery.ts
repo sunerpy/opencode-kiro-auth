@@ -374,9 +374,11 @@ export class StreamRecoveryCoordinator {
 
   private async cancel(reason: unknown): Promise<void> {
     if (this.terminal) return
+    // Let the owner abort its request signal before terminal logging runs, so a
+    // consumer cancellation is recorded as caller_abort rather than a transport end.
+    this.options.onCancel?.(reason)
     const closing = this.closeActiveAttempt()
     this.finish()
-    this.options.onCancel?.(reason)
     await closing
   }
 

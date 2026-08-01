@@ -1,8 +1,8 @@
 import type { DialectToolResolution } from '../../infrastructure/transformers/tool-call-parser.js'
 import {
+  observeTextToolCallOpeningMarker,
   parseTextToolCalls,
-  TEXT_TOOL_CALL_OPENING_MARKERS,
-  textToolCallOpeningMarkerStarts
+  TEXT_TOOL_CALL_OPENING_MARKERS
 } from '../../infrastructure/transformers/tool-call-parser.js'
 import type { ToolCall } from '../types.js'
 
@@ -12,12 +12,6 @@ import type { ToolCall } from '../types.js'
 // visible `delta.content`. Authoritative parsing happens only at finalization
 // on the FULL accumulated text (never per-fragment).
 const MAX_MARKER_LEN = Math.max(...TEXT_TOOL_CALL_OPENING_MARKERS.map((marker) => marker.length))
-
-/** Earliest index of any non-code-region opening marker in `text`, or -1. */
-function firstMarkerIndex(text: string): number {
-  const starts = textToolCallOpeningMarkerStarts(text)
-  return starts.length === 0 ? -1 : Math.min(...starts)
-}
 
 /**
  * Length of the longest suffix of `text` that is a proper prefix of some
@@ -52,6 +46,8 @@ export class DialectGate {
   private emitted = 0
   private markerSeen = false
   private toolIntentPresent = false
+  private observedMarkerIndex: number | null = null
+  private observedMarkerInCodeRegion: boolean | null = null
 
   /** Append a visible-text chunk; returns the substring safe to emit now. */
   push(text: string): string {
@@ -64,7 +60,10 @@ export class DialectGate {
     // parser-inert and is safe to publish. A lone unclosed inline backtick is
     // deliberately not a code region; that case stays withheld until a closing
     // backtick proves the span is inline code.
-    const markerIdx = firstMarkerIndex(this.accumulated)
+    const marker = observeTextToolCallOpeningMarker(this.accumulated)
+    const markerIdx = marker.executableIndex
+    this.observedMarkerIndex = marker.index
+    this.observedMarkerInCodeRegion = marker.inCodeRegion
     if (!this.markerSeen) {
       if (markerIdx !== -1) this.markerSeen = true
     }
@@ -92,6 +91,14 @@ export class DialectGate {
 
   get hasToolIntent(): boolean {
     return this.toolIntentPresent
+  }
+
+  get markerIndex(): number | null {
+    return this.observedMarkerIndex
+  }
+
+  get markerInCodeRegion(): boolean | null {
+    return this.observedMarkerInCodeRegion
   }
 
   /**

@@ -364,7 +364,12 @@ describe('DialectGate — shared incremental code regions', () => {
       sawToolIntent: false,
       hasOpenToolIntent: false,
       reasoningPhase: 'none',
-      dialectActive: false
+      dialectActive: false,
+      dialectMarkerIndex: input.indexOf('<invoke'),
+      dialectMarkerInCodeRegion: true,
+      dialectResolution: 'not_finalized',
+      eventTypeCounts: { assistantResponseEvent: 1 },
+      terminalSource: null
     })
   })
 
