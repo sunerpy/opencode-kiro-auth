@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { DSML_MARKER } from '../infrastructure/transformers/tool-call-parser.js'
 import { transformSdkStream } from '../plugin/streaming/sdk-stream-transformer.js'
-import { StreamObserver } from '../plugin/streaming/stream-observer.js'
+import {
+  REQUEST_TERMINAL_SOURCES,
+  STREAM_TERMINAL_SOURCES,
+  StreamObserver
+} from '../plugin/streaming/stream-observer.js'
 
 // Same fake-SDK shape the other transformer suites use: transformSdkStream reads
 // `sdkResponse.generateAssistantResponseResponse` as an async iterable of events.
@@ -153,6 +157,106 @@ describe('StreamObserver — ingestion-time tool intent', () => {
   })
 })
 
+describe('StreamObserver — dialect diagnostics', () => {
+  test('records the first executable marker offset, code-region state, and complete resolution', async () => {
+    const observer = new StreamObserver()
+    const prefix = 'before '
+    await collectAll(
+      [
+        {
+          assistantResponseEvent: {
+            content:
+              prefix + '<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>'
+          }
+        }
+      ],
+      observer
+    )
+
+    const snapshot = observer.snapshot() as unknown as Record<string, unknown>
+    expect(snapshot.dialectMarkerIndex).toBe(prefix.length)
+    expect(snapshot.dialectMarkerInCodeRegion).toBe(false)
+    expect(snapshot.dialectResolution).toBe('complete')
+  })
+
+  test('records a demonstrated marker as inside a code region with none resolution', async () => {
+    const observer = new StreamObserver()
+    const prefix = 'Example:\n```xml\n'
+    await collectAll(
+      [
+        {
+          assistantResponseEvent: {
+            content:
+              prefix + '<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>\n```'
+          }
+        }
+      ],
+      observer
+    )
+
+    const snapshot = observer.snapshot() as unknown as Record<string, unknown>
+    expect(snapshot.dialectMarkerIndex).toBe(prefix.length)
+    expect(snapshot.dialectMarkerInCodeRegion).toBe(true)
+    expect(snapshot.dialectResolution).toBe('none')
+  })
+})
+
+describe('StreamObserver — raw upstream event counts', () => {
+  test('aggregates event discriminator names without retaining payloads', async () => {
+    const observer = new StreamObserver()
+    await collectAll(
+      [
+        { reasoningContentEvent: { text: 'private reasoning' } },
+        { assistantResponseEvent: { content: 'first' } },
+        { assistantResponseEvent: { content: 'second' } },
+        { contextUsageEvent: { contextUsagePercentage: 10 } },
+        { meteringEvent: { unit: 'credit' } },
+        { metadataEvent: { tokenUsage: { inputTokens: 3, outputTokens: 2 } } }
+      ],
+      observer
+    )
+
+    const snapshot = observer.snapshot() as unknown as Record<string, unknown>
+    expect(snapshot.eventTypeCounts).toEqual({
+      reasoningContentEvent: 1,
+      assistantResponseEvent: 2,
+      contextUsageEvent: 1,
+      meteringEvent: 1,
+      metadataEvent: 1
+    })
+    expect(JSON.stringify(snapshot.eventTypeCounts)).not.toContain('private reasoning')
+  })
+})
+
+describe('StreamObserver — terminal-source precedence', () => {
+  test('request scope declares the observer and pre-stream terminal sources in one set', () => {
+    expect(STREAM_TERMINAL_SOURCES).toEqual([
+      'clean_eof_without_completion_metadata',
+      'completion_metadata_received',
+      'iterator_failure',
+      'semantic_truncation',
+      'caller_abort',
+      'stream_attempt_budget_exhausted',
+      'stream_processing_failure'
+    ])
+    expect(REQUEST_TERMINAL_SOURCES).toEqual([
+      ...STREAM_TERMINAL_SOURCES,
+      'http_error',
+      'network_error',
+      'request_error'
+    ])
+  })
+
+  test('semantic truncation is not overwritten by its iterator-failure wrapper', () => {
+    const observer = new StreamObserver()
+
+    observer.noteTerminalSource('semantic_truncation')
+    observer.noteTerminalSource('iterator_failure')
+
+    expect(observer.snapshot().terminalSource).toBe('semantic_truncation')
+  })
+})
+
 describe('StreamObserver — reasoning phase', () => {
   test('pure reasoning then break: phase active, no tool intent', async () => {
     const observer = new StreamObserver()
@@ -196,7 +300,12 @@ describe('StreamObserver — reasoning phase', () => {
       sawToolIntent: false,
       hasOpenToolIntent: false,
       reasoningPhase: 'none',
-      dialectActive: false
+      dialectActive: false,
+      dialectMarkerIndex: null,
+      dialectMarkerInCodeRegion: null,
+      dialectResolution: 'none',
+      eventTypeCounts: { assistantResponseEvent: 1 },
+      terminalSource: null
     })
   })
 

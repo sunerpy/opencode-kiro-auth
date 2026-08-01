@@ -14,7 +14,7 @@ export function parseBracketToolCalls(text: string): ToolCall[] {
     try {
       const args = JSON.parse(argsStr)
       toolCalls.push({
-        toolUseId: `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        toolUseId: `tool_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
         name: funcName,
         input: args
       })
@@ -85,6 +85,15 @@ export const TEXT_TOOL_CALL_OPENING_MARKERS = [
 
 export type DialectToolResolution = 'none' | 'complete' | 'incomplete'
 
+export interface TextToolCallMarkerObservation {
+  /** Earliest opening marker of any kind, including examples inside code. */
+  index: number | null
+  /** Null only when no opening marker exists. */
+  inCodeRegion: boolean | null
+  /** Earliest marker that is eligible for dialect parsing and execution. */
+  executableIndex: number
+}
+
 /** A matched dialect span in `text`, with the tool calls it yields (may be empty for strip-only). */
 interface DialectMatch {
   start: number
@@ -98,24 +107,40 @@ function genToolUseId(): string {
 }
 
 /**
- * Compute char ranges that are inside fenced code blocks (``` ... ```) or
- * inline code spans (` ... `). Candidates overlapping any of these are skipped
- * so a model *explaining* or *showing* tool-call syntax is never executed.
+ * Compute char ranges that are inside fenced code blocks (3+ backticks or
+ * tildes) or inline code spans (` ... `). A fence closes only on the same
+ * character with at least the opener's length; an unclosed fence extends to
+ * end-of-text. Candidates overlapping any of these are skipped so a model
+ * *explaining* or *showing* tool-call syntax is never executed.
  */
 function computeCodeRanges(text: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = []
 
-  const fence = /```[\s\S]*?```/g
-  let m: RegExpExecArray | null
-  while ((m = fence.exec(text)) !== null) {
-    ranges.push([m.index, m.index + m[0].length])
+  const fence = /(`{3,}|~{3,})/g
+  let fenceMatch: RegExpExecArray | null
+  while ((fenceMatch = fence.exec(text)) !== null) {
+    const opener = fenceMatch[0]
+    const fenceCharacter = opener[0]
+    if (fenceCharacter === undefined) continue
+
+    const closingFence = new RegExp(`${fenceCharacter}{${opener.length},}`, 'g')
+    closingFence.lastIndex = fence.lastIndex
+    const closingMatch = closingFence.exec(text)
+    const end = closingMatch === null ? text.length : closingMatch.index + closingMatch[0].length
+    ranges.push([fenceMatch.index, end])
+
+    if (closingMatch === null) break
+    fence.lastIndex = end
   }
 
   const inFence = (i: number): boolean => ranges.some(([s, e]) => i >= s && i < e)
 
   const inline = /`[^`\n]+`/g
-  while ((m = inline.exec(text)) !== null) {
-    if (!inFence(m.index)) ranges.push([m.index, m.index + m[0].length])
+  let inlineMatch: RegExpExecArray | null
+  while ((inlineMatch = inline.exec(text)) !== null) {
+    if (!inFence(inlineMatch.index)) {
+      ranges.push([inlineMatch.index, inlineMatch.index + inlineMatch[0].length])
+    }
   }
 
   return ranges
@@ -140,8 +165,37 @@ function openingMarkerStarts(text: string, codeRanges: Array<[number, number]>):
   return starts
 }
 
+/**
+ * Locate the earliest raw and executable opening markers in one code-range pass.
+ * The raw position is diagnostic only; parsing continues to use executableIndex.
+ */
+export function observeTextToolCallOpeningMarker(text: string): TextToolCallMarkerObservation {
+  const codeRanges = computeCodeRanges(text)
+  let index: number | null = null
+  let inCodeRegion: boolean | null = null
+
+  for (const marker of TEXT_TOOL_CALL_OPENING_MARKERS) {
+    const markerIndex = text.indexOf(marker)
+    if (markerIndex === -1 || (index !== null && markerIndex >= index)) continue
+    index = markerIndex
+    inCodeRegion = overlapsCode(markerIndex, markerIndex + marker.length, codeRanges)
+  }
+
+  const executableStarts = openingMarkerStarts(text, codeRanges)
+  return {
+    index,
+    inCodeRegion,
+    executableIndex: executableStarts.length === 0 ? -1 : Math.min(...executableStarts)
+  }
+}
+
+/** Opening-marker offsets outside every fenced or inline code region. */
+export function textToolCallOpeningMarkerStarts(text: string): number[] {
+  return openingMarkerStarts(text, computeCodeRanges(text))
+}
+
 export function firstTextToolCallOpeningMarkerIndex(text: string): number {
-  const starts = openingMarkerStarts(text, computeCodeRanges(text))
+  const starts = textToolCallOpeningMarkerStarts(text)
   return starts.length === 0 ? -1 : Math.min(...starts)
 }
 
@@ -349,7 +403,7 @@ export function parseTextToolCalls(text: string): {
   if (!text) return { toolCalls: [], cleanedText: text, resolution: 'none' }
 
   const codeRanges = computeCodeRanges(text)
-  const openings = openingMarkerStarts(text, codeRanges)
+  const openings = textToolCallOpeningMarkerStarts(text)
   const claimed: Array<[number, number]> = []
 
   const matches: DialectMatch[] = [

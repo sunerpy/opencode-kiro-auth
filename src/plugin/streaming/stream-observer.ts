@@ -8,6 +8,25 @@ import type { DialectToolResolution } from '../../infrastructure/transformers/to
  * - `ended`  — a reasoning block opened and was closed.
  */
 export type ReasoningPhase = 'none' | 'active' | 'ended'
+export type ObservedDialectResolution = DialectToolResolution | 'not_finalized'
+export const STREAM_TERMINAL_SOURCES = [
+  'clean_eof_without_completion_metadata',
+  'completion_metadata_received',
+  'iterator_failure',
+  'semantic_truncation',
+  'caller_abort',
+  'stream_attempt_budget_exhausted',
+  'stream_processing_failure'
+] as const
+export type StreamTerminalSource = (typeof STREAM_TERMINAL_SOURCES)[number]
+
+export const REQUEST_TERMINAL_SOURCES = [
+  ...STREAM_TERMINAL_SOURCES,
+  'http_error',
+  'network_error',
+  'request_error'
+] as const
+export type RequestTerminalSource = (typeof REQUEST_TERMINAL_SOURCES)[number]
 
 export interface StreamObservedState {
   /**
@@ -22,6 +41,16 @@ export interface StreamObservedState {
   reasoningPhase: ReasoningPhase
   /** True once the dialect gate started withholding text (a marker appeared). */
   dialectActive: boolean
+  /** Earliest raw dialect marker offset, including markers inside code examples. */
+  dialectMarkerIndex: number | null
+  /** Whether that marker is inside fenced/inline code; null means no marker. */
+  dialectMarkerInCodeRegion: boolean | null
+  /** Final parser verdict, or `not_finalized` when iteration stopped first. */
+  dialectResolution: ObservedDialectResolution
+  /** Counts only raw event discriminator names; event payloads are never retained. */
+  eventTypeCounts: Record<string, number>
+  /** The transport/parser/caller decision that ended this attempt, if reached. */
+  terminalSource: StreamTerminalSource | null
 }
 
 /**
@@ -42,6 +71,27 @@ export class StreamObserver {
   private dialectToolIntentOpen = false
   private phase: ReasoningPhase = 'none'
   private dialect = false
+  private markerIndex: number | null = null
+  private markerInCodeRegion: boolean | null = null
+  private resolution: ObservedDialectResolution = 'not_finalized'
+  private readonly rawEventTypeCounts: Record<string, number> = {}
+  private terminal: StreamTerminalSource | null = null
+
+  noteRawEvent(event: unknown): void {
+    if (typeof event !== 'object' || event === null) {
+      this.rawEventTypeCounts.unknown = (this.rawEventTypeCounts.unknown ?? 0) + 1
+      return
+    }
+
+    const record = event as Record<string, unknown>
+    const eventTypes = Object.keys(record).filter(
+      (key) => key.endsWith('Event') && record[key] !== undefined
+    )
+    if (eventTypes.length === 0) eventTypes.push('unknown')
+    for (const eventType of eventTypes) {
+      this.rawEventTypeCounts[eventType] = (this.rawEventTypeCounts[eventType] ?? 0) + 1
+    }
+  }
 
   /** A raw SDK tool sequence advanced; only `stop: true` closes that sequence. */
   noteRawToolIntent(toolUseId: string | undefined, closed: boolean): void {
@@ -58,6 +108,18 @@ export class StreamObserver {
     this.dialect = true
   }
 
+  noteDialectMarker(index: number | null, inCodeRegion: boolean | null): void {
+    this.markerIndex = index
+    this.markerInCodeRegion = inCodeRegion
+  }
+
+  noteTerminalSource(source: StreamTerminalSource): void {
+    // Semantic truncation is more specific than the typed iterator wrapper used
+    // to propagate it through the retry machinery; do not erase that decision.
+    if (this.terminal === 'semantic_truncation' && source === 'iterator_failure') return
+    this.terminal = source
+  }
+
   /** Synchronize the currently observable non-code-region dialect marker. */
   noteDialectToolIntent(present: boolean): void {
     this.dialectToolIntentSeen = present
@@ -66,6 +128,7 @@ export class StreamObserver {
 
   /** Records whether finalization resolved every non-code-region opening marker. */
   noteDialectToolResolution(resolution: DialectToolResolution): void {
+    this.resolution = resolution
     switch (resolution) {
       case 'none':
         this.dialectToolIntentSeen = false
@@ -115,7 +178,12 @@ export class StreamObserver {
       sawToolIntent: this.sawToolIntent,
       hasOpenToolIntent: this.hasOpenToolIntent,
       reasoningPhase: this.phase,
-      dialectActive: this.dialect
+      dialectActive: this.dialect,
+      dialectMarkerIndex: this.markerIndex,
+      dialectMarkerInCodeRegion: this.markerInCodeRegion,
+      dialectResolution: this.resolution,
+      eventTypeCounts: { ...this.rawEventTypeCounts },
+      terminalSource: this.terminal
     }
   }
 }

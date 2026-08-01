@@ -46,6 +46,10 @@ function makeAccountManager(count: number) {
   return {
     getAccountCount: () => count,
     getAccounts: () => [],
+    recordFailure: mock((account: ManagedAccount) => {
+      account.failCount = (account.failCount || 0) + 1
+      return account.failCount
+    }),
     markUnhealthy: mock(() => {}),
     markRateLimited: mock(() => {})
   } as any
@@ -56,6 +60,22 @@ function makeRepository() {
 }
 
 const noopToast: ToastFn = () => {}
+
+function refreshSummary() {
+  return {
+    startedAt: 1,
+    completedAt: 2,
+    totalAccounts: 0,
+    tokenRenewed: 0,
+    tokenSkipped: 0,
+    usageUpdated: 0,
+    failed: 0,
+    timedOut: false,
+    lockAcquired: true,
+    proceededWithoutLock: false,
+    accounts: []
+  }
+}
 
 function jsonResponse(
   status: number,
@@ -188,6 +208,24 @@ describe('ErrorHandler 429 rate limiting', () => {
     expect(sleepCalls).toHaveLength(0)
   })
 
+  test('multi-account refreshes all usage before returning the rate-limit switch decision', async () => {
+    const refreshAll = mock(async () => refreshSummary())
+    const handler = new ErrorHandler(CONFIG, makeAccountManager(2), makeRepository(), undefined, {
+      refreshAll
+    })
+
+    const result = await handler.handle(
+      new Error('429'),
+      jsonResponse(429, {}, { 'retry-after': '30' }),
+      makeAccount(),
+      { retry: 0 },
+      noopToast
+    )
+
+    expect(result.switchAccount).toBe(true)
+    expect(refreshAll).toHaveBeenCalledTimes(1)
+  })
+
   test('single-account: waits out the retry-after window then retries in place', async () => {
     const handler = new ErrorHandler(CONFIG, makeAccountManager(1), makeRepository())
     const res = await handler.handle(
@@ -283,8 +321,32 @@ describe('ErrorHandler 402 / 403 quota & permanence', () => {
     expect(res.switchAccount).toBe(true)
   })
 
+  test('402 multi-account refreshes all usage before returning the quota switch decision', async () => {
+    const refreshAll = mock(async () => refreshSummary())
+    const handler = new ErrorHandler(CONFIG, makeAccountManager(2), makeRepository(), undefined, {
+      refreshAll
+    })
+
+    const result = await handler.handle(
+      new Error('402'),
+      jsonResponse(402, { message: 'Quota' }),
+      makeAccount(),
+      { retry: 0 },
+      noopToast
+    )
+
+    expect(result.switchAccount).toBe(true)
+    expect(refreshAll).toHaveBeenCalledTimes(1)
+  })
+
   test('TEMPORARILY_SUSPENDED is permanent: failCount forced to 10, no retry (single account)', async () => {
-    const handler = new ErrorHandler(CONFIG, makeAccountManager(1), makeRepository())
+    const manager = makeAccountManager(1)
+    manager.markUnhealthy.mockImplementation((account: ManagedAccount, reason: string) => {
+      account.failCount = 10
+      account.isHealthy = false
+      account.unhealthyReason = reason
+    })
+    const handler = new ErrorHandler(CONFIG, manager, makeRepository())
     const account = makeAccount()
     const res = await handler.handle(
       new Error('susp'),
@@ -294,6 +356,8 @@ describe('ErrorHandler 402 / 403 quota & permanence', () => {
       noopToast
     )
     expect(account.failCount).toBe(10)
+    expect(account.unhealthyReason).toContain('Account Suspended')
+    expect(manager.markUnhealthy).toHaveBeenCalledTimes(1)
     expect(res.shouldRetry).toBe(false)
   })
 

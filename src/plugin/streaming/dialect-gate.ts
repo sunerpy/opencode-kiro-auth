@@ -1,6 +1,6 @@
 import type { DialectToolResolution } from '../../infrastructure/transformers/tool-call-parser.js'
 import {
-  firstTextToolCallOpeningMarkerIndex,
+  observeTextToolCallOpeningMarker,
   parseTextToolCalls,
   TEXT_TOOL_CALL_OPENING_MARKERS
 } from '../../infrastructure/transformers/tool-call-parser.js'
@@ -12,16 +12,6 @@ import type { ToolCall } from '../types.js'
 // visible `delta.content`. Authoritative parsing happens only at finalization
 // on the FULL accumulated text (never per-fragment).
 const MAX_MARKER_LEN = Math.max(...TEXT_TOOL_CALL_OPENING_MARKERS.map((marker) => marker.length))
-
-/** Earliest index of any opening marker in `text`, or -1. */
-function firstMarkerIndex(text: string): number {
-  let earliest = -1
-  for (const marker of TEXT_TOOL_CALL_OPENING_MARKERS) {
-    const idx = text.indexOf(marker)
-    if (idx !== -1 && (earliest === -1 || idx < earliest)) earliest = idx
-  }
-  return earliest
-}
 
 /**
  * Length of the longest suffix of `text` that is a proper prefix of some
@@ -56,21 +46,32 @@ export class DialectGate {
   private emitted = 0
   private markerSeen = false
   private toolIntentPresent = false
+  private observedMarkerIndex: number | null = null
+  private observedMarkerInCodeRegion: boolean | null = null
 
   /** Append a visible-text chunk; returns the substring safe to emit now. */
   push(text: string): string {
     if (!text) return ''
     this.accumulated += text
 
+    // The shared scanner provisionally extends an unclosed fence through the
+    // current end-of-text. Appending a close can only end that range after an
+    // already-seen in-fence marker, so W-B1 guarantees such a marker remains
+    // parser-inert and is safe to publish. A lone unclosed inline backtick is
+    // deliberately not a code region; that case stays withheld until a closing
+    // backtick proves the span is inline code.
+    const marker = observeTextToolCallOpeningMarker(this.accumulated)
+    const markerIdx = marker.executableIndex
+    this.observedMarkerIndex = marker.index
+    this.observedMarkerInCodeRegion = marker.inCodeRegion
     if (!this.markerSeen) {
-      const markerIdx = firstMarkerIndex(this.accumulated)
       if (markerIdx !== -1) this.markerSeen = true
     }
-    this.toolIntentPresent = firstTextToolCallOpeningMarkerIndex(this.accumulated) !== -1
+    this.toolIntentPresent = markerIdx !== -1
 
     let safeEnd: number
     if (this.markerSeen) {
-      safeEnd = firstMarkerIndex(this.accumulated)
+      safeEnd = markerIdx
       if (safeEnd === -1) safeEnd = this.accumulated.length
     } else {
       // No marker yet — but the tail could be the start of one; reserve it.
@@ -92,6 +93,14 @@ export class DialectGate {
     return this.toolIntentPresent
   }
 
+  get markerIndex(): number | null {
+    return this.observedMarkerIndex
+  }
+
+  get markerInCodeRegion(): boolean | null {
+    return this.observedMarkerInCodeRegion
+  }
+
   /**
    * Finalize: parse the full accumulated text into structured tool calls and
    * return the non-dialect text that was buffered but not yet emitted.
@@ -102,8 +111,9 @@ export class DialectGate {
     resolution: DialectToolResolution
   } {
     const { toolCalls, cleanedText, resolution } = parseTextToolCalls(this.accumulated)
-    // Text before the first marker was already emitted verbatim and is never
-    // part of a dialect span, so cleanedText[0..emitted) == what we emitted.
+    // Every emitted byte is either before the first executable marker or inside
+    // a code region the parser preserves, so cleanedText[0..emitted) remains
+    // exactly what was already published.
     const remainderText = cleanedText.length > this.emitted ? cleanedText.slice(this.emitted) : ''
     return { toolCalls, remainderText, resolution }
   }

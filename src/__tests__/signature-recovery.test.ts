@@ -46,6 +46,7 @@ function makeAccountManager(count: number) {
   return {
     getAccountCount: () => count,
     getAccounts: () => [],
+    markHealthy: mock(() => {}),
     markUnhealthy: mock(() => {}),
     markRateLimited: mock(() => {}),
     toAuthDetails: mock((acc: ManagedAccount) => ({

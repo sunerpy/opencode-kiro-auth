@@ -134,27 +134,40 @@ export class RecoveryAttemptFactory {
     const state = await this.resolveAttemptState(attemptIndex, selectedAccount)
     let eventCount = state.eventCount
     const absoluteAttempt = this.request.priorStreamFailures + attemptIndex
-    const logDetails = (details: Record<string, unknown> = {}): Record<string, unknown> => ({
-      conversationId: state.prepared.conversationId,
-      model: this.request.model,
-      effectiveModel: state.prepared.effectiveModel,
-      region: state.prepared.region,
-      account: state.account.email,
-      accountId: state.account.id,
-      streamAttempt: absoluteAttempt,
-      maxStreamAttempts: this.config.stream_max_attempts,
-      streamDeliveryMode: 'live',
-      sdkHttpKeepAlive: this.config.sdk_http_keep_alive,
-      processId: process.pid,
-      bunVersion: process.versions.bun,
-      upstreamEventCount: eventCount,
-      streamElapsedMs: Date.now() - state.startedAt,
-      emittedReasoningChars: state.emitted.reasoningText.length,
-      emittedVisibleChars: state.emitted.visibleText.length,
-      emittedToolCount: state.emitted.toolUses().length,
-      sawToolIntent: state.observer.sawToolIntent,
-      ...details
-    })
+    const streamStartedAt = new Date(state.startedAt).toISOString()
+    const logDetails = (details: Record<string, unknown> = {}): Record<string, unknown> => {
+      const observed = state.observer.snapshot()
+      return {
+        conversationId: state.prepared.conversationId,
+        model: this.request.model,
+        effectiveModel: state.prepared.effectiveModel,
+        region: state.prepared.region,
+        account: state.account.email,
+        accountId: state.account.id,
+        streamAttempt: absoluteAttempt,
+        maxStreamAttempts: this.config.stream_max_attempts,
+        streamDeliveryMode: 'live',
+        sdkHttpKeepAlive: this.config.sdk_http_keep_alive,
+        processId: process.pid,
+        bunVersion: process.versions.bun,
+        streamStartedAt,
+        upstreamEventCount: eventCount,
+        eventTypeCounts: observed.eventTypeCounts,
+        streamElapsedMs: Date.now() - state.startedAt,
+        emittedReasoningChars: state.emitted.reasoningText.length,
+        emittedVisibleChars: state.emitted.visibleText.length,
+        emittedToolCount: state.emitted.toolUses().length,
+        sawToolIntent: observed.sawToolIntent,
+        hasOpenToolIntent: observed.hasOpenToolIntent,
+        reasoningPhase: observed.reasoningPhase,
+        dialectActive: observed.dialectActive,
+        dialectMarkerIndex: observed.dialectMarkerIndex,
+        dialectMarkerInCodeRegion: observed.dialectMarkerInCodeRegion,
+        dialectResolution: observed.dialectResolution,
+        terminalSource: observed.terminalSource,
+        ...details
+      }
+    }
 
     if (state.apiTimestamp && attemptIndex > 1) {
       this.services.logSdkRequest(state.prepared, state.account, state.apiTimestamp)
@@ -200,6 +213,7 @@ export class RecoveryAttemptFactory {
       onUpstreamWaitEnd: this.services.endUpstreamWait,
       onIterationError: (error, afterCompletionMetadata) => {
         if (!afterCompletionMetadata) return
+        state.observer.noteTerminalSource('completion_metadata_received')
         logger.log(
           'Kiro SDK event stream closed after completion metadata',
           logDetails({

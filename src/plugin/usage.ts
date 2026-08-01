@@ -41,7 +41,10 @@ interface AccountUsageManager {
   updateUsage(id: string, meta: UsageUpdateMeta): void
 }
 
-export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<UsageSnapshot> {
+export async function fetchUsageLimits(
+  auth: KiroAuthDetails,
+  signal?: AbortSignal
+): Promise<UsageSnapshot> {
   // Try different parameter combinations
   const attempts: Array<{ resourceType?: string; origin?: string }> = [
     { resourceType: 'AGENTIC_REQUEST', origin: 'AI_EDITOR' },
@@ -62,6 +65,7 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<UsageSnap
     try {
       const res = await fetch(url.toString(), {
         method: 'GET',
+        signal,
         headers: {
           Authorization: `Bearer ${auth.access}`,
           'Content-Type': 'application/json',

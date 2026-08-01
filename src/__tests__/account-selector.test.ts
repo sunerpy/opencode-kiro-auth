@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test'
+import type { RefreshAllSummary } from '../core/account/account-refresh-service.js'
 import { AccountSelector } from '../core/account/account-selector.js'
 import { AccountManager } from '../plugin/accounts.js'
 import type { ManagedAccount } from '../plugin/types.js'
@@ -36,7 +37,25 @@ function collectingToast(): {
 
 const defaultConfig = {
   auto_sync_kiro_cli: true,
-  account_selection_strategy: 'sticky' as const
+  account_selection_strategy: 'sticky' as const,
+  refresh_before_switch_enabled: true,
+  refresh_all_deadline_ms: 5000
+}
+
+function refreshSummary(): RefreshAllSummary {
+  return {
+    startedAt: 1,
+    completedAt: 2,
+    totalAccounts: 2,
+    tokenRenewed: 0,
+    tokenSkipped: 2,
+    usageUpdated: 2,
+    failed: 0,
+    timedOut: false,
+    lockAcquired: true,
+    proceededWithoutLock: false,
+    accounts: []
+  }
 }
 
 function fakeRepo(
@@ -223,5 +242,47 @@ describe('AccountSelector.selectHealthyAccount - circuit breaker', () => {
       )
     }
     await expect(selector.selectHealthyAccount(toast.fn)).rejects.toThrow('Circuit breaker tripped')
+  })
+})
+
+describe('AccountSelector.selectAlternativeAccount - pre-switch refresh', () => {
+  test('refreshes usage before selecting and excludes an account that is now over limit', async () => {
+    const staleCandidate = makeAccount({ id: 'B', usedCount: 10, limitCount: 100 })
+    const fallback = makeAccount({ id: 'C', usedCount: 20, limitCount: 100 })
+    const mgr = new AccountManager([staleCandidate, fallback], 'sticky', { stopOnOverage: true })
+    const refreshAll = mock(async () => {
+      staleCandidate.usedCount = 101
+      return refreshSummary()
+    })
+    const selector = new AccountSelector(
+      mgr,
+      defaultConfig,
+      mock(async () => {}),
+      fakeRepo(),
+      { refreshAll }
+    )
+
+    const selected = await selector.selectAlternativeAccount(new Set<string>())
+
+    expect(refreshAll).toHaveBeenCalledTimes(1)
+    expect(selected?.id).toBe('C')
+  })
+
+  test('continues selecting when the pre-switch refresh fails', async () => {
+    const candidate = makeAccount({ id: 'refresh-failure' })
+    const mgr = new AccountManager([candidate], 'sticky')
+    const refreshAll = mock(async (): Promise<RefreshAllSummary> => {
+      throw new Error('usage service unavailable')
+    })
+    const selector = new AccountSelector(
+      mgr,
+      defaultConfig,
+      mock(async () => {}),
+      fakeRepo(),
+      { refreshAll }
+    )
+
+    await expect(selector.selectAlternativeAccount(new Set<string>())).resolves.toBe(candidate)
+    expect(refreshAll).toHaveBeenCalledTimes(1)
   })
 })

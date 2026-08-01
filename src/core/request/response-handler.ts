@@ -231,6 +231,16 @@ function isSemanticTruncation(
   return mode !== 'off' && observer?.hasOpenToolIntent === true
 }
 
+function noteStreamFailure(lifecycle: SdkResponseLifecycle, error: unknown): void {
+  if (lifecycle.signal?.aborted) {
+    lifecycle.streamObserver?.noteTerminalSource('caller_abort')
+  } else if (error instanceof SdkEventStreamIterationError) {
+    lifecycle.streamObserver?.noteTerminalSource('iterator_failure')
+  } else {
+    lifecycle.streamObserver?.noteTerminalSource('stream_processing_failure')
+  }
+}
+
 function bufferedSseResponse(chunks: Uint8Array[]): Response {
   let index = 0
   return new Response(
@@ -304,10 +314,25 @@ export class ResponseHandler {
     }
     const readNext = async (): Promise<IteratorResult<unknown>> => {
       if (drained) return { done: true, value: undefined }
-      const item = await transformed.next()
+      let item: IteratorResult<unknown>
+      try {
+        item = await transformed.next()
+      } catch (error) {
+        noteStreamFailure(lifecycle, error)
+        throw error
+      }
       if (item.done) {
-        if (!wrapped.completionMetadataSeen()) lifecycle.onCleanEofWithoutCompletionMetadata?.()
-        if (isSemanticTruncation(recoveryMode, lifecycle.streamObserver)) {
+        const completionMetadataSeen = wrapped.completionMetadataSeen()
+        const semanticTruncation = isSemanticTruncation(recoveryMode, lifecycle.streamObserver)
+        lifecycle.streamObserver?.noteTerminalSource(
+          semanticTruncation
+            ? 'semantic_truncation'
+            : completionMetadataSeen
+              ? 'completion_metadata_received'
+              : 'clean_eof_without_completion_metadata'
+        )
+        if (!completionMetadataSeen) lifecycle.onCleanEofWithoutCompletionMetadata?.()
+        if (semanticTruncation) {
           throw new SdkEventStreamIterationError(new SemanticStreamTruncationError())
         }
         drained = true
@@ -435,13 +460,33 @@ export class ResponseHandler {
       (lifecycle.recoveryMode ?? 'off') !== 'off'
     )
     const buffered: Uint8Array[] = []
+    const nextTransformed = async (): Promise<IteratorResult<unknown>> => {
+      try {
+        return await transformed.next()
+      } catch (error) {
+        noteStreamFailure(lifecycle, error)
+        throw error
+      }
+    }
     // One shared publication point for all three completion paths. Duplicating it
     // per site is how the live pull-driven path silently stops populating. It is
     // also the only place a clean `done` is observable, so the missing-completion
     // marker fires here, before completion, rather than at each `item.done`.
     const complete = async (): Promise<void> => {
-      if (!wrapped.completionMetadataSeen()) lifecycle.onCleanEofWithoutCompletionMetadata?.()
-      if (isSemanticTruncation(lifecycle.recoveryMode ?? 'off', lifecycle.streamObserver)) {
+      const completionMetadataSeen = wrapped.completionMetadataSeen()
+      const semanticTruncation = isSemanticTruncation(
+        lifecycle.recoveryMode ?? 'off',
+        lifecycle.streamObserver
+      )
+      lifecycle.streamObserver?.noteTerminalSource(
+        semanticTruncation
+          ? 'semantic_truncation'
+          : completionMetadataSeen
+            ? 'completion_metadata_received'
+            : 'clean_eof_without_completion_metadata'
+      )
+      if (!completionMetadataSeen) lifecycle.onCleanEofWithoutCompletionMetadata?.()
+      if (semanticTruncation) {
         throw new SdkEventStreamIterationError(new SemanticStreamTruncationError())
       }
       return this.fireCompletion(lifecycle, reasoning, emitted, model, false)
@@ -450,7 +495,7 @@ export class ResponseHandler {
     if (lifecycle.bufferUntilComplete) {
       try {
         while (true) {
-          const item = await transformed.next()
+          const item = await nextTransformed()
           if (item.done) {
             await complete()
             lifecycle.onTerminal?.()
@@ -471,7 +516,7 @@ export class ResponseHandler {
     let firstSemantic: Uint8Array | undefined
 
     while (true) {
-      const item = await transformed.next()
+      const item = await nextTransformed()
       if (item.done) {
         await complete()
         lifecycle.onTerminal?.()
@@ -513,6 +558,7 @@ export class ResponseHandler {
             abortListener = () => {
               if (terminal) return
               const reason = abortReason(lifecycle.signal!)
+              lifecycle.streamObserver?.noteTerminalSource('caller_abort')
               void cleanupIterators()
               finish()
               controller.error(reason)
@@ -530,7 +576,7 @@ export class ResponseHandler {
             }
 
             try {
-              const item = await transformed.next()
+              const item = await nextTransformed()
               if (item.done) {
                 await complete()
                 finish()
@@ -551,6 +597,7 @@ export class ResponseHandler {
           },
           async cancel(reason) {
             if (terminal) return
+            lifecycle.streamObserver?.noteTerminalSource('caller_abort')
             finish()
             lifecycle.onCancel?.(reason)
             await cleanupIterators()

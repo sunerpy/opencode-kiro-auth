@@ -4,6 +4,10 @@ import { RegionSchema } from '../../plugin/config/schema.js'
 import { isRefreshTokenDead } from '../../plugin/health.js'
 import * as logger from '../../plugin/logger.js'
 import { PLUGIN_VERSION } from '../../version.js'
+import type {
+  AccountRefreshService,
+  RefreshAllSummary
+} from '../account/account-refresh-service.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
 import { isInteractiveTty, ttyConfirm, ttySelect } from './tty-menu.js'
 
@@ -11,6 +15,7 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 export class AuthHandler {
   private accountManager?: any
+  private accountRefreshService?: Pick<AccountRefreshService, 'refreshAll' | 'refreshAccount'>
 
   constructor(
     private config: any,
@@ -61,6 +66,12 @@ export class AuthHandler {
 
   setAccountManager(am: any): void {
     this.accountManager = am
+  }
+
+  setAccountRefreshService(
+    accountRefreshService: Pick<AccountRefreshService, 'refreshAll' | 'refreshAccount'>
+  ): void {
+    this.accountRefreshService = accountRefreshService
   }
 
   /** Summarize stored accounts for a label; guards limit=0 divide-by-zero. */
@@ -207,15 +218,64 @@ export class AuthHandler {
       }
     ]
 
-    // Removal must be `type:'oauth'`, not `type:'api'`: OpenCode forces an
-    // "Enter your API key" prompt on `api` methods, breaking a removal flow.
+    // Account-management methods must be `type:'oauth'`, not `type:'api'`:
+    // OpenCode forces an "Enter your API key" prompt for `api` methods.
     methods.push({
-      label: 'Manage / remove accounts',
+      label: 'Refresh all accounts · tokens + usage',
+      type: 'oauth' as const,
+      authorize: async () => this.authorizeRefreshAllAccounts()
+    })
+
+    methods.push({
+      label: 'Manage accounts',
       type: 'oauth' as const,
       authorize: async () => this.authorizeRemoveAccounts()
     })
 
     return methods
+  }
+
+  private formatRefreshHeadline(summary: RefreshAllSummary): string {
+    if (summary.skippedReason === 'cooldown') return 'Refresh skipped: cooldown is still active.'
+    if (summary.skippedReason === 'lock_unavailable') {
+      return 'Refresh skipped: another process is already refreshing accounts.'
+    }
+    return `Refreshed ${summary.totalAccounts} accounts · ${summary.tokenRenewed} token renewed · ${summary.usageUpdated} usage updated · ${summary.failed} failed`
+  }
+
+  private printRefreshSummary(summary: RefreshAllSummary): void {
+    process.stdout.write(`${this.formatRefreshHeadline(summary)}\n`)
+    for (const account of summary.accounts) {
+      const error = account.error ? ` · ${account.error}` : ''
+      process.stdout.write(
+        `- ${account.email} — ${account.before.usedCount}/${account.before.limitCount} → ` +
+          `${account.after.usedCount}/${account.after.limitCount} · token ${account.tokenStatus} · ` +
+          `usage ${account.usageStatus}${error}\n`
+      )
+    }
+    if (summary.proceededWithoutLock) {
+      process.stdout.write('Note: refresh proceeded without the shared keep-alive lock.\n')
+    }
+  }
+
+  private async authorizeRefreshAllAccounts(): Promise<{
+    url: string
+    instructions: string
+    method: 'auto'
+    callback: () => Promise<{ type: 'failed' } | { type: 'success'; key: string }>
+  }> {
+    const accounts: any[] = this.accountManager?.getAccounts?.() ?? []
+    if (accounts.length === 0) {
+      return this.endWithoutCredential('No accounts to refresh.')
+    }
+    if (!this.accountRefreshService) {
+      logger.error('Kiro account refresh service is unavailable')
+      return this.endWithoutCredential('Account refresh is unavailable.')
+    }
+
+    const summary = await this.accountRefreshService.refreshAll({ force: true })
+    this.printRefreshSummary(summary)
+    return this.endWithRemainingCredentialOrFailed(this.formatRefreshHeadline(summary))
   }
 
   /** Ends the auth flow cleanly with no key prompt and no credential written. */
@@ -276,11 +336,9 @@ export class AuthHandler {
   }
 
   /**
-   * Self-drawn account-removal flow. No-op paths (cancel / no accounts /
-   * not-confirmed / non-TTY) end with method:'auto' + a failed callback so no
-   * key prompt appears and no bogus success is shown. The actual-deletion path
-   * ends with a remaining-account success (or failed if none remain), so a
-   * successful removal is not misreported as "Failed to authorize".
+   * Self-drawn account-management flow. No-op paths end with method:'auto' + a
+   * failed callback so no key prompt appears. Successful refresh/delete paths
+   * end with a remaining-account credential so OpenCode reports success.
    */
   private async authorizeRemoveAccounts(): Promise<{
     url: string
@@ -291,16 +349,16 @@ export class AuthHandler {
     const accounts: any[] = this.accountManager?.getAccounts?.() ?? []
 
     if (accounts.length === 0) {
-      logger.log('Remove Kiro account: no accounts to remove')
-      return this.endWithoutCredential('No accounts to remove.')
+      logger.log('Manage Kiro accounts: no accounts')
+      return this.endWithoutCredential('No accounts to manage.')
     }
 
     if (!isInteractiveTty()) {
-      logger.log('Remove Kiro account: non-TTY, skipping interactive menu')
+      logger.log('Manage Kiro accounts: non-TTY, skipping interactive menu')
       const sqliteHint =
         'sqlite3 ~/.config/opencode/kiro.db "DELETE FROM accounts WHERE email=\'<email>\';"'
       return this.endWithoutCredential(
-        'Account removal requires an interactive terminal. Run `opencode auth login` ' +
+        'Account management requires an interactive terminal. Run `opencode auth login` ' +
           `in a TTY, or remove via: ${sqliteHint}`
       )
     }
@@ -311,10 +369,38 @@ export class AuthHandler {
     }))
     items.push({ label: 'Cancel', value: null as any })
 
-    const target = await ttySelect<any>(items, { message: 'Select an account to remove' })
+    const target = await ttySelect<any>(items, { message: 'Select an account' })
     if (!target) {
-      logger.log('Remove Kiro account: cancelled (no-op)')
-      return this.endWithoutCredential('Cancelled. No account removed.')
+      logger.log('Manage Kiro accounts: cancelled (no-op)')
+      return this.endWithoutCredential('Cancelled. No account changed.')
+    }
+
+    const action = await ttySelect<'refresh' | 'delete' | 'cancel'>(
+      [
+        { label: 'Refresh token & usage', value: 'refresh' },
+        { label: 'Delete account', value: 'delete' },
+        { label: 'Cancel', value: 'cancel' }
+      ],
+      { message: `Manage ${target.email || 'this account'}` }
+    )
+    if (!action || action === 'cancel') {
+      logger.log('Manage Kiro accounts: action cancelled (no-op)')
+      return this.endWithoutCredential('Cancelled. No account changed.')
+    }
+
+    if (action === 'refresh') {
+      if (!this.accountRefreshService) {
+        logger.error('Kiro account refresh service is unavailable')
+        return this.endWithoutCredential('Account refresh is unavailable.')
+      }
+      const summary = await this.accountRefreshService.refreshAccount(String(target.id), {
+        force: true
+      })
+      this.printRefreshSummary(summary)
+      const refreshedAccounts: any[] = this.accountManager?.getAccounts?.() ?? []
+      const refreshed = refreshedAccounts.find((account) => account.id === target.id) ?? target
+      process.stdout.write(`${this.formatAccountOption(refreshed)}\n`)
+      return this.endWithRemainingCredentialOrFailed(this.formatRefreshHeadline(summary))
     }
 
     const confirmed = await ttyConfirm(`Delete ${target.email || 'this account'}?`)

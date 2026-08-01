@@ -4,32 +4,55 @@ import {
   parseBracketToolCalls,
   parseTextToolCalls
 } from '../infrastructure/transformers/tool-call-parser.js'
+import { DialectGate } from '../plugin/streaming/dialect-gate.js'
 import { transformSdkStream } from '../plugin/streaming/sdk-stream-transformer.js'
+import { StreamObserver } from '../plugin/streaming/stream-observer.js'
 
-function makeSdkResponse(events: any[]): any {
+interface CollectSdkChunksOptions {
+  observer?: StreamObserver
+  beforeComplete?: () => Promise<void>
+  terminalError?: Error
+  onChunk?: (chunk: unknown) => void
+  onStreamStart?: () => void
+}
+
+function makeSdkResponse(events: any[], options: CollectSdkChunksOptions = {}): any {
   return {
     generateAssistantResponseResponse: (async function* () {
+      options.onStreamStart?.()
       for (const e of events) yield e
+      await options.beforeComplete?.()
+      if (options.terminalError) throw options.terminalError
     })()
   }
 }
 
 async function collectSdkChunks(
   events: any[],
-  suppressIncompleteDialect?: boolean
+  suppressIncompleteDialect?: boolean,
+  options: CollectSdkChunksOptions = {}
 ): Promise<any[]> {
   const chunks: any[] = []
   for await (const chunk of transformSdkStream(
-    makeSdkResponse(events),
+    makeSdkResponse(events, options),
     'auto',
     'chatcmpl-test',
     undefined,
-    undefined,
+    options.observer,
     suppressIncompleteDialect
   )) {
     chunks.push(chunk)
+    options.onChunk?.(chunk)
   }
   return chunks
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolvePromise = (): void => undefined
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve
+  })
+  return { promise, resolve: resolvePromise }
 }
 
 function joinedContent(chunks: any[]): string {
@@ -169,6 +192,207 @@ describe('parseTextToolCalls — phantom / false-positive negatives', () => {
     const { toolCalls, cleanedText } = parseTextToolCalls(text)
     expect(toolCalls.length).toBe(0)
     expect(cleanedText).toBe(text)
+  })
+})
+
+describe('parseTextToolCalls — fenced code range regressions', () => {
+  test('unclosed backtick fence with a complete invoke → none, no call, text unchanged', () => {
+    const text =
+      'Example:\n```xml\n<invoke name="wb1_complete"><parameter name="path">/demo</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('unclosed backtick fence with a half invoke intentionally resolves none, not incomplete', () => {
+    const text = 'Example:\n```xml\n<invoke name="wb1_half"><parameter name="path">/demo'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('unclosed fenced invoke streams byte-identically for every incomplete-dialect setting', async () => {
+    const text =
+      'Example:\n```xml\n<invoke name="wb1_stream"><parameter name="path">/demo</parameter></invoke>'
+    const settings = [true, false, undefined] as const
+    const results = await Promise.all(
+      settings.map((setting) =>
+        collectSdkChunks([{ assistantResponseEvent: { content: text } }], setting)
+      )
+    )
+
+    for (const chunks of results) {
+      expect(joinedContent(chunks)).toBe(text)
+      expect(toolCallChunks(chunks)).toHaveLength(0)
+      expect(finishReasons(chunks)).toEqual(['stop'])
+    }
+    expect(results.map(joinedContent)).toEqual([text, text, text])
+  })
+
+  test('real invoke before an unclosed fence is parsed while the fenced example is preserved', () => {
+    const realCall = '<invoke name="wb1_real"><parameter name="path">/real</parameter></invoke>'
+    const fencedExample =
+      '\nExample:\n```xml\n<invoke name="wb1_example"><parameter name="path">/demo</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(realCall + fencedExample)
+
+    expect(resolution).toBe('complete')
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0]!.name).toBe('wb1_real')
+    expect(toolCalls[0]!.input).toEqual({ path: '/real' })
+    expect(cleanedText).toBe(fencedExample)
+  })
+
+  test('out-of-fence half invoke remains incomplete', () => {
+    const text = 'partial <invoke name="wb1_outside"><parameter name="path">/half'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('incomplete')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('four-backtick fence is not closed by an embedded three-backtick run', () => {
+    const text =
+      'Example:\n````text\nembedded ``` sequence\n<invoke name="wb1_four"><parameter name="path">/demo</parameter></invoke>\n````'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('closed tilde fence containing an invoke → none, no call, text unchanged', () => {
+    const text =
+      'Example:\n~~~xml\n<invoke name="wb1_tilde_closed"><parameter name="path">/demo</parameter></invoke>\n~~~'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('unclosed tilde fence containing an invoke → none, no call, text unchanged', () => {
+    const text =
+      'Example:\n~~~xml\n<invoke name="wb1_tilde_unclosed"><parameter name="path">/demo</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('none')
+    expect(toolCalls).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('lone unclosed inline backtick does not hide a following invoke', () => {
+    const text =
+      'Example: `<invoke name="wb1_inline"><parameter name="path">/real</parameter></invoke>'
+    const { toolCalls, cleanedText, resolution } = parseTextToolCalls(text)
+
+    expect(resolution).toBe('complete')
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0]!.name).toBe('wb1_inline')
+    expect(cleanedText).toBe('Example: `')
+  })
+})
+
+describe('DialectGate — shared incremental code regions', () => {
+  test('multi-chunk fenced example publishes post-fence text before stream finalization without byte drift', async () => {
+    const eventContents = [
+      'Example:\n```xml\n',
+      '<invoke name="wb2_stream"><parameter name="path">',
+      '/demo</parameter></invoke>\n',
+      '```\nAfter the fence, this text must be live before finalization.'
+    ]
+    const input = eventContents.join('')
+    const upstreamPaused = deferred()
+    const releaseUpstream = deferred()
+    let streamedBeforeFinalization = ''
+
+    const collecting = collectSdkChunks(
+      eventContents.map((content) => ({ assistantResponseEvent: { content } })),
+      true,
+      {
+        beforeComplete: async () => {
+          upstreamPaused.resolve()
+          await releaseUpstream.promise
+        },
+        onChunk: (chunk) => {
+          streamedBeforeFinalization += contentOf(chunk) ?? ''
+        }
+      }
+    )
+
+    await upstreamPaused.promise
+    const postFenceTextWasLive = streamedBeforeFinalization.includes(
+      'After the fence, this text must be live'
+    )
+    releaseUpstream.resolve()
+    const chunks = await collecting
+
+    expect(postFenceTextWasLive).toBe(true)
+    expect(joinedContent(chunks)).toBe(input)
+    expect(toolCallChunks(chunks)).toHaveLength(0)
+  })
+
+  test('unclosed fenced marker followed by iterator failure reports no dialect intent and starts no retry', async () => {
+    const observer = new StreamObserver()
+    let streamStarts = 0
+    const input =
+      'Example:\n```xml\n<invoke name="wb2_break"><parameter name="path">/demo</parameter></invoke>'
+
+    let iteratorError: unknown
+    try {
+      await collectSdkChunks([{ assistantResponseEvent: { content: input } }], true, {
+        observer,
+        terminalError: new Error('wb2 upstream iterator failure'),
+        onStreamStart: () => {
+          streamStarts++
+        }
+      })
+    } catch (error) {
+      iteratorError = error
+    }
+
+    expect(iteratorError).toBeInstanceOf(Error)
+    expect(iteratorError instanceof Error ? iteratorError.message : undefined).toBe(
+      'wb2 upstream iterator failure'
+    )
+    expect(streamStarts).toBe(1)
+    expect(observer.snapshot()).toEqual({
+      sawToolIntent: false,
+      hasOpenToolIntent: false,
+      reasoningPhase: 'none',
+      dialectActive: false,
+      dialectMarkerIndex: input.indexOf('<invoke'),
+      dialectMarkerInCodeRegion: true,
+      dialectResolution: 'not_finalized',
+      eventTypeCounts: { assistantResponseEvent: 1 },
+      terminalSource: null
+    })
+  })
+
+  test('unclosed fenced marker is published as visible text and never parsed as the same tool call', () => {
+    const fragments = [
+      'Example:\n```xml\n',
+      '<invoke name="wb2_disjoint"><parameter name="path">',
+      '/demo</parameter></invoke>'
+    ]
+    const input = fragments.join('')
+    const gate = new DialectGate()
+    const streamed = fragments.map((fragment) => gate.push(fragment)).join('')
+    const finalized = gate.finalize()
+
+    expect(streamed).toBe(input)
+    expect(finalized.remainderText).toBe('')
+    expect(finalized.toolCalls).toHaveLength(0)
+    expect(streamed + finalized.remainderText).toBe(input)
+
+    const parsed = parseTextToolCalls(input)
+    expect(parsed.cleanedText).toBe(input)
+    expect(parsed.toolCalls).toHaveLength(0)
+    expect(parsed.resolution).toBe('none')
   })
 })
 

@@ -780,6 +780,7 @@ interface WiredHandler {
 function wireHandler(account: ManagedAccount, events: unknown[]): WiredHandler {
   const accountManager: any = {
     getAccounts: () => [account],
+    markHealthy: () => {},
     toAuthDetails: (acc: ManagedAccount) => ({
       access: acc.accessToken,
       refresh: acc.refreshToken,

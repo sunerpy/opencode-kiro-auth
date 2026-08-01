@@ -42,7 +42,11 @@ function makeAccountManager(count: number) {
   return {
     getAccountCount: () => count,
     getAccounts: () => [],
-    markUnhealthy: mock(() => {}),
+    markUnhealthy: mock((account: ManagedAccount, reason: string) => {
+      account.failCount = 10
+      account.isHealthy = false
+      account.unhealthyReason = reason
+    }),
     markRateLimited: mock(() => {})
   } as any
 }

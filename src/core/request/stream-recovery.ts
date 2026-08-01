@@ -56,6 +56,14 @@ export type ReplayAttemptTelemetry = ReplayMatchProgress & {
   readonly attempts: number
 }
 
+export type StreamRecoveryTerminationReason =
+  | 'completed'
+  | 'caller_abort'
+  | 'consumer_cancel'
+  | 'recovery_unavailable'
+  | 'attempt_budget_exhausted'
+  | 'coordinator_failure'
+
 export type StreamRecoveryOptions = {
   readonly mode: StreamRecoveryMode
   readonly maxAttempts: number
@@ -63,14 +71,14 @@ export type StreamRecoveryOptions = {
   /** Already primed through the first semantic chunk so pre-output failures stay caller-owned. */
   readonly initialAttempt?: AttemptHandle
   readonly attemptFactory: AttemptFactory
-  /** Receives the one-based index of the failed attempt being backed off. */
-  readonly delayFn: (attemptIndex: number, signal: AbortSignal) => Promise<void>
+  /** Receives the one-based index and cause of the failed attempt being backed off. */
+  readonly delayFn: (attemptIndex: number, signal: AbortSignal, failure: Error) => Promise<void>
   readonly mapError: (failure: unknown) => Error
   readonly encodeChunk: (chunk: unknown) => Uint8Array
   readonly onComplete: (completion: StreamRecoveryCompletion) => void | Promise<void>
-  readonly onTerminal: () => void
+  readonly onTerminal: (reason: StreamRecoveryTerminationReason) => void
   readonly onCancel?: (reason: unknown) => void
-  readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry) => void
+  readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry, failure?: Error) => void
 }
 
 export function decideRecoveryTier(input: RecoveryDecisionInput): RecoveryTier {
@@ -163,7 +171,7 @@ export class StreamRecoveryCoordinator {
     this.abortListener = () => {
       if (this.terminal) return
       const reason = abortReason(this.options.signal)
-      this.finish()
+      this.finish('caller_abort')
       controller.error(reason)
       void this.closeActiveAttempt()
     }
@@ -181,7 +189,7 @@ export class StreamRecoveryCoordinator {
       if (this.terminal) return
       await this.closeActiveAttempt()
       if (this.terminal) return
-      this.finish()
+      this.finish('coordinator_failure')
       controller.error(this.options.signal.aborted ? abortReason(this.options.signal) : error)
     }
   }
@@ -218,14 +226,9 @@ export class StreamRecoveryCoordinator {
       if (this.terminal) return
       if (item.done) {
         if (this.replayMatcher) {
-          this.reportReplayAttempt('diverged', 'early_end')
-          if (
-            !(await this.recoverOrTerminate(
-              new ReplayDivergenceError('early_end'),
-              attempt,
-              controller
-            ))
-          ) {
+          const failure = new ReplayDivergenceError('early_end')
+          this.reportReplayAttempt('diverged', 'early_end', failure)
+          if (!(await this.recoverOrTerminate(failure, attempt, controller))) {
             return
           }
           continue
@@ -237,14 +240,9 @@ export class StreamRecoveryCoordinator {
       const match = this.replayMatcher?.consume(item.value)
       if (match?.kind === 'withheld') continue
       if (match?.kind === 'diverged') {
-        this.reportReplayAttempt('diverged', match.channel)
-        if (
-          !(await this.recoverOrTerminate(
-            new ReplayDivergenceError(match.channel),
-            attempt,
-            controller
-          ))
-        ) {
+        const failure = new ReplayDivergenceError(match.channel)
+        this.reportReplayAttempt('diverged', match.channel, failure)
+        if (!(await this.recoverOrTerminate(failure, attempt, controller))) {
           return
         }
         continue
@@ -286,7 +284,7 @@ export class StreamRecoveryCoordinator {
     } catch (failure) {
       const error = failure instanceof Error ? failure : errorFrom(failure)
       if (this.replayMatcher && !this.options.signal.aborted) {
-        this.reportReplayAttempt('failed', 'none')
+        this.reportReplayAttempt('failed', 'none', error)
       }
       return this.recoverOrTerminate(error, undefined, controller)
     }
@@ -300,7 +298,7 @@ export class StreamRecoveryCoordinator {
     if (this.terminal) return false
     if (failedAttempt) this.mergeObservation(failedAttempt.observed())
     if (this.replayMatcher && !this.options.signal.aborted) {
-      this.reportReplayAttempt('failed', 'none')
+      this.reportReplayAttempt('failed', 'none', failure)
     }
     this.pendingTerminalChunks.length = 0
     this.pendingDeliveryChunks.length = 0
@@ -316,7 +314,11 @@ export class StreamRecoveryCoordinator {
       sawToolIntent: this.sawToolIntent
     })
     if (tier === 'none' || this.attemptIndex >= this.options.maxAttempts) {
-      this.finish()
+      this.finish(
+        this.attemptIndex >= this.options.maxAttempts
+          ? 'attempt_budget_exhausted'
+          : 'recovery_unavailable'
+      )
       controller.error(this.options.mapError(failure))
       return false
     }
@@ -329,7 +331,7 @@ export class StreamRecoveryCoordinator {
         toolUses: this.delivered.toolUses()
       })
     }
-    await this.options.delayFn(this.attemptIndex, this.options.signal)
+    await this.options.delayFn(this.attemptIndex, this.options.signal, failure)
     return !this.terminal
   }
 
@@ -339,16 +341,20 @@ export class StreamRecoveryCoordinator {
 
   private reportReplayAttempt(
     replayOutcome: ReplayAttemptTelemetry['replayOutcome'],
-    divergenceChannel: ReplayDivergenceChannel
+    divergenceChannel: ReplayDivergenceChannel,
+    failure?: Error
   ): void {
     const matcher = this.replayMatcher
     if (!matcher) return
-    this.options.onReplayAttempt?.({
-      ...matcher.progress(),
-      divergenceChannel,
-      replayOutcome,
-      attempts: this.attemptIndex
-    })
+    this.options.onReplayAttempt?.(
+      {
+        ...matcher.progress(),
+        divergenceChannel,
+        replayOutcome,
+        attempts: this.attemptIndex
+      },
+      failure
+    )
     this.replayMatcher = undefined
   }
 
@@ -374,15 +380,17 @@ export class StreamRecoveryCoordinator {
       controller.enqueue(this.options.encodeChunk(chunk))
     }
     this.pendingTerminalChunks.length = 0
-    this.finish()
+    this.finish('completed')
     controller.close()
   }
 
   private async cancel(reason: unknown): Promise<void> {
     if (this.terminal) return
-    const closing = this.closeActiveAttempt()
-    this.finish()
+    // Let the owner abort its request signal before terminal logging runs, so a
+    // consumer cancellation is recorded as caller_abort rather than a transport end.
     this.options.onCancel?.(reason)
+    const closing = this.closeActiveAttempt()
+    this.finish('consumer_cancel')
     await closing
   }
 
@@ -393,13 +401,13 @@ export class StreamRecoveryCoordinator {
     await Promise.allSettled([attempt.close()])
   }
 
-  private finish(): void {
+  private finish(reason: StreamRecoveryTerminationReason): void {
     if (this.terminal) return
     this.terminal = true
     if (this.abortListener) {
       this.options.signal.removeEventListener('abort', this.abortListener)
       this.abortListener = undefined
     }
-    this.options.onTerminal()
+    this.options.onTerminal(reason)
   }
 }

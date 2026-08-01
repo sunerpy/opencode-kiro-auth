@@ -72,11 +72,13 @@ export const createKiroPlugin =
       stopOnOverage: config.stop_on_overage,
       overageThreshold: config.overage_threshold,
       distributeAcrossProcesses: config.distribute_across_processes,
-      perRequestSpread: config.per_request_spread
+      perRequestSpread: config.per_request_spread,
+      invalidateAccountCache: (accountId) => repository.invalidateAccount(accountId)
     })
     authHandler.setAccountManager(accountManager)
 
     const requestHandler = new RequestHandler(accountManager, config, repository, client)
+    authHandler.setAccountRefreshService(requestHandler.sharedAccountRefreshService)
     installKeepAliveController(
       new KeepAliveController(
         config,

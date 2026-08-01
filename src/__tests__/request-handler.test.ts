@@ -126,6 +126,13 @@ function buildHandler(opts: {
 
   const accountManager: any = {
     getAccounts: mock(() => accounts),
+    markHealthy: mock((acc: ManagedAccount) => {
+      if (!acc.failCount) return
+      acc.failCount = 0
+      acc.isHealthy = true
+      delete acc.unhealthyReason
+      delete acc.recoveryTime
+    }),
     toAuthDetails: mock((acc: ManagedAccount) => ({
       access: acc.accessToken,
       refresh: acc.refreshToken,
@@ -279,6 +286,7 @@ function records(
 
 const STREAM_FAILURE_LOG = 'Kiro SDK event stream iteration failed'
 const REPLAY_TELEMETRY_LOG = 'Kiro exact replay attempt finished'
+const STREAM_TERMINAL_LOG = 'Kiro stream request terminal'
 
 function installImmediateStreamBackoff(handler: RequestHandler): void {
   const internals = handler as unknown as {
@@ -470,6 +478,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
         'Kiro SDK event stream iteration failed',
         expect.objectContaining({
           outcome: 'exhausted',
+          terminalSource: 'stream_attempt_budget_exhausted',
           conversationId: 'c1',
           account: 'A@example.com',
           accountId: 'A',
@@ -518,6 +527,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
         'Kiro SDK event stream iteration failed',
         expect.objectContaining({
           outcome: 'terminated_after_output',
+          terminalSource: 'iterator_failure',
           conversationId: 'c1',
           account: 'A@example.com',
           accountId: 'A',
@@ -631,6 +641,41 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     expect(
       fakes.accountManager.toAuthDetails.mock.calls.map((call: [ManagedAccount]) => call[0].id)
     ).toEqual(['A', 'A', 'B'])
+  })
+
+  test('outer pre-output retries exclude every account that already failed this request', async () => {
+    const a = makeAccount({ id: 'outer-A' })
+    const b = makeAccount({ id: 'outer-B' })
+    const c = makeAccount({ id: 'outer-C' })
+    const excludedAccountIds: string[][] = []
+    const { handler, fakes } = buildHandler({
+      accounts: [a, b, c],
+      selectResults: [a],
+      sdkResults: [
+        sdkStream([], new Error('A decode 1')),
+        sdkStream([], new Error('A decode 2')),
+        sdkStream([], new Error('B decode')),
+        sdkStream([{ assistantResponseEvent: { content: 'from C successfully' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamMaxAttempts: 4
+    })
+    fakes.accountSelector.selectAlternativeAccount.mockImplementation(
+      async (excludedIds: ReadonlySet<string>) => {
+        excludedAccountIds.push([...excludedIds].sort())
+        return [b, c].find((account) => !excludedIds.has(account.id)) ?? null
+      }
+    )
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+
+    expect(excludedAccountIds).toEqual([['outer-A'], ['outer-A', 'outer-B']])
+    expect(
+      fakes.accountManager.toAuthDetails.mock.calls.map((call: [ManagedAccount]) => call[0].id)
+    ).toEqual(['outer-A', 'outer-A', 'outer-B', 'outer-C'])
   })
 
   test('exhaustion returns a structured retryable HTTP 503', async () => {
@@ -953,6 +998,40 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     )
     expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
     expect(fakes.errorHandler.handleNetworkError).toHaveBeenCalledTimes(0)
+  })
+
+  test('a post-output transformation fault is not logged as an SDK iterator failure', async () => {
+    const acc = makeAccount({ id: 'transform-terminal' })
+    const malformedEvent = {
+      get reasoningContentEvent() {
+        throw new Error('transformer failed after semantic output')
+      }
+    }
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([{ assistantResponseEvent: { content: 'first chunk' } }, malformedEvent])
+        ],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await expect(response.text()).rejects.toThrow('transformer failed after semantic output')
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
+      expect(records(logs.log, STREAM_TERMINAL_LOG)).toEqual([
+        expect.objectContaining({
+          accountId: acc.id,
+          phase: 'stream_iteration',
+          terminalSource: 'stream_processing_failure'
+        })
+      ])
+    } finally {
+      logs.restore()
+    }
   })
 
   test('an exhausted attempt reports how much of each channel was already emitted', async () => {
@@ -1447,6 +1526,57 @@ describe('RequestHandler.handle — unconditional stream-start record', () => {
     }
   })
 
+  test('HTTP and non-retryable network exits each reconcile one start with one terminal', async () => {
+    const httpAccount = makeAccount({ id: 'terminal-http' })
+    const networkAccount = makeAccount({ id: 'terminal-network' })
+    const httpError = Object.assign(new Error('invalid request'), {
+      name: 'ValidationException',
+      $metadata: { httpStatusCode: 400 }
+    })
+    const networkError = new TypeError('socket closed before response')
+    const logs = captureLogger()
+
+    try {
+      const { handler: httpHandler } = buildHandler({
+        selectResults: [httpAccount],
+        sdkResults: [httpError],
+        errorHandleResults: [{ shouldRetry: false }],
+        streaming: true
+      })
+      const httpResponse = await httpHandler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      const { handler: networkHandler } = buildHandler({
+        selectResults: [networkAccount],
+        sdkResults: [networkError],
+        streaming: true
+      })
+      await expect(
+        networkHandler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      ).rejects.toBe(networkError)
+
+      expect(httpResponse.status).toBe(400)
+      expect(startRecords(logs.log)).toHaveLength(2)
+      const terminalRecords = records(logs.log, STREAM_TERMINAL_LOG)
+      expect(terminalRecords).toHaveLength(2)
+      expect(terminalRecords.filter((record) => record['accountId'] === httpAccount.id)).toEqual([
+        expect.objectContaining({
+          phase: 'pre_stream_open',
+          terminalSource: 'http_error'
+        })
+      ])
+      expect(terminalRecords.filter((record) => record['accountId'] === networkAccount.id)).toEqual(
+        [
+          expect.objectContaining({
+            phase: 'pre_stream_open',
+            terminalSource: 'network_error'
+          })
+        ]
+      )
+    } finally {
+      logs.restore()
+    }
+  })
+
   test('a non-streaming request writes no record', async () => {
     const acc = makeAccount({ id: 'A' })
     const logs = captureLogger()
@@ -1500,9 +1630,20 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
           emittedReasoningChars: 0,
           emittedVisibleChars: 'partial answer'.length,
           emittedToolCount: 0,
-          sawToolIntent: false
+          sawToolIntent: false,
+          terminalSource: 'clean_eof_without_completion_metadata',
+          eventTypeCounts: { assistantResponseEvent: 1 },
+          dialectMarkerIndex: null,
+          dialectMarkerInCodeRegion: null,
+          dialectResolution: 'none'
         })
       )
+      const terminal = records(logs.log, STREAM_TERMINAL_LOG)
+      expect(terminal).toHaveLength(1)
+      expect(terminal[0]).not.toHaveProperty('sessionId')
+      expect(terminal[0]).not.toHaveProperty('sessionID')
+      expect(terminal[0]).not.toHaveProperty('messageId')
+      expect(terminal[0]).not.toHaveProperty('messageID')
     } finally {
       logs.restore()
     }
@@ -1534,6 +1675,14 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
       expect(logs.warn.mock.calls.some((call) => call[0] === STREAM_MISSING_COMPLETION_LOG)).toBe(
         false
       )
+      expect(records(logs.log, STREAM_TERMINAL_LOG)).toEqual([
+        expect.objectContaining({
+          terminalSource: 'completion_metadata_received',
+          eventTypeCounts: { assistantResponseEvent: 1, metadataEvent: 1 },
+          upstreamEventCount: 2,
+          dialectResolution: 'none'
+        })
+      ])
     } finally {
       logs.restore()
     }
@@ -1564,6 +1713,90 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
           streamDeliveryMode: 'buffered'
         })
       )
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('caller abort logs the terminal source without replaying or fabricating identity', async () => {
+    const acc = makeAccount({ id: 'abort-log' })
+    const controller = new AbortController()
+    const streamStarted = Promise.withResolvers<void>()
+    const logs = captureLogger()
+    try {
+      const stalled = {
+        generateAssistantResponseResponse: (async function* () {
+          yield { reasoningContentEvent: { text: 'started' } }
+          streamStarted.resolve()
+          await new Promise<void>(() => {})
+        })()
+      }
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [stalled],
+        streaming: true,
+        useRealResponseHandler: true
+      })
+
+      const response = await handler.handle(
+        KIRO_URL,
+        { body: JSON.stringify({}), signal: controller.signal },
+        noToast
+      )
+      const reading = response.text()
+      await streamStarted.promise
+      controller.abort(new DOMException('caller stopped the turn', 'AbortError'))
+
+      await expect(reading).rejects.toMatchObject({ name: 'AbortError' })
+      expect(records(logs.log, STREAM_TERMINAL_LOG)).toEqual([
+        expect.objectContaining({
+          terminalSource: 'caller_abort',
+          conversationId: 'c1',
+          accountId: 'abort-log',
+          eventTypeCounts: { reasoningContentEvent: 1 }
+        })
+      ])
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('semantic truncation reports marker diagnostics and keeps its own terminal source', async () => {
+    const acc = makeAccount({ id: 'semantic-log' })
+    const logs = captureLogger()
+    try {
+      const prefix = 'before '
+      const { handler } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([
+            {
+              assistantResponseEvent: {
+                content: prefix + '<invoke name="read"><parameter name="path">/unfinished'
+              }
+            }
+          ])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamBufferUntilComplete: true,
+        streamRecoveryMode: 'reasoning_restart',
+        streamMaxAttempts: 1
+      })
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+
+      expect(response.status).toBe(503)
+      expect(records(logs.error, STREAM_FAILURE_LOG)).toEqual([
+        expect.objectContaining({
+          terminalSource: 'semantic_truncation',
+          dialectMarkerIndex: prefix.length,
+          dialectMarkerInCodeRegion: false,
+          dialectResolution: 'incomplete',
+          hasOpenToolIntent: true,
+          eventTypeCounts: { assistantResponseEvent: 1 }
+        })
+      ])
     } finally {
       logs.restore()
     }
@@ -2868,6 +3101,7 @@ describe('RequestHandler.handle — re-auth path', () => {
     const accounts = [dead]
     const accountManager: any = {
       getAccounts: mock(() => accounts),
+      markHealthy: mock(() => {}),
       addAccount: mock((a: ManagedAccount) => {
         accounts.length = 0
         accounts.push(a)
@@ -2951,6 +3185,7 @@ describe('RequestHandler.handle — API request logging', () => {
     }
     const accountManager: any = {
       getAccounts: mock(() => [acc]),
+      markHealthy: mock(() => {}),
       toAuthDetails: mock(() => ({ access: acc.accessToken, region: acc.region, email: acc.email }))
     }
     const handler = new RequestHandler(accountManager, logConfig, {

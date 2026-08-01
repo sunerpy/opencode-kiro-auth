@@ -32,6 +32,11 @@ async function drainMicrotasks(turns = 50): Promise<void> {
   for (let i = 0; i < turns; i++) await Promise.resolve()
 }
 
+async function waitForHealthPersistence(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  await drainMicrotasks()
+}
+
 const spies: Array<{ mockRestore: () => void }> = []
 afterEach(() => {
   for (const s of spies.splice(0)) s.mockRestore()
@@ -54,7 +59,7 @@ describe('AccountManager mutators swallow rejected DB writes and warn', () => {
     mgr.updateUsage('A', { usedCount: 3, limitCount: 100 })
     expect(mgr.getAccounts().find((x) => x.id === 'A')!.usedCount).toBe(3)
 
-    await drainMicrotasks()
+    await waitForHealthPersistence()
     expect(warnTags(warn)).toContain('updateUsage')
   })
 
@@ -67,7 +72,7 @@ describe('AccountManager mutators swallow rejected DB writes and warn', () => {
     mgr.addAccount(makeAccount({ id: 'B' }))
     expect(mgr.getAccountCount()).toBe(2)
 
-    await drainMicrotasks()
+    await waitForHealthPersistence()
     expect(warnTags(warn)).toContain('addAccount')
   })
 
@@ -81,7 +86,7 @@ describe('AccountManager mutators swallow rejected DB writes and warn', () => {
     mgr.markRateLimited(a, 1000)
     expect(mgr.getAccounts().find((x) => x.id === 'A')!.rateLimitResetTime).toBeGreaterThan(0)
 
-    await drainMicrotasks()
+    await waitForHealthPersistence()
     expect(warnTags(warn)).toContain('markRateLimited')
   })
 
@@ -95,7 +100,7 @@ describe('AccountManager mutators swallow rejected DB writes and warn', () => {
     mgr.markUnhealthy(a, 'transient')
     expect(mgr.getAccounts().find((x) => x.id === 'A')!.unhealthyReason).toBe('transient')
 
-    await drainMicrotasks()
+    await waitForHealthPersistence()
     expect(warnTags(warn)).toContain('markUnhealthy')
   })
 
@@ -116,7 +121,7 @@ describe('AccountManager mutators swallow rejected DB writes and warn', () => {
     })
     expect(mgr.getAccounts().find((x) => x.id === 'A')!.accessToken).toBe('fresh-access')
 
-    await drainMicrotasks()
+    await waitForHealthPersistence()
     const tags = warnTags(warn)
     expect(tags).toContain('updateFromAuth')
   })
