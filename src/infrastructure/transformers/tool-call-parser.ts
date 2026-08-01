@@ -156,8 +156,13 @@ function openingMarkerStarts(text: string, codeRanges: Array<[number, number]>):
   return starts
 }
 
+/** Opening-marker offsets outside every fenced or inline code region. */
+export function textToolCallOpeningMarkerStarts(text: string): number[] {
+  return openingMarkerStarts(text, computeCodeRanges(text))
+}
+
 export function firstTextToolCallOpeningMarkerIndex(text: string): number {
-  const starts = openingMarkerStarts(text, computeCodeRanges(text))
+  const starts = textToolCallOpeningMarkerStarts(text)
   return starts.length === 0 ? -1 : Math.min(...starts)
 }
 
@@ -365,7 +370,7 @@ export function parseTextToolCalls(text: string): {
   if (!text) return { toolCalls: [], cleanedText: text, resolution: 'none' }
 
   const codeRanges = computeCodeRanges(text)
-  const openings = openingMarkerStarts(text, codeRanges)
+  const openings = textToolCallOpeningMarkerStarts(text)
   const claimed: Array<[number, number]> = []
 
   const matches: DialectMatch[] = [

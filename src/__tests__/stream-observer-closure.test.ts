@@ -88,12 +88,17 @@ describe('StreamObserver — tool intent closure', () => {
     expect(observer.hasOpenToolIntent).toBe(true)
   })
 
-  for (const [region, content] of [
+  for (const [region, content, expectedDialectActive] of [
     [
       'fenced code',
-      'Example:\n```xml\n<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>\n```'
+      'Example:\n```xml\n<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>\n```',
+      false
     ],
-    ['inline code', 'Use `<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>`.']
+    [
+      'inline code',
+      'Use `<invoke name="read"><parameter name="path">/tmp/x</parameter></invoke>`.',
+      true
+    ]
   ] as const) {
     test(`a marker inside ${region} never opens dialect intent`, async () => {
       const observer = new StreamObserver()
@@ -102,7 +107,7 @@ describe('StreamObserver — tool intent closure', () => {
 
       expect(observer.sawToolIntent).toBe(false)
       expect(observer.hasOpenToolIntent).toBe(false)
-      expect(observer.dialectActive).toBe(true)
+      expect(observer.dialectActive).toBe(expectedDialectActive)
     })
   }
 })
