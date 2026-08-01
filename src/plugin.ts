@@ -78,6 +78,7 @@ export const createKiroPlugin =
     authHandler.setAccountManager(accountManager)
 
     const requestHandler = new RequestHandler(accountManager, config, repository, client)
+    authHandler.setAccountRefreshService(requestHandler.sharedAccountRefreshService)
     installKeepAliveController(
       new KeepAliveController(
         config,

@@ -1,4 +1,6 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { EventEmitter } from 'node:events'
+import type { RefreshAllSummary } from '../core/account/account-refresh-service.js'
 import { AuthHandler } from '../core/auth/auth-handler.js'
 import { PLUGIN_VERSION } from '../version.js'
 
@@ -10,6 +12,10 @@ type FakeAccount = {
   isHealthy: boolean
   region: string
   accessToken?: string
+}
+
+type MenuAuthorizeResult = {
+  callback: () => Promise<{ type: 'failed' } | { type: 'success'; key: string }>
 }
 
 function makeHandler(accounts: FakeAccount[]) {
@@ -26,6 +32,92 @@ function makeHandler(accounts: FakeAccount[]) {
   handler.setAccountManager(accountManager)
   return { handler, removed }
 }
+
+const realStdin = process.stdin
+const realStdout = process.stdout
+
+class FakeStdin extends EventEmitter {
+  isTTY = true
+  isRaw = false
+
+  setRawMode(value: boolean): this {
+    this.isRaw = value
+    return this
+  }
+
+  resume(): this {
+    return this
+  }
+
+  pause(): this {
+    return this
+  }
+}
+
+class FakeStdout {
+  isTTY = true
+  written: string[] = []
+
+  write(value: string | Uint8Array): boolean {
+    this.written.push(String(value))
+    return true
+  }
+}
+
+let fakeStdin: FakeStdin | undefined
+let fakeStdout: FakeStdout | undefined
+
+function installFakeTty(): void {
+  fakeStdin = new FakeStdin()
+  fakeStdout = new FakeStdout()
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true })
+  Object.defineProperty(process, 'stdout', { value: fakeStdout, configurable: true })
+}
+
+function feedEnterTwice(): void {
+  let remaining = 2
+  const pump = (): void => {
+    if (remaining === 0) return
+    if (fakeStdin && fakeStdin.listenerCount('data') > 0) {
+      remaining--
+      fakeStdin.emit('data', Buffer.from('\r'))
+    }
+    setTimeout(pump, 0)
+  }
+  setTimeout(pump, 0)
+}
+
+function makeSummary(account: FakeAccount, beforeUsed: number): RefreshAllSummary {
+  return {
+    startedAt: 1,
+    completedAt: 2,
+    totalAccounts: 1,
+    tokenRenewed: 0,
+    tokenSkipped: 1,
+    usageUpdated: 1,
+    failed: 0,
+    timedOut: false,
+    lockAcquired: true,
+    proceededWithoutLock: false,
+    accounts: [
+      {
+        accountId: account.id,
+        email: account.email,
+        before: { usedCount: beforeUsed, limitCount: account.limitCount },
+        after: { usedCount: account.usedCount, limitCount: account.limitCount },
+        tokenStatus: 'not_needed',
+        usageStatus: 'updated'
+      }
+    ]
+  }
+}
+
+afterEach(() => {
+  Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true })
+  Object.defineProperty(process, 'stdout', { value: realStdout, configurable: true })
+  fakeStdin = undefined
+  fakeStdout = undefined
+})
 
 describe('auth account management', () => {
   test('first login label includes existing accounts + usage summary', () => {
@@ -86,7 +178,7 @@ describe('auth account management', () => {
     expect(await result.callback()).toEqual({ type: 'failed' })
   })
 
-  test('all three methods are type:oauth (no type:api anywhere)', () => {
+  test('all four methods are type:oauth (no type:api anywhere)', () => {
     const { handler } = makeHandler([
       {
         id: 'x',
@@ -98,10 +190,72 @@ describe('auth account management', () => {
       }
     ])
     const methods = handler.getMethods()
-    expect(methods).toHaveLength(3)
+    expect(methods).toHaveLength(4)
     for (const m of methods) {
       expect(m.type).toBe('oauth')
     }
+  })
+
+  test('top-level refresh-all method refreshes usage, prints before/after, and ends successfully', async () => {
+    installFakeTty()
+    const account: FakeAccount = {
+      id: 'refresh-all',
+      email: 'refresh-all@example.com',
+      usedCount: 10,
+      limitCount: 100,
+      isHealthy: true,
+      region: 'us-east-1',
+      accessToken: 'token-refresh-all'
+    }
+    const { handler } = makeHandler([account])
+    const refreshAll = mock(async () => {
+      const beforeUsed = account.usedCount
+      account.usedCount = 40
+      return makeSummary(account, beforeUsed)
+    })
+    handler.setAccountRefreshService({ refreshAll, refreshAccount: refreshAll })
+    const method = handler
+      .getMethods()
+      .find((candidate) => candidate.label === 'Refresh all accounts · tokens + usage')!
+
+    const authorize = (method as { authorize: () => Promise<MenuAuthorizeResult> }).authorize
+    const result = await authorize()
+
+    expect(method.type).toBe('oauth')
+    expect(refreshAll).toHaveBeenCalledTimes(1)
+    expect(fakeStdout?.written.join('')).toContain('10/100 → 40/100')
+    expect(await result.callback()).toEqual({ type: 'success', key: 'token-refresh-all' })
+  })
+
+  test('per-account refresh action re-renders the account line with current usage', async () => {
+    installFakeTty()
+    const account: FakeAccount = {
+      id: 'refresh-one',
+      email: 'refresh-one@example.com',
+      usedCount: 11,
+      limitCount: 100,
+      isHealthy: true,
+      region: 'us-east-1',
+      accessToken: 'token-refresh-one'
+    }
+    const { handler } = makeHandler([account])
+    const refreshAccount = mock(async () => {
+      const beforeUsed = account.usedCount
+      account.usedCount = 77
+      return makeSummary(account, beforeUsed)
+    })
+    handler.setAccountRefreshService({ refreshAll: refreshAccount, refreshAccount })
+    const manage = handler.getMethods().find((candidate) => candidate.label === 'Manage accounts')!
+    feedEnterTwice()
+
+    const authorize = (manage as { authorize: () => Promise<MenuAuthorizeResult> }).authorize
+    const result = await authorize()
+
+    expect(refreshAccount).toHaveBeenCalledWith(account.id, { force: true })
+    expect(fakeStdout?.written.join('')).toContain(
+      'refresh-one@example.com — 77/100 (us-east-1, healthy)'
+    )
+    expect(await result.callback()).toEqual({ type: 'success', key: 'token-refresh-one' })
   })
 
   test('getMethods without an account manager returns [] (existing behavior)', () => {

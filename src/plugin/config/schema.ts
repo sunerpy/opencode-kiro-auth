@@ -187,6 +187,15 @@ export const KiroConfigSchema = z.object({
    */
   token_keepalive_interval_ms: z.number().min(60000).max(3600000).default(600000),
 
+  /** Minimum interval between automatic full account refresh passes. */
+  refresh_all_cooldown_ms: z.number().min(0).max(3600000).default(60000),
+
+  /** Maximum latency an automatic pre-switch refresh may add to a request. */
+  refresh_all_deadline_ms: z.number().min(1000).max(30000).default(5000),
+
+  /** Refresh all account tokens and usage before choosing a failover account. */
+  refresh_before_switch_enabled: z.boolean().default(true),
+
   usage_sync_max_retries: z.number().min(0).max(5).default(3),
 
   auth_server_port_start: z.number().min(1024).max(65535).default(19847),
@@ -266,6 +275,9 @@ export const DEFAULT_CONFIG: KiroConfig = {
   token_expiry_buffer_ms: 300000,
   token_keepalive_enabled: false,
   token_keepalive_interval_ms: 600000,
+  refresh_all_cooldown_ms: 60000,
+  refresh_all_deadline_ms: 5000,
+  refresh_before_switch_enabled: true,
   usage_sync_max_retries: 3,
   auth_server_port_start: 19847,
   auth_server_port_range: 10,

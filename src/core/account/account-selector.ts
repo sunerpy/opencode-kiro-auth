@@ -1,12 +1,16 @@
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
+import * as logger from '../../plugin/logger'
 import type { ManagedAccount } from '../../plugin/types'
+import type { AccountRefreshService } from './account-refresh-service'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
 interface AccountSelectorConfig {
   auto_sync_kiro_cli: boolean
   account_selection_strategy: 'sticky' | 'round-robin' | 'lowest-usage'
+  refresh_before_switch_enabled?: boolean
+  refresh_all_deadline_ms?: number
 }
 
 export class AccountSelector {
@@ -18,7 +22,8 @@ export class AccountSelector {
     private accountManager: AccountManager,
     private config: AccountSelectorConfig,
     private syncFromKiroCli: () => Promise<void>,
-    private repository: AccountRepository
+    private repository: AccountRepository,
+    private accountRefreshService?: Pick<AccountRefreshService, 'refreshAll'>
   ) {}
 
   async selectHealthyAccount(
@@ -70,7 +75,23 @@ export class AccountSelector {
     return acc
   }
 
-  async selectAlternativeAccount(excludedIds: ReadonlySet<string>): Promise<ManagedAccount | null> {
+  async selectAlternativeAccount(
+    excludedIds: ReadonlySet<string>,
+    signal?: AbortSignal
+  ): Promise<ManagedAccount | null> {
+    if (this.config.refresh_before_switch_enabled !== false && this.accountRefreshService) {
+      try {
+        await this.accountRefreshService.refreshAll({
+          force: false,
+          deadlineMs: this.config.refresh_all_deadline_ms ?? 5000,
+          signal
+        })
+      } catch (error) {
+        logger.warn('Kiro pre-switch account refresh failed; selecting with cached usage', {
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
     return this.accountManager.getCurrentOrNext({ excludedIds, recoverUnhealthy: false })
   }
 

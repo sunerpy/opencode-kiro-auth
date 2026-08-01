@@ -20,6 +20,7 @@ import {
 } from '../../plugin/streaming/stream-observer'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
+import { AccountRefreshService } from '../account/account-refresh-service'
 import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
 import { TokenRefresher } from '../auth/token-refresher'
@@ -66,6 +67,7 @@ function describeError(error: unknown, depth = 0): unknown {
 
 export class RequestHandler {
   private accountSelector: AccountSelector
+  private accountRefreshService: AccountRefreshService
   private tokenRefresher: TokenRefresher
   private errorHandler: ErrorHandler
   private responseHandler: ResponseHandler
@@ -83,10 +85,25 @@ export class RequestHandler {
     private repository: AccountRepository,
     private client?: any
   ) {
-    this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
-    this.errorHandler = new ErrorHandler(config, accountManager, repository, (acc, toast) =>
-      this.tokenRefresher.forceRefresh(acc, toast)
+    this.accountRefreshService = new AccountRefreshService(
+      config,
+      accountManager,
+      this.tokenRefresher
+    )
+    this.accountSelector = new AccountSelector(
+      accountManager,
+      config,
+      syncFromKiroCli,
+      repository,
+      this.accountRefreshService
+    )
+    this.errorHandler = new ErrorHandler(
+      config,
+      accountManager,
+      repository,
+      (acc, toast) => this.tokenRefresher.forceRefresh(acc, toast),
+      this.accountRefreshService
     )
     this.responseHandler = new ResponseHandler()
     this.usageTracker = new UsageTracker(config, accountManager, repository)
@@ -95,6 +112,10 @@ export class RequestHandler {
 
   get sharedTokenRefresher(): TokenRefresher {
     return this.tokenRefresher
+  }
+
+  get sharedAccountRefreshService(): AccountRefreshService {
+    return this.accountRefreshService
   }
 
   async handle(input: any, init: any, showToast: ToastFunction): Promise<Response> {
@@ -450,7 +471,7 @@ export class RequestHandler {
               retryDelay: (failureCount) => this.getStreamRetryDelay(failureCount),
               wait: (milliseconds, waitSignal) => this.sleep(milliseconds, waitSignal),
               selectAlternativeAccount: (excludedAccountIds) =>
-                this.accountSelector.selectAlternativeAccount(excludedAccountIds),
+                this.accountSelector.selectAlternativeAccount(excludedAccountIds, signal),
               markRateLimited: (account, milliseconds) =>
                 this.accountManager.markRateLimited(account, milliseconds),
               describeError,
@@ -647,8 +668,10 @@ export class RequestHandler {
               forcedStreamAccount = acc
               selectionReason = 'first_stream_retry_reuses_current_account'
             } else {
-              const alternative =
-                await this.accountSelector.selectAlternativeAccount(failedAccountIds)
+              const alternative = await this.accountSelector.selectAlternativeAccount(
+                failedAccountIds,
+                signal
+              )
               if (alternative && !failedAccountIds.has(alternative.id)) {
                 forcedStreamAccount = alternative
                 selectionReason = 'selected_untried_account'
