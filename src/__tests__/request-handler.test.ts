@@ -633,6 +633,41 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     ).toEqual(['A', 'A', 'B'])
   })
 
+  test('outer pre-output retries exclude every account that already failed this request', async () => {
+    const a = makeAccount({ id: 'outer-A' })
+    const b = makeAccount({ id: 'outer-B' })
+    const c = makeAccount({ id: 'outer-C' })
+    const excludedAccountIds: string[][] = []
+    const { handler, fakes } = buildHandler({
+      accounts: [a, b, c],
+      selectResults: [a],
+      sdkResults: [
+        sdkStream([], new Error('A decode 1')),
+        sdkStream([], new Error('A decode 2')),
+        sdkStream([], new Error('B decode')),
+        sdkStream([{ assistantResponseEvent: { content: 'from C successfully' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamMaxAttempts: 4
+    })
+    fakes.accountSelector.selectAlternativeAccount.mockImplementation(
+      async (excludedIds: ReadonlySet<string>) => {
+        excludedAccountIds.push([...excludedIds].sort())
+        return [b, c].find((account) => !excludedIds.has(account.id)) ?? null
+      }
+    )
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+
+    expect(excludedAccountIds).toEqual([['outer-A'], ['outer-A', 'outer-B']])
+    expect(
+      fakes.accountManager.toAuthDetails.mock.calls.map((call: [ManagedAccount]) => call[0].id)
+    ).toEqual(['outer-A', 'outer-A', 'outer-B', 'outer-C'])
+  })
+
   test('exhaustion returns a structured retryable HTTP 503', async () => {
     const acc = makeAccount({ id: 'A' })
     const metadataError = new Error('HTTP 200 internal stream error') as Error & {

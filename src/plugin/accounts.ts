@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
 import { isAccessTokenError, isPermanentError } from './health'
 import * as logger from './logger'
-import { kiroDb } from './storage/sqlite'
+import { kiroDb, type AccountHealthSnapshot } from './storage/sqlite'
 import { writeToKiroCli } from './sync/kiro-cli'
 import type {
   AccountSelectionStrategy,
@@ -10,6 +10,11 @@ import type {
   ManagedAccount,
   RefreshParts
 } from './types'
+
+const ACCOUNT_HEALTH_REFRESH_INTERVAL_MS = 1_000
+
+type HealthPersistenceMethod =
+  'updateUsage' | 'addAccount' | 'updateFromAuth' | 'markRateLimited' | 'markUnhealthy'
 
 export function createDeterministicAccountId(
   email: string,
@@ -36,6 +41,9 @@ export class AccountManager {
   private quotaReserveThreshold: number
   private stopOnOverage: boolean
   private overageThreshold: number
+  private lastHealthDataVersion: number | undefined
+  private lastHealthRefreshAt: number
+  private pendingHealthWriteCounts = new Map<string, number>()
   constructor(
     accounts: ManagedAccount[],
     strategy: AccountSelectionStrategy = 'sticky',
@@ -58,6 +66,12 @@ export class AccountManager {
     this.startIndex = opts?.startIndex ?? 0
     this.perRequestSpread = opts?.perRequestSpread ?? false
     this.rrCursor = this.startIndex
+    this.lastHealthRefreshAt = Date.now()
+    try {
+      this.lastHealthDataVersion = kiroDb.getDataVersion()
+    } catch {
+      this.lastHealthDataVersion = undefined
+    }
   }
   static async loadFromDisk(
     strategy?: AccountSelectionStrategy,
@@ -161,6 +175,7 @@ export class AccountManager {
     options: { excludedIds?: ReadonlySet<string>; recoverUnhealthy?: boolean } = {}
   ): ManagedAccount | null {
     const now = Date.now()
+    this.refreshAccountHealthIfNeeded(now)
     const excludedIds = options.excludedIds ?? new Set<string>()
     const recoverUnhealthy = options.recoverUnhealthy ?? true
     const overageBlocked = (a: ManagedAccount) => this.isOverageBlocked(a)
@@ -274,6 +289,72 @@ export class AccountManager {
     }
     return null
   }
+  private refreshAccountHealthIfNeeded(now: number): void {
+    let dataVersion: number
+    try {
+      dataVersion = kiroDb.getDataVersion()
+    } catch (error) {
+      this.lastHealthRefreshAt = now
+      logger.warn('Account health refresh check failed; keeping in-memory state', {
+        error: error instanceof Error ? error.message : String(error)
+      })
+      return
+    }
+
+    const versionChanged =
+      this.lastHealthDataVersion !== undefined && dataVersion !== this.lastHealthDataVersion
+    const refreshExpired = now - this.lastHealthRefreshAt >= ACCOUNT_HEALTH_REFRESH_INTERVAL_MS
+    if (!versionChanged && !refreshExpired) return
+
+    try {
+      const snapshots = kiroDb.getAccountHealthSnapshots(this.accounts.map((account) => account.id))
+      const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]))
+      for (const account of this.accounts) {
+        const snapshot = snapshotsById.get(account.id)
+        if (snapshot) this.applyHealthSnapshot(account, snapshot)
+      }
+    } catch (error) {
+      logger.warn('Account health refresh failed; keeping in-memory state', {
+        error: error instanceof Error ? error.message : String(error)
+      })
+    } finally {
+      this.lastHealthDataVersion = dataVersion
+      this.lastHealthRefreshAt = now
+    }
+  }
+  private applyHealthSnapshot(account: ManagedAccount, snapshot: AccountHealthSnapshot): void {
+    if ((this.pendingHealthWriteCounts.get(account.id) ?? 0) > 0) return
+    account.rateLimitResetTime = snapshot.rateLimitResetTime
+    account.isHealthy = snapshot.isHealthy
+    account.failCount = snapshot.failCount
+    if (snapshot.unhealthyReason === undefined) delete account.unhealthyReason
+    else account.unhealthyReason = snapshot.unhealthyReason
+    if (snapshot.recoveryTime === undefined) delete account.recoveryTime
+    else account.recoveryTime = snapshot.recoveryTime
+  }
+  private persistLocalHealthMutation(
+    account: ManagedAccount,
+    method: HealthPersistenceMethod
+  ): void {
+    const pendingCount = this.pendingHealthWriteCounts.get(account.id) ?? 0
+    this.pendingHealthWriteCounts.set(account.id, pendingCount + 1)
+    const persistedSnapshot = { ...account }
+
+    kiroDb
+      .upsertAccount(persistedSnapshot)
+      .catch((error) =>
+        logger.warn('DB write failed', {
+          method,
+          email: account.email,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      )
+      .finally(() => {
+        const remaining = (this.pendingHealthWriteCounts.get(account.id) ?? 1) - 1
+        if (remaining > 0) this.pendingHealthWriteCounts.set(account.id, remaining)
+        else this.pendingHealthWriteCounts.delete(account.id)
+      })
+  }
   updateUsage(
     id: string,
     meta: {
@@ -297,26 +378,14 @@ export class AccountManager {
         delete a.unhealthyReason
         delete a.recoveryTime
       }
-      kiroDb.upsertAccount(a).catch((e) =>
-        logger.warn('DB write failed', {
-          method: 'updateUsage',
-          email: a.email,
-          error: e instanceof Error ? e.message : String(e)
-        })
-      )
+      this.persistLocalHealthMutation(a, 'updateUsage')
     }
   }
   addAccount(a: ManagedAccount): void {
     const i = this.accounts.findIndex((x) => x.id === a.id)
     if (i === -1) this.accounts.push(a)
     else this.accounts[i] = a
-    kiroDb.upsertAccount(a).catch((e) =>
-      logger.warn('DB write failed', {
-        method: 'addAccount',
-        email: a.email,
-        error: e instanceof Error ? e.message : String(e)
-      })
-    )
+    this.persistLocalHealthMutation(a, 'addAccount')
   }
   removeAccount(a: ManagedAccount): void {
     const removedIndex = this.accounts.findIndex((x) => x.id === a.id)
@@ -339,13 +408,7 @@ export class AccountManager {
 
     const candidate = this.createAuthCandidate(account, auth)
     this.publishAuthCandidate(candidate, false)
-    kiroDb.upsertAccount(candidate).catch((e) =>
-      logger.warn('DB write failed', {
-        method: 'updateFromAuth',
-        email: candidate.email,
-        error: e instanceof Error ? e.message : String(e)
-      })
-    )
+    this.persistLocalHealthMutation(candidate, 'updateFromAuth')
     this.writeAuthCandidateToKiroCli(candidate)
   }
   createAuthCandidate(a: ManagedAccount, auth: KiroAuthDetails): ManagedAccount {
@@ -388,13 +451,7 @@ export class AccountManager {
     const acc = this.accounts.find((x) => x.id === a.id)
     if (acc) {
       acc.rateLimitResetTime = Date.now() + ms
-      kiroDb.upsertAccount(acc).catch((e) =>
-        logger.warn('DB write failed', {
-          method: 'markRateLimited',
-          email: acc.email,
-          error: e instanceof Error ? e.message : String(e)
-        })
-      )
+      this.persistLocalHealthMutation(acc, 'markRateLimited')
     }
   }
   markUnhealthy(a: ManagedAccount, reason: string, recovery?: number): void {
@@ -423,13 +480,7 @@ export class AccountManager {
       }
     }
 
-    kiroDb.upsertAccount(acc).catch((e) =>
-      logger.warn('DB write failed', {
-        method: 'markUnhealthy',
-        email: acc.email,
-        error: e instanceof Error ? e.message : String(e)
-      })
-    )
+    this.persistLocalHealthMutation(acc, 'markUnhealthy')
   }
   async saveToDisk(): Promise<void> {
     await kiroDb.batchUpsertAccounts(this.accounts)

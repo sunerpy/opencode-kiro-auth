@@ -173,6 +173,7 @@ export class RequestHandler {
     let consecutiveNullAccounts = 0
     let streamStartRecorded = false
     let streamFailureCount = 0
+    const failedAccountIds = new Set<string>()
     let forcedStreamAccount: ManagedAccount | null = null
     let pinnedAccount: ManagedAccount | null = null
     let currentAttemptId = ''
@@ -400,11 +401,14 @@ export class RequestHandler {
               priorStreamFailures,
               signal,
               initialAccount: acc,
+              failedAccountIds,
               attemptFactory,
               retryDelay: (failureCount) => this.getStreamRetryDelay(failureCount),
               wait: (milliseconds, waitSignal) => this.sleep(milliseconds, waitSignal),
               selectAlternativeAccount: (excludedAccountIds) =>
                 this.accountSelector.selectAlternativeAccount(excludedAccountIds),
+              markRateLimited: (account, milliseconds) =>
+                this.accountManager.markRateLimited(account, milliseconds),
               describeError,
               onTerminal: cleanupRequest,
               // Attempt-level only: an initial-open failure is pre-output and is
@@ -555,6 +559,7 @@ export class RequestHandler {
 
           if (e instanceof SdkEventStreamIterationError) {
             streamFailureCount++
+            failedAccountIds.add(acc.id)
             const streamError = new UpstreamUnexpectedError(e, false)
             if (streamFailureCount >= this.config.stream_max_attempts) {
               logger.error(
@@ -571,11 +576,22 @@ export class RequestHandler {
 
             const delayMs = this.getStreamRetryDelay(streamFailureCount)
             await this.sleep(delayMs, signal)
+            let selectionReason: string
             if (streamFailureCount === 1) {
               forcedStreamAccount = acc
+              selectionReason = 'first_stream_retry_reuses_current_account'
             } else {
-              forcedStreamAccount =
-                (await this.accountSelector.selectAlternativeAccount(new Set([acc.id]))) ?? acc
+              const alternative =
+                await this.accountSelector.selectAlternativeAccount(failedAccountIds)
+              if (alternative && !failedAccountIds.has(alternative.id)) {
+                forcedStreamAccount = alternative
+                selectionReason = 'selected_untried_account'
+              } else {
+                forcedStreamAccount = acc
+                selectionReason = alternative
+                  ? 'selector_returned_excluded_account'
+                  : 'all_candidate_accounts_excluded'
+              }
             }
             logger.warn(
               'Kiro SDK event stream iteration failed',
@@ -585,6 +601,9 @@ export class RequestHandler {
                 nextAttempt: streamFailureCount + 1,
                 delayMs,
                 nextAccount: forcedStreamAccount.email,
+                nextAccountId: forcedStreamAccount.id,
+                failedAccountIds: [...failedAccountIds],
+                selectionReason,
                 error: describeError(e)
               })
             )

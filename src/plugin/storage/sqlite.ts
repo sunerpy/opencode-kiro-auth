@@ -48,6 +48,24 @@ function getBaseDir(): string {
 
 export const DB_PATH = join(getBaseDir(), 'kiro.db')
 
+export interface AccountHealthSnapshot {
+  readonly id: string
+  readonly rateLimitResetTime: number
+  readonly isHealthy: boolean
+  readonly unhealthyReason?: string
+  readonly recoveryTime?: number
+  readonly failCount: number
+}
+
+type AccountHealthRow = {
+  readonly id: string
+  readonly rate_limit_reset: number | null
+  readonly is_healthy: number
+  readonly unhealthy_reason: string | null
+  readonly recovery_time: number | null
+  readonly fail_count: number | null
+}
+
 export class KiroDatabase {
   private db: Libsql.Database
   private path: string
@@ -137,6 +155,41 @@ export class KiroDatabase {
         `
       )
       .all()
+  }
+
+  getDataVersion(): number {
+    const result: unknown = this.db.pragma('data_version', { simple: true })
+    const version =
+      typeof result === 'number'
+        ? result
+        : typeof result === 'object' && result !== null
+          ? Reflect.get(result, 'data_version')
+          : undefined
+    if (typeof version !== 'number') throw new TypeError('Expected numeric SQLite data_version')
+    return version
+  }
+
+  getAccountHealthSnapshots(accountIds: readonly string[]): AccountHealthSnapshot[] {
+    if (accountIds.length === 0) return []
+    const placeholders = accountIds.map(() => '?').join(', ')
+    const rows = this.db
+      .prepare(
+        `
+          SELECT id, rate_limit_reset, is_healthy, unhealthy_reason, recovery_time, fail_count
+          FROM accounts
+          WHERE id IN (${placeholders})
+        `
+      )
+      .all(...accountIds) as AccountHealthRow[]
+
+    return rows.map((row) => ({
+      id: row.id,
+      rateLimitResetTime: row.rate_limit_reset ?? 0,
+      isHealthy: row.is_healthy === 1,
+      ...(row.unhealthy_reason === null ? {} : { unhealthyReason: row.unhealthy_reason }),
+      ...(row.recovery_time === null ? {} : { recoveryTime: row.recovery_time }),
+      failCount: row.fail_count ?? 0
+    }))
   }
 
   private upsertAccountInternal(acc: any) {

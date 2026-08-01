@@ -6,18 +6,22 @@ import { encodeSseChunk, type SdkStreamingAttempt } from './response-handler'
 import { UpstreamUnexpectedError } from './stream-error'
 import { StreamRecoveryCoordinator, type StreamRecoveryMode } from './stream-recovery'
 
+const RECOVERY_QUOTA_COOLDOWN_MS = 30_000
+
 export type LiveRecoveryOptions = {
   readonly mode: StreamRecoveryMode
   readonly maxAttempts: number
   readonly priorStreamFailures: number
   readonly signal: AbortSignal
   readonly initialAccount: ManagedAccount
+  readonly failedAccountIds: Set<string>
   readonly attemptFactory: Pick<RecoveryAttemptFactory, 'open'>
   readonly retryDelay: (failureCount: number) => number
   readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>
   readonly selectAlternativeAccount: (
     excludedAccountIds: ReadonlySet<string>
   ) => Promise<ManagedAccount | null>
+  readonly markRateLimited: (account: ManagedAccount, milliseconds: number) => void
   readonly describeError: (error: unknown) => unknown
   /**
    * Request-level terminal ownership. Lifecycle ownership transfers to the
@@ -44,6 +48,7 @@ type RecoveryAttemptContext = {
   resolvedAccount?: ManagedAccount
   logDetails?: RecoveryAttemptResult['logDetails']
   openFailed: boolean
+  failureRecorded: boolean
 }
 
 type RequestLogIdentity = {
@@ -68,7 +73,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   let completedAttempt: SdkStreamingAttempt | undefined
   let currentAttempt: RecoveryAttemptContext | undefined
   let latestRequestLogIdentity: RequestLogIdentity | undefined
-  const failedAccountIds = new Set<string>()
+  const failedAccountIds = options.failedAccountIds
   let terminalFinished = false
   const finishTerminal = (): void => {
     if (terminalFinished) return
@@ -92,11 +97,21 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     failureClass: AccountFailureClass
   } => {
     const context = getCurrentAttempt()
-    failedAccountIds.add(context.attemptedAccount.id)
+    const failureClass = classifyAccountFailure(failure)
+    if (!context.failureRecorded) {
+      context.failureRecorded = true
+      failedAccountIds.add(context.attemptedAccount.id)
+      if (failureClass === 'quota_or_rate_limit') {
+        options.markRateLimited(
+          context.resolvedAccount ?? context.attemptedAccount,
+          RECOVERY_QUOTA_COOLDOWN_MS
+        )
+      }
+    }
     return {
       context,
       phase: failurePhase(context),
-      failureClass: classifyAccountFailure(failure)
+      failureClass
     }
   }
 
@@ -137,7 +152,8 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     const context: RecoveryAttemptContext = {
       attemptIndex,
       attemptedAccount,
-      openFailed: false
+      openFailed: false,
+      failureRecorded: false
     }
     currentAttempt = context
     try {
@@ -152,7 +168,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       return result.handle
     } catch (error) {
       context.openFailed = true
-      failedAccountIds.add(attemptedAccount.id)
+      recordFailure(error)
       throw error
     }
   }
@@ -181,7 +197,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
         nextAccount = currentAccount
         selectionReason = 'first_stream_retry_reuses_current_account'
       } else {
-        const alternative = await options.selectAlternativeAccount(new Set(failedAccountIds))
+        const alternative = await options.selectAlternativeAccount(failedAccountIds)
         if (alternative && !failedAccountIds.has(alternative.id)) {
           nextAccount = alternative
           selectionReason = 'selected_untried_account'

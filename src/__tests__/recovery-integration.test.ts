@@ -5,6 +5,7 @@ import {
   type LiveRecoveryOptions
 } from '../core/request/recovery-integration.js'
 import type { SdkStreamingAttempt } from '../core/request/response-handler.js'
+import { AccountManager } from '../plugin/accounts.js'
 import * as logger from '../plugin/logger.js'
 import type { ManagedAccount } from '../plugin/types.js'
 import { chunk, makeAttempt, TestStreamFailure } from './stream-recovery.fixture.js'
@@ -49,10 +50,12 @@ function recoveryOptions(
       priorStreamFailures: 0,
       signal,
       initialAccount: makeAccount(),
+      failedAccountIds: new Set<string>(),
       attemptFactory,
       retryDelay: () => 0,
       wait: async () => {},
       selectAlternativeAccount: async () => null,
+      markRateLimited: () => {},
       describeError: (error) => error,
       onTerminal: () => {
         terminalCalls++
@@ -232,6 +235,52 @@ describe('createLiveRecoveryResponse — account rotation', () => {
     expect(openedAccountIds).toEqual(['A', 'B', 'C'])
     expect(excludedAccountIds).toEqual([['A'], ['A', 'B']])
     expect(streamFailure).toBeUndefined()
+  })
+
+  test('quota failure applies a bounded cooldown without marking the account unhealthy', async () => {
+    const accountA = makeAccount('quota-recovery-A')
+    const accountB = makeAccount('quota-recovery-B')
+    const accountManager = new AccountManager([accountA, accountB], 'sticky')
+    const markRateLimited = spyOn(accountManager, 'markRateLimited')
+    const markUnhealthy = spyOn(accountManager, 'markUnhealthy')
+    const quotaError = new Error('You have reached the limit.')
+    quotaError.name = 'ServiceQuotaExceededException'
+    const handle = (output: readonly unknown[], failure?: Error): SdkStreamingAttempt => ({
+      ...makeAttempt({ output, failure }),
+      complete: async () => {}
+    })
+    const attemptFactory: Pick<RecoveryAttemptFactory, 'open'> = {
+      open: async (attemptIndex, selectedAccount) => ({
+        account: selectedAccount,
+        logDetails: () => ({}),
+        handle:
+          attemptIndex === 1
+            ? handle([], quotaError)
+            : handle([chunk('quota-recovered', { content: 'recovered' }, 'stop')])
+      })
+    }
+    const harness = recoveryOptions(attemptFactory)
+    const before = Date.now()
+
+    const response = await createLiveRecoveryResponse({
+      ...harness.options,
+      maxAttempts: 2,
+      initialAccount: accountA,
+      selectAlternativeAccount: async () => accountB,
+      markRateLimited: (account, milliseconds) =>
+        accountManager.markRateLimited(account, milliseconds)
+    })
+    await response.text()
+
+    const refreshedA = accountManager.getAccounts().find((account) => account.id === accountA.id)
+    expect(markRateLimited).toHaveBeenCalledTimes(1)
+    expect(markRateLimited.mock.calls[0]?.[0]).toBe(accountA)
+    expect(markRateLimited.mock.calls[0]?.[1]).toBeGreaterThan(0)
+    expect(markRateLimited.mock.calls[0]?.[1]).toBeLessThanOrEqual(30_000)
+    expect(refreshedA?.rateLimitResetTime).toBeGreaterThan(before)
+    expect(refreshedA?.rateLimitResetTime).toBeLessThanOrEqual(Date.now() + 30_000)
+    expect(refreshedA?.isHealthy).toBe(true)
+    expect(markUnhealthy).toHaveBeenCalledTimes(0)
   })
 
   test('pre-stream open failure retry log carries only prior stable request identity', async () => {
