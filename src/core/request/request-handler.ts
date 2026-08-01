@@ -403,8 +403,8 @@ export class RequestHandler {
               attemptFactory,
               retryDelay: (failureCount) => this.getStreamRetryDelay(failureCount),
               wait: (milliseconds, waitSignal) => this.sleep(milliseconds, waitSignal),
-              selectAlternativeAccount: (accountId) =>
-                this.accountSelector.selectAlternativeAccount(new Set([accountId])),
+              selectAlternativeAccount: (excludedAccountIds) =>
+                this.accountSelector.selectAlternativeAccount(excludedAccountIds),
               describeError,
               onTerminal: cleanupRequest,
               // Attempt-level only: an initial-open failure is pre-output and is

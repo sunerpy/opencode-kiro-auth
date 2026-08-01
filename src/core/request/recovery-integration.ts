@@ -1,5 +1,6 @@
 import * as logger from '../../plugin/logger'
 import type { ManagedAccount } from '../../plugin/types'
+import { classifyAccountFailure, type AccountFailureClass } from './account-failure-classifier'
 import type { RecoveryAttemptFactory, RecoveryAttemptResult } from './recovery-attempt'
 import { encodeSseChunk, type SdkStreamingAttempt } from './response-handler'
 import { UpstreamUnexpectedError } from './stream-error'
@@ -14,7 +15,9 @@ export type LiveRecoveryOptions = {
   readonly attemptFactory: Pick<RecoveryAttemptFactory, 'open'>
   readonly retryDelay: (failureCount: number) => number
   readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>
-  readonly selectAlternativeAccount: (excludedAccountId: string) => Promise<ManagedAccount | null>
+  readonly selectAlternativeAccount: (
+    excludedAccountIds: ReadonlySet<string>
+  ) => Promise<ManagedAccount | null>
   readonly describeError: (error: unknown) => unknown
   /**
    * Request-level terminal ownership. Lifecycle ownership transfers to the
@@ -32,11 +35,40 @@ export type LiveRecoveryOptions = {
   readonly onCancel: (reason: unknown) => void
 }
 
+type RecoveryFailurePhase = 'pre_stream_open' | 'stream_iteration'
+type RecoveryLogPhase = RecoveryFailurePhase | 'exact_replay' | 'completed'
+
+type RecoveryAttemptContext = {
+  readonly attemptIndex: number
+  readonly attemptedAccount: ManagedAccount
+  resolvedAccount?: ManagedAccount
+  logDetails?: RecoveryAttemptResult['logDetails']
+  openFailed: boolean
+}
+
+type RequestLogIdentity = {
+  readonly conversationId?: string
+  readonly model?: string
+  readonly processId?: number
+}
+
+function requestLogIdentity(details: Record<string, unknown>): RequestLogIdentity | undefined {
+  const identity: RequestLogIdentity = {
+    ...(typeof details['conversationId'] === 'string'
+      ? { conversationId: details['conversationId'] }
+      : {}),
+    ...(typeof details['model'] === 'string' ? { model: details['model'] } : {}),
+    ...(typeof details['processId'] === 'number' ? { processId: details['processId'] } : {})
+  }
+  return Object.keys(identity).length > 0 ? identity : undefined
+}
+
 export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): Promise<Response> {
-  let activeAccount = options.initialAccount
   let nextAccount = options.initialAccount
   let completedAttempt: SdkStreamingAttempt | undefined
-  let activeLogDetails = (_details: Record<string, unknown> = {}): Record<string, unknown> => ({})
+  let currentAttempt: RecoveryAttemptContext | undefined
+  let latestRequestLogIdentity: RequestLogIdentity | undefined
+  const failedAccountIds = new Set<string>()
   let terminalFinished = false
   const finishTerminal = (): void => {
     if (terminalFinished) return
@@ -44,15 +76,85 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     options.onTerminal()
   }
 
+  const getCurrentAttempt = (): RecoveryAttemptContext => {
+    if (!currentAttempt) throw new Error('No active Kiro recovery attempt context is available')
+    return currentAttempt
+  }
+
+  const failurePhase = (context: RecoveryAttemptContext): RecoveryFailurePhase =>
+    context.openFailed ? 'pre_stream_open' : 'stream_iteration'
+
+  const recordFailure = (
+    failure: unknown
+  ): {
+    context: RecoveryAttemptContext
+    phase: RecoveryFailurePhase
+    failureClass: AccountFailureClass
+  } => {
+    const context = getCurrentAttempt()
+    failedAccountIds.add(context.attemptedAccount.id)
+    return {
+      context,
+      phase: failurePhase(context),
+      failureClass: classifyAccountFailure(failure)
+    }
+  }
+
+  const attemptLogDetails = (
+    context: RecoveryAttemptContext,
+    phase: RecoveryLogPhase,
+    cause: unknown | undefined,
+    details: Record<string, unknown> = {}
+  ): Record<string, unknown> => {
+    const baseDetails = context.logDetails
+      ? context.logDetails(details)
+      : {
+          ...latestRequestLogIdentity,
+          ...details,
+          ...(latestRequestLogIdentity ? { identitySource: 'previous_attempt' } : {})
+        }
+    return {
+      ...baseDetails,
+      account: context.attemptedAccount.email,
+      accountId: context.attemptedAccount.id,
+      attemptedAccount: context.attemptedAccount.email,
+      attemptedAccountId: context.attemptedAccount.id,
+      ...(context.resolvedAccount
+        ? {
+            resolvedAccount: context.resolvedAccount.email,
+            resolvedAccountId: context.resolvedAccount.id
+          }
+        : {}),
+      attemptIndex: context.attemptIndex,
+      phase,
+      cause: cause === undefined ? null : options.describeError(cause),
+      ...(cause === undefined ? {} : { failureClass: classifyAccountFailure(cause) })
+    }
+  }
+
   const openAttempt = async (attemptIndex: number): Promise<SdkStreamingAttempt> => {
-    const result: RecoveryAttemptResult = await options.attemptFactory.open(
+    const attemptedAccount = nextAccount
+    const context: RecoveryAttemptContext = {
       attemptIndex,
-      nextAccount
-    )
-    activeAccount = result.account
-    completedAttempt = result.handle
-    activeLogDetails = result.logDetails
-    return result.handle
+      attemptedAccount,
+      openFailed: false
+    }
+    currentAttempt = context
+    try {
+      const result: RecoveryAttemptResult = await options.attemptFactory.open(
+        attemptIndex,
+        attemptedAccount
+      )
+      context.resolvedAccount = result.account
+      context.logDetails = result.logDetails
+      latestRequestLogIdentity = requestLogIdentity(result.logDetails())
+      completedAttempt = result.handle
+      return result.handle
+    } catch (error) {
+      context.openFailed = true
+      failedAccountIds.add(attemptedAccount.id)
+      throw error
+    }
   }
 
   let initialAttempt: SdkStreamingAttempt
@@ -68,33 +170,50 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     signal: options.signal,
     initialAttempt,
     attemptFactory: openAttempt,
-    delayFn: async (failedAttemptIndex, recoverySignal) => {
+    delayFn: async (failedAttemptIndex, recoverySignal, failure) => {
+      const { context, phase, failureClass } = recordFailure(failure)
       const failureCount = options.priorStreamFailures + failedAttemptIndex
       const delayMs = options.retryDelay(failureCount)
       await options.wait(delayMs, recoverySignal)
-      nextAccount =
-        failureCount === 1
-          ? activeAccount
-          : ((await options.selectAlternativeAccount(activeAccount.id)) ?? activeAccount)
+      const currentAccount = context.resolvedAccount ?? context.attemptedAccount
+      let selectionReason: string
+      if (failureCount === 1 && failureClass !== 'quota_or_rate_limit') {
+        nextAccount = currentAccount
+        selectionReason = 'first_stream_retry_reuses_current_account'
+      } else {
+        const alternative = await options.selectAlternativeAccount(new Set(failedAccountIds))
+        if (alternative && !failedAccountIds.has(alternative.id)) {
+          nextAccount = alternative
+          selectionReason = 'selected_untried_account'
+        } else {
+          nextAccount = currentAccount
+          selectionReason = alternative
+            ? 'selector_returned_excluded_account'
+            : 'all_candidate_accounts_excluded'
+        }
+      }
       logger.warn(
         'Kiro SDK event stream iteration failed',
-        activeLogDetails({
+        attemptLogDetails(context, phase, failure, {
           outcome: 'retrying',
           platform: process.platform,
           nextAttempt: failureCount + 1,
           delayMs,
-          nextAccount: nextAccount.email
+          nextAccount: nextAccount.email,
+          nextAccountId: nextAccount.id,
+          failedAccountIds: [...failedAccountIds],
+          selectionReason
         })
       )
     },
     mapError: (error) => {
+      const { context, phase } = recordFailure(error)
       logger.error(
         'Kiro SDK event stream iteration failed',
-        activeLogDetails({
+        attemptLogDetails(context, phase, error, {
           outcome: 'terminated_after_output',
           platform: process.platform,
-          emittedOutput: true,
-          error: options.describeError(error)
+          emittedOutput: true
         })
       )
       return new UpstreamUnexpectedError(error, true)
@@ -107,20 +226,27 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       if (options.priorStreamFailures > 0 || completion.recoveryTier !== 'none') {
         logger.log(
           'Kiro SDK event stream retry recovered',
-          activeLogDetails({
+          attemptLogDetails(getCurrentAttempt(), 'completed', undefined, {
             outcome: 'recovered',
             attempts: options.priorStreamFailures + completion.attemptIndex
           })
         )
       }
     },
-    onReplayAttempt: (telemetry) => {
+    onReplayAttempt: (telemetry, failure) => {
+      const context = getCurrentAttempt()
+      if (failure !== undefined) recordFailure(failure)
       logger.log(
         'Kiro exact replay attempt finished',
-        activeLogDetails({
-          ...telemetry,
-          quotaNote: 'each exact replay attempt consumes one real SDK send'
-        })
+        attemptLogDetails(
+          context,
+          failure === undefined ? 'exact_replay' : failurePhase(context),
+          failure,
+          {
+            ...telemetry,
+            quotaNote: 'each exact replay attempt consumes one real SDK send'
+          }
+        )
       )
     },
     onTerminal: finishTerminal,

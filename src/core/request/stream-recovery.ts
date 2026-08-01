@@ -63,14 +63,14 @@ export type StreamRecoveryOptions = {
   /** Already primed through the first semantic chunk so pre-output failures stay caller-owned. */
   readonly initialAttempt?: AttemptHandle
   readonly attemptFactory: AttemptFactory
-  /** Receives the one-based index of the failed attempt being backed off. */
-  readonly delayFn: (attemptIndex: number, signal: AbortSignal) => Promise<void>
+  /** Receives the one-based index and cause of the failed attempt being backed off. */
+  readonly delayFn: (attemptIndex: number, signal: AbortSignal, failure: Error) => Promise<void>
   readonly mapError: (failure: unknown) => Error
   readonly encodeChunk: (chunk: unknown) => Uint8Array
   readonly onComplete: (completion: StreamRecoveryCompletion) => void | Promise<void>
   readonly onTerminal: () => void
   readonly onCancel?: (reason: unknown) => void
-  readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry) => void
+  readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry, failure?: Error) => void
 }
 
 export function decideRecoveryTier(input: RecoveryDecisionInput): RecoveryTier {
@@ -218,14 +218,9 @@ export class StreamRecoveryCoordinator {
       if (this.terminal) return
       if (item.done) {
         if (this.replayMatcher) {
-          this.reportReplayAttempt('diverged', 'early_end')
-          if (
-            !(await this.recoverOrTerminate(
-              new ReplayDivergenceError('early_end'),
-              attempt,
-              controller
-            ))
-          ) {
+          const failure = new ReplayDivergenceError('early_end')
+          this.reportReplayAttempt('diverged', 'early_end', failure)
+          if (!(await this.recoverOrTerminate(failure, attempt, controller))) {
             return
           }
           continue
@@ -237,14 +232,9 @@ export class StreamRecoveryCoordinator {
       const match = this.replayMatcher?.consume(item.value)
       if (match?.kind === 'withheld') continue
       if (match?.kind === 'diverged') {
-        this.reportReplayAttempt('diverged', match.channel)
-        if (
-          !(await this.recoverOrTerminate(
-            new ReplayDivergenceError(match.channel),
-            attempt,
-            controller
-          ))
-        ) {
+        const failure = new ReplayDivergenceError(match.channel)
+        this.reportReplayAttempt('diverged', match.channel, failure)
+        if (!(await this.recoverOrTerminate(failure, attempt, controller))) {
           return
         }
         continue
@@ -286,7 +276,7 @@ export class StreamRecoveryCoordinator {
     } catch (failure) {
       const error = failure instanceof Error ? failure : errorFrom(failure)
       if (this.replayMatcher && !this.options.signal.aborted) {
-        this.reportReplayAttempt('failed', 'none')
+        this.reportReplayAttempt('failed', 'none', error)
       }
       return this.recoverOrTerminate(error, undefined, controller)
     }
@@ -300,7 +290,7 @@ export class StreamRecoveryCoordinator {
     if (this.terminal) return false
     if (failedAttempt) this.mergeObservation(failedAttempt.observed())
     if (this.replayMatcher && !this.options.signal.aborted) {
-      this.reportReplayAttempt('failed', 'none')
+      this.reportReplayAttempt('failed', 'none', failure)
     }
     this.pendingTerminalChunks.length = 0
     this.pendingDeliveryChunks.length = 0
@@ -329,7 +319,7 @@ export class StreamRecoveryCoordinator {
         toolUses: this.delivered.toolUses()
       })
     }
-    await this.options.delayFn(this.attemptIndex, this.options.signal)
+    await this.options.delayFn(this.attemptIndex, this.options.signal, failure)
     return !this.terminal
   }
 
@@ -339,16 +329,20 @@ export class StreamRecoveryCoordinator {
 
   private reportReplayAttempt(
     replayOutcome: ReplayAttemptTelemetry['replayOutcome'],
-    divergenceChannel: ReplayDivergenceChannel
+    divergenceChannel: ReplayDivergenceChannel,
+    failure?: Error
   ): void {
     const matcher = this.replayMatcher
     if (!matcher) return
-    this.options.onReplayAttempt?.({
-      ...matcher.progress(),
-      divergenceChannel,
-      replayOutcome,
-      attempts: this.attemptIndex
-    })
+    this.options.onReplayAttempt?.(
+      {
+        ...matcher.progress(),
+        divergenceChannel,
+        replayOutcome,
+        attempts: this.attemptIndex
+      },
+      failure
+    )
     this.replayMatcher = undefined
   }
 
