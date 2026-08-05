@@ -201,8 +201,9 @@ export function logApiError(
   const filename = writeApiLog('request', requestData, timestamp, true)
   writeApiLog('response', responseData, timestamp, true)
   const errorType = responseData.status ? `HTTP ${responseData.status}` : 'Network Error'
-  const email = typeof requestData.email === 'string' ? requestData.email : 'unknown'
-  error(`${errorType} on ${email} - See ${filename ?? 'API log'} at ${timestamp}`)
+  const accountAlias =
+    typeof requestData.accountAlias === 'string' ? requestData.accountAlias : 'unknown'
+  error(`${errorType} on ${accountAlias} - See ${filename ?? 'API log'} at ${timestamp}`)
 }
 
 export function getTimestamp(): string {

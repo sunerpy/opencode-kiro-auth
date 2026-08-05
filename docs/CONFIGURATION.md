@@ -27,7 +27,10 @@ root [README](../README.md#configuration) for the short version.
   "stream_event_timeout_enabled": false,
   "request_timeout_ms": 120000,
   "stream_buffer_until_complete": false,
+  "compaction_buffer_until_complete": true,
   "stream_max_attempts": 3,
+  "stream_recovery_mode": "off",
+  "stream_recovery_reuse_conversation_id_across_accounts": false,
   "token_expiry_buffer_ms": 300000,
   "token_keepalive_enabled": false,
   "token_keepalive_interval_ms": 600000,
@@ -138,6 +141,13 @@ because moving a live database during an upgrade is unsafe.
   validated before `RequestHandler.handle()` returns, this mode also holds the
   process-local Kiro request queue until the upstream response completes.
   Override with `KIRO_STREAM_BUFFER_UNTIL_COMPLETE`.
+- `compaction_buffer_until_complete`: Atomically buffer only requests that
+  OpenCode marks with `agent: "compaction"` (default: `true`). The plugin
+  consumes its private request marker before constructing the AWS request.
+  Failed stream attempts expose no partial summary bytes, while ordinary chat
+  remains live unless `stream_buffer_until_complete` is also enabled. Set this
+  to `false` only to restore streaming compaction behavior. Override with
+  `KIRO_COMPACTION_BUFFER_UNTIL_COMPLETE`.
 - `stream_max_attempts`: Maximum complete event-stream attempts (`1`-`10`,
   default: `3`). This caps the total SDK sends for **one** inbound provider
   request — the initial send plus any pre-output stream retries — so `3` means
@@ -148,9 +158,27 @@ because moving a live database during an upgrade is unsafe.
   is reached even if loop iterations remain, and the loop still stops at
   `max_request_iterations` regardless of remaining stream attempts. In normal
   live-stream mode, retries remain limited to failures before semantic output.
-  With `stream_buffer_until_complete` enabled, this limit also covers failures
-  after upstream output because none of that attempt has reached OpenCode yet.
+  With either global buffering or atomic compaction buffering enabled, this
+  limit also covers failures after upstream output because none of that
+  attempt has reached OpenCode yet.
   Override with `KIRO_STREAM_MAX_ATTEMPTS`.
+- `stream_recovery_mode`: Controls live recovery after semantic output
+  (default: `off`). `reasoning_restart` is eligible only when no visible text,
+  tool call, or raw tool intent reached OpenCode; `exact_replay` additionally
+  permits visible text or tool calls but byte-exactly matches reasoning, visible
+  text, and normalized tool calls. A replay publishes nothing until the entire
+  delivered prefix matches, and divergence or early end fails closed. Every
+  recovery attempt is a real SDK send and consumes quota. Override with
+  `KIRO_STREAM_RECOVERY_MODE`.
+- `stream_recovery_reuse_conversation_id_across_accounts`: Recovery attempts
+  on the same account always reuse one transformed semantic request. After an
+  account switch, the default `false` performs a fresh transform and uses a new
+  Kiro `conversationId`; unchanged normalized semantics remain correlated by
+  the same recovery group. Set this experimental option to `true` only to reuse
+  the original `conversationId` with a different account envelope. This has not
+  been validated by a real Kiro cross-account A/B and does not guarantee
+  deterministic model output. Override with
+  `KIRO_STREAM_RECOVERY_REUSE_CONVERSATION_ID_ACROSS_ACCOUNTS`.
 - `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms, default:
   `300000`). An access token within this window of expiry is treated as expired
   and refreshed on next use.
@@ -212,9 +240,12 @@ Three independent limits prevent unbounded growth:
   not block streaming.
 
 `enable_log_api_request` remains off by default. When it is off, routine
-successful request payloads are not recorded, but `plugin.log` and detailed
-records for failed upstream requests are still retained for diagnosis. All log
-settings can also be overridden with `KIRO_LOG_RETENTION_DAYS`,
+successful request payloads are not recorded. Failed upstream requests retain
+only a sanitized request/response pair: the request body is `null`, the account
+is a process-local alias, and no prompt, tool payload, email, raw account ID,
+token, or `profileArn` is written. Enabling the option records the original
+diagnostic request shape and may include prompt/tool payloads and account email.
+All log settings can also be overridden with `KIRO_LOG_RETENTION_DAYS`,
 `KIRO_LOG_MAX_TOTAL_SIZE_MB`, `KIRO_LOG_COMPRESS_AFTER_DAYS`, and
 `KIRO_LOG_SEGMENT_SIZE_MB`.
 
@@ -222,16 +253,20 @@ settings can also be overridden with `KIRO_LOG_RETENTION_DAYS`,
 
 Stream health is tracked in `plugin.log` independently from
 `enable_log_api_request`, so you can measure upstream stream failures without
-recording prompt or tool payloads. Two records anchor that measurement, and
-every stream log line carries a fixed set of volume-only fields.
+recording prompt or tool payloads. A start record and a terminal record bound
+each inbound streaming request; attempt-level records carry the details needed
+to explain recovery.
 
 **`Kiro stream request started`** (INFO) is written exactly once per inbound
 streaming request, unconditionally — it does not depend on
 `enable_log_api_request`, and non-streaming requests are not recorded. Fields:
-`conversationId`, `model`, `effectiveModel`, `processId`. This is the
-denominator every stream-failure rate is measured against, so an account switch
-or HTTP-error retry inside the same inbound request still produces only one
-record. The string is a grep target for log-analysis scripts; it is exported as
+`recoveryGroupId`, `semanticFingerprint`, `wireConversationId`,
+`conversationId`, `requestKind`, `sameSemanticAsInitial`,
+`sameConversationIdAsInitial`, `model`, `effectiveModel`, `effort`,
+`streamDeliveryMode`, and `processId`. This is the denominator every
+stream-failure rate is measured against, so an account switch or HTTP-error
+retry inside the same inbound request still produces only one record. The
+string is a grep target for log-analysis scripts; it is exported as
 `STREAM_REQUEST_STARTED_LOG` from `src/core/request/request-handler.ts` and is
 treated as a stable contract.
 
@@ -239,29 +274,36 @@ treated as a stable contract.
 `STREAM_MISSING_COMPLETION_LOG`, `outcome:
 'clean_eof_without_completion_metadata'`) fires when the upstream event stream
 ends cleanly but never sent completion metadata. The response still completes
-normally, exactly as before — this record adds no behavior change, it only makes
-a case visible that previously left no trace at all. A rising count here means
-upstream is closing streams early without erroring, which is worth watching even
-though nothing fails today.
+normally, exactly as before. This endpoint commonly omits completion metadata,
+so the warning is transport-shape telemetry, not evidence of truncation and
+never triggers recovery by itself.
 
-Every stream log record — the clean-EOF warning above and each stream failure
-outcome (`retrying`, `exhausted`, `terminated_after_output`,
-`ignored_after_completion_metadata`, `recovered`) — carries these shared fields:
+Attempt-level stream records — the clean-EOF warning above and each stream
+failure outcome (`retrying`, `exhausted`, `terminated_after_output`,
+`ignored_after_completion_metadata`, `recovered`) — carry these shared fields:
 
-| Field                                       | Meaning                                                                          |
-| ------------------------------------------- | -------------------------------------------------------------------------------- |
-| `conversationId`, `model`, `effectiveModel` | Request identity and the resolved wire model                                     |
-| `region`, `account`, `accountId`            | Which account and region served the attempt                                      |
-| `streamAttempt`, `maxStreamAttempts`        | Attempt number and the `stream_max_attempts` cap                                 |
-| `streamDeliveryMode`                        | `buffered` or `live`, from `stream_buffer_until_complete`                        |
-| `sdkHttpKeepAlive`                          | The effective `sdk_http_keep_alive` value                                        |
-| `processId`, `bunVersion`                   | OS process id and the Bun runtime version                                        |
-| `upstreamEventCount`                        | Raw upstream events seen in this attempt                                         |
-| `streamElapsedMs`                           | Wall time from the start of this stream attempt                                  |
-| `emittedReasoningChars`                     | Character count of reasoning text already emitted                                |
-| `emittedVisibleChars`                       | Character count of visible reply text already emitted                            |
-| `emittedToolCount`                          | Number of tool calls already emitted                                             |
-| `sawToolIntent`                             | Whether upstream showed tool intent, including a partial or discarded tool event |
+| Field                                                          | Meaning                                                                           |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `recoveryGroupId`, `semanticFingerprint`, `wireConversationId` | Stable recovery correlation, normalized semantics, and actual Kiro wire ID        |
+| `requestKind`, `sameSemanticAsInitial`                         | Request classification and whether the transformed semantics drifted              |
+| `sameConversationIdAsInitial`                                  | Whether this attempt reused the first attempt's Kiro conversation ID              |
+| `model`, `effectiveModel`, `effort`, `region`                  | Requested and resolved model settings and region                                  |
+| `accountAlias`                                                 | Process-local alias; raw account IDs and email are omitted                        |
+| `streamAttempt`, `maxStreamAttempts`                           | Attempt number and the `stream_max_attempts` cap                                  |
+| `streamDeliveryMode`                                           | `buffered` or `live`, including compaction-only atomic buffering                  |
+| `sdkHttpKeepAlive`                                             | The effective `sdk_http_keep_alive` value                                         |
+| `processId`, `bunVersion`                                      | OS process id and the Bun runtime version                                         |
+| `upstreamEventCount`, `streamElapsedMs`                        | Raw upstream events and wall time for this attempt                                |
+| `emittedReasoningChars`, `emittedVisibleChars`                 | Character counts already observed in the two text channels                        |
+| `emittedToolCount`, `sawToolIntent`                            | Published tool count and any complete, partial, or discarded upstream tool intent |
+
+**`Kiro stream request terminal`** (INFO, exported as
+`STREAM_TERMINAL_LOG`) is written exactly once for every started stream,
+including success, failure, cancellation, and recovery. Recovery terminals add
+`attemptsUsed`, `accountsTried`, `accountAliases`, `initialFailure`,
+`finalFailure`, `recovered`, `quotaRelevant`, and `terminalSource`. Correlate it
+with the start and attempt records using `recoveryGroupId`; do not infer a root
+cause from the UI's generic error text alone.
 
 The last four are lengths, counts, and a boolean only. No reasoning text, reply
 text, or tool arguments are ever written to these records — a character count

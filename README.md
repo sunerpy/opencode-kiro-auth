@@ -119,6 +119,14 @@ continuity over live output even after a mid-stream failure,
 [stream recovery configuration](docs/CONFIGURATION.md#options) for the
 different latency and quota tradeoffs.
 
+OpenCode compaction summaries are buffered atomically by default
+(`"compaction_buffer_until_complete": true`): a failed summary attempt is
+discarded before OpenCode can persist a partial summary, while ordinary chat
+requests still stream live. Recovery attempts on the same account also reuse
+one transformed Kiro request and `conversationId`. Reusing that wire identity
+after an account switch remains experimental and disabled by default via
+`stream_recovery_reuse_conversation_id_across_accounts`.
+
 Paid-overage protection is on by default; see
 [Overage protection](docs/CONFIGURATION.md#overage-protection) before disabling
 `stop_on_overage`.
@@ -246,11 +254,13 @@ accounts", `/connect` vs `opencode auth login`, and Kiro CLI OAuth users whose
 sync doesn't start — are covered in
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
-`Kiro upstream event stream failed unexpectedly` means the upstream HTTP 200
-event stream ended before completion metadata. Live-stream mode cannot safely
-replay after output because that could duplicate text or execute a tool twice.
-Enable `stream_buffer_until_complete` when task continuity is more important
-than seeing tokens arrive live.
+`Kiro upstream event stream failed unexpectedly` means an HTTP 200 event stream
+failed during iteration and the bounded recovery policy was exhausted or could
+not safely continue. It is distinct from the benign
+`Kiro stream ended without completion metadata` warning. Compaction summaries
+are already atomic by default; for ordinary requests, enable
+`stream_buffer_until_complete` when task continuity is more important than
+seeing tokens arrive live.
 
 ## Migration
 

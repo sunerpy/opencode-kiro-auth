@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { KIRO_REQUEST_KIND_HEADER } from '../core/request/request-kind.js'
 import { __getActiveKeepAliveControllerForTest, createKiroPlugin } from '../plugin.js'
 
 const PROVIDER_ID = 'kiro-auth'
@@ -143,6 +144,47 @@ describe('provider hook', () => {
   test('provider hook id matches the plugin id', async () => {
     const plugin = await initPlugin()
     expect(plugin.provider.id).toBe(PROVIDER_ID)
+  })
+})
+
+describe('chat.headers hook', () => {
+  test('marks only kiro-auth compaction requests', async () => {
+    const plugin = await initPlugin()
+    const hook = (plugin as any)['chat.headers']
+    expect(typeof hook).toBe('function')
+
+    const compaction = { headers: {} as Record<string, string> }
+    await hook(
+      {
+        agent: 'compaction',
+        model: { providerID: PROVIDER_ID },
+        provider: { info: { id: PROVIDER_ID } }
+      },
+      compaction
+    )
+    expect(compaction.headers[KIRO_REQUEST_KIND_HEADER]).toBe('compaction')
+
+    const normal = { headers: {} as Record<string, string> }
+    await hook(
+      {
+        agent: 'build',
+        model: { providerID: PROVIDER_ID },
+        provider: { info: { id: PROVIDER_ID } }
+      },
+      normal
+    )
+    expect(normal.headers).toEqual({})
+
+    const otherProvider = { headers: {} as Record<string, string> }
+    await hook(
+      {
+        agent: 'compaction',
+        model: { providerID: 'other-provider' },
+        provider: { info: { id: 'other-provider' } }
+      },
+      otherProvider
+    )
+    expect(otherProvider.headers).toEqual({})
   })
 })
 

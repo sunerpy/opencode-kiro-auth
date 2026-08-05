@@ -214,11 +214,21 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       config.stream_buffer_until_complete
     ),
 
+    compaction_buffer_until_complete: parseBooleanEnv(
+      env.KIRO_COMPACTION_BUFFER_UNTIL_COMPLETE,
+      config.compaction_buffer_until_complete
+    ),
+
     stream_max_attempts: parseNumberEnv(env.KIRO_STREAM_MAX_ATTEMPTS, config.stream_max_attempts),
 
     stream_recovery_mode: env.KIRO_STREAM_RECOVERY_MODE
       ? StreamRecoveryModeSchema.catch('off').parse(env.KIRO_STREAM_RECOVERY_MODE)
       : config.stream_recovery_mode,
+
+    stream_recovery_reuse_conversation_id_across_accounts: parseBooleanEnv(
+      env.KIRO_STREAM_RECOVERY_REUSE_CONVERSATION_ID_ACROSS_ACCOUNTS,
+      config.stream_recovery_reuse_conversation_id_across_accounts
+    ),
 
     token_expiry_buffer_ms: parseNumberEnv(
       env.KIRO_TOKEN_EXPIRY_BUFFER_MS,

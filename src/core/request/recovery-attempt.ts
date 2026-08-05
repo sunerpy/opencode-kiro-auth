@@ -7,6 +7,11 @@ import * as logger from '../../plugin/logger'
 import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output'
 import { StreamObserver } from '../../plugin/streaming/stream-observer'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
+import {
+  accountLogAlias,
+  recoveryIdentityLogFields,
+  type RecoverySemanticSnapshot
+} from './recovery-request-identity'
 import type {
   ResponseHandler,
   SdkCompletionPayload,
@@ -32,6 +37,7 @@ export type RecoveryAttemptSeed = {
   readonly account: ManagedAccount
   readonly auth: KiroAuthDetails
   readonly prepared: SdkPreparedRequest
+  readonly snapshot: RecoverySemanticSnapshot
   readonly observer: StreamObserver
   readonly emitted: EmittedOutputAccumulator
   readonly eventCount: number
@@ -58,7 +64,13 @@ export type RecoveryAttemptServices = {
     auth: KiroAuthDetails
   ) => Promise<{ readonly account: ManagedAccount; readonly shouldContinue: boolean }>
   readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>
-  readonly prepareRequest: (account: ManagedAccount, auth: KiroAuthDetails) => SdkPreparedRequest
+  readonly prepareRequest: (
+    account: ManagedAccount,
+    auth: KiroAuthDetails
+  ) => {
+    readonly prepared: SdkPreparedRequest
+    readonly snapshot: RecoverySemanticSnapshot
+  }
   readonly makeSdkClient: (
     auth: KiroAuthDetails,
     prepared: SdkPreparedRequest
@@ -138,12 +150,12 @@ export class RecoveryAttemptFactory {
     const logDetails = (details: Record<string, unknown> = {}): Record<string, unknown> => {
       const observed = state.observer.snapshot()
       return {
-        conversationId: state.prepared.conversationId,
+        ...recoveryIdentityLogFields(state.snapshot),
         model: this.request.model,
         effectiveModel: state.prepared.effectiveModel,
+        effort: state.prepared.effort,
         region: state.prepared.region,
-        account: state.account.email,
-        accountId: state.account.id,
+        accountAlias: accountLogAlias(state.account.id),
         streamAttempt: absoluteAttempt,
         maxStreamAttempts: this.config.stream_max_attempts,
         streamDeliveryMode: 'live',
@@ -286,10 +298,12 @@ export class RecoveryAttemptFactory {
       )
     }
     auth = this.services.toAuthDetails(account)
+    const request = this.services.prepareRequest(account, auth)
     return {
       account,
       auth,
-      prepared: this.services.prepareRequest(account, auth),
+      prepared: request.prepared,
+      snapshot: request.snapshot,
       observer: new StreamObserver(),
       emitted: new EmittedOutputAccumulator(),
       eventCount: 0,

@@ -236,7 +236,7 @@ describe('§6.8 redaction — plugin log sink', () => {
 describe('§6.8 redaction — outbound request log payload', () => {
   test('the production payload carries only a sanitized reasoning summary', () => {
     const prep = signedPrep()
-    const payload = buildSdkRequestLogPayload(prep, { email: 'user@example.com' })
+    const payload = buildSdkRequestLogPayload(prep, { id: 'acct-log-a', email: 'user@example.com' })
     const serialized = JSON.stringify(payload)
 
     expectNoLeak(serialized)
@@ -245,6 +245,7 @@ describe('§6.8 redaction — outbound request log payload', () => {
     expect(serialized).toContain(sha256Prefix(SIG))
     expect(serialized).toContain(`"historyLength":${prep.conversationState.history?.length ?? 0}`)
     expect(serialized).toContain('"currentMessage"')
+    expect(serialized).toMatch(/"accountAlias":"account-\d+"/)
   })
 
   test('a request with no reasoning omits the summary entirely', () => {
@@ -254,7 +255,9 @@ describe('§6.8 redaction — outbound request log payload', () => {
       MODEL,
       auth
     )
-    const serialized = JSON.stringify(buildSdkRequestLogPayload(prep, { email: 'u@example.com' }))
+    const serialized = JSON.stringify(
+      buildSdkRequestLogPayload(prep, { id: 'acct-log-b', email: 'u@example.com' })
+    )
     expect(serialized).not.toContain('historyReasoning')
   })
 })
