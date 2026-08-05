@@ -27,6 +27,10 @@ export type Effort = z.infer<typeof EffortSchema>
 export const StreamRecoveryModeSchema = z.enum(['off', 'reasoning_restart', 'exact_replay'])
 export type StreamRecoveryMode = z.infer<typeof StreamRecoveryModeSchema>
 
+/** Privacy-safe structural diagnostics for request assembly and stream termination. */
+export const DiagnosticLogLevelSchema = z.enum(['off', 'basic', 'verbose'])
+export type DiagnosticLogLevel = z.infer<typeof DiagnosticLogLevelSchema>
+
 export const RegionSchema = z.enum([
   'us-east-1',
   'us-east-2',
@@ -221,6 +225,12 @@ export const KiroConfigSchema = z.object({
   enable_log_api_request: z.boolean().default(false),
 
   /**
+   * Emit privacy-safe request correlation and shape diagnostics. No level logs
+   * prompt text, reasoning text, tool arguments, signatures, or account data.
+   */
+  diagnostic_log_level: DiagnosticLogLevelSchema.default('off'),
+
+  /**
    * Delete archived and detailed logs after this many days.
    */
   log_retention_days: z.number().int().min(1).max(365).default(7),
@@ -301,6 +311,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   auto_sync_kiro_cli: false,
   enable_log_api_request: false,
   log_retention_days: 7,
+  diagnostic_log_level: 'off',
   log_max_total_size_mb: 512,
   log_compress_after_days: 1,
   log_segment_size_mb: 16,

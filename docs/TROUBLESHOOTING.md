@@ -3,6 +3,58 @@
 See the root [README](../README.md#troubleshooting) for a one-line pointer to
 this doc.
 
+## Assistant announces a next step, then the task ends
+
+Do not diagnose this from the assistant's wording alone. A sentence such as
+"I will dispatch the next task" is plain model output unless the persisted
+assistant message also contains a tool part.
+
+For one controlled reproduction, set:
+
+```json
+{
+  "diagnostic_log_level": "verbose",
+  "enable_log_api_request": false
+}
+```
+
+Restart every OpenCode/ACP process that may load the plugin. The diagnostic
+level is read at plugin startup. Then reproduce once and inspect
+`~/.config/opencode/kiro-auth-plugin/logs/plugin.log*` for:
+
+```bash
+rg -n \
+  'Kiro request shape diagnostics|Kiro stream attempt started|Kiro stream request terminal|Kiro SDK event stream iteration failed' \
+  ~/.config/opencode/kiro-auth-plugin/logs/plugin.log*
+```
+
+Correlate records by `diagnosticTraceId` or `sessionHash`, then compare them
+with the assistant message's persisted `finish`, `error`, and part types in
+OpenCode:
+
+- `inputToolCount > 0` but `wireCurrentToolCount == 0` points to request
+  conversion or current-message assembly.
+- `terminalProvenance:"clean_eof"`, `sawToolIntent:false`, and zero emitted
+  tools means Kiro ended cleanly without observable tool intent. The plugin
+  emitted `finish_reason:"stop"` because its compatibility terminal chunk is
+  synthesized from the zero tool count; this is not a native Kiro stop marker.
+- `sawToolIntent:true` plus no emitted tool and an error/truncation terminal
+  points to a tool stream that failed before completion/publication.
+- `terminalProvenance:"upstream_error"` is a transport/Kiro stream incident,
+  not a normal stop.
+- No matching diagnostic trace usually means the expected plugin version or
+  config was not loaded, the process was not restarted, or the request used a
+  different provider.
+
+Even `verbose` does not log prompt/reasoning text, tool names/arguments/results,
+signatures, accounts, email, ARN, or raw OpenCode IDs. It does emit linkable
+hashes and detailed structural telemetry, so return `diagnostic_log_level` to
+`off` after collecting the incident.
+
+For the full field dictionary, decision matrix, DB/OMO correlation steps, and
+rollback criteria, see
+[the session-stop diagnostics rollout plan](SESSION_STOP_DIAGNOSTICS_ROLLOUT_PLAN.md).
+
 ## Error: Status: 403 (AccessDeniedException / User is not authorized)
 
 If you're using **IAM Identity Center** (a custom Start URL), the Q Developer /

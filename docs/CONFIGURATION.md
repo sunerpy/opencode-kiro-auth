@@ -38,6 +38,7 @@ root [README](../README.md#configuration) for the short version.
   "usage_tracking_enabled": true,
   "auto_effort_mapping": true,
   "enable_log_api_request": false,
+  "diagnostic_log_level": "off",
   "log_retention_days": 7,
   "log_max_total_size_mb": 512,
   "log_compress_after_days": 1,
@@ -207,6 +208,13 @@ because moving a live database during an upgrade is unsafe.
 - `enable_log_api_request`: Enable detailed API request logging (default:
   `false`). Keep this off unless you are actively diagnosing a request because
   records may contain prompt and tool payloads.
+- `diagnostic_log_level`: Emit privacy-safe request-shape, correlation, and
+  stream-terminal diagnostics (`off` | `basic` | `verbose`, default: `off`).
+  This is independent from `enable_log_api_request`: even `verbose` records
+  only counts, bounded role sequences, enums, booleans, UUIDs, and truncated
+  SHA-256 hashes. It never records prompt/reasoning text, tool names,
+  arguments/results, signatures, account data, email, ARN, or raw
+  session/message IDs. Override with `KIRO_DIAGNOSTIC_LOG_LEVEL`.
 - `log_retention_days`: Delete archived and detailed logs older than this many
   days (1-365, default: `7`).
 - `log_max_total_size_mb`: Maximum combined size of managed logs
@@ -249,6 +257,44 @@ All log settings can also be overridden with `KIRO_LOG_RETENTION_DAYS`,
 `KIRO_LOG_MAX_TOTAL_SIZE_MB`, `KIRO_LOG_COMPRESS_AFTER_DAYS`, and
 `KIRO_LOG_SEGMENT_SIZE_MB`.
 
+## Diagnostic log levels
+
+`diagnostic_log_level` is intended for the specific failure class where an
+assistant says it will perform another action but the persisted turn ends
+without a tool call. It changes logging only; it does not change request
+conversion, tool parsing, recovery, buffering, retries, account selection, or
+stream concurrency.
+
+| Level     | Additional records                                                                                                              |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `off`     | No diagnostic correlation or request-shape records. Existing stream health records remain unchanged.                            |
+| `basic`   | Per-request trace, hashed OpenCode identities, role/tool counts, current-turn kind, and terminal provenance.                    |
+| `verbose` | Everything in `basic`, plus bounded role sequences, marker/repair counts, tool-set hashes, and image/reasoning-envelope counts. |
+
+When enabled, the `chat.headers` hook adds a random `diagnosticTraceId` and
+one-way 16-hex SHA-256 prefixes for the OpenCode session, agent, and message
+identities. The plugin validates and consumes those private headers at its
+request boundary; they are not copied into the CodeWhisperer SDK request.
+Hashes support cross-log correlation without writing raw identities, but they
+are still linkable metadata. Return the level to `off` after collecting a
+reproduction.
+
+**`Kiro request shape diagnostics`** is written once after the inbound body has
+been transformed to the Kiro wire shape. `basic` fields compare input message,
+role, tool-use/result counts with history/current-message counts on the wire.
+`verbose` adds:
+
+- the last 64 role codes for input and wire messages;
+- whether wire history alternates user/assistant roles;
+- counts for empty assistant turns, synthetic marker hits, orphan repairs,
+  flattened orphan results, and reasoning envelopes;
+- hashes of input and wire tool-name sets, never the names themselves;
+- inferred-tool and current-image counts.
+
+The record is an observation of the actual transformed request. It does not
+infer intent from assistant prose and cannot prove that a model should have
+called a tool.
+
 ## Stream observability logging
 
 Stream health is tracked in `plugin.log` independently from
@@ -269,6 +315,13 @@ retry inside the same inbound request still produces only one record. The
 string is a grep target for log-analysis scripts; it is exported as
 `STREAM_REQUEST_STARTED_LOG` from `src/core/request/request-handler.ts` and is
 treated as a stable contract.
+
+With `diagnostic_log_level` enabled, start, attempt, warning, failure, and
+terminal records also carry `diagnosticTraceId`, `sessionHash`, `agentHash`,
+`messageHash`, and `diagnosticLogLevel`. **`Kiro stream attempt started`** is
+then emitted once for every actual SDK stream attempt, including recovery
+attempts. This distinguishes “the model said it would retry” from a real second
+SDK send.
 
 **`Kiro stream ended without completion metadata`** (WARN, exported as
 `STREAM_MISSING_COMPLETION_LOG`, `outcome:
@@ -304,6 +357,23 @@ including success, failure, cancellation, and recovery. Recovery terminals add
 `finalFailure`, `recovered`, `quotaRelevant`, and `terminalSource`. Correlate it
 with the start and attempt records using `recoveryGroupId`; do not infer a root
 cause from the UI's generic error text alone.
+
+At `basic` or `verbose`, terminal records add:
+
+- `terminalProvenance`: `clean_eof`, `completion_metadata`,
+  `semantic_truncation`, `caller_abort`, `recovery_exhausted`,
+  `upstream_error`, `processing_error`, or `unknown`;
+- `downstreamFinishReason`: `stop` or `tool-calls` only for a clean end,
+  otherwise `null`;
+- `downstreamFinishReasonProvenance`: `synthesized_from_tool_count` for a clean
+  end, otherwise `null`.
+
+Kiro commonly ends cleanly without completion metadata. In that case the
+plugin's OpenAI-compatible terminal chunk is derived from the transformed tool
+count: zero tools becomes `stop`, one or more becomes `tool-calls`. This field
+makes that provenance explicit; it is not evidence that Kiro sent a native
+`stop` decision and must not be used to guess tool intent from natural-language
+text.
 
 The last four are lengths, counts, and a boolean only. No reasoning text, reply
 text, or tool arguments are ever written to these records — a character count

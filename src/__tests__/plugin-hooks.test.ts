@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { KIRO_REQUEST_KIND_HEADER } from '../core/request/request-kind.js'
+import {
+  hashDiagnosticIdentity,
+  KIRO_DIAGNOSTIC_AGENT_HEADER,
+  KIRO_DIAGNOSTIC_MESSAGE_HEADER,
+  KIRO_DIAGNOSTIC_SESSION_HEADER,
+  KIRO_DIAGNOSTIC_TRACE_HEADER,
+  KIRO_REQUEST_KIND_HEADER
+} from '../core/request/request-kind.js'
 import { __getActiveKeepAliveControllerForTest, createKiroPlugin } from '../plugin.js'
 
 const PROVIDER_ID = 'kiro-auth'
@@ -179,6 +186,61 @@ describe('chat.headers hook', () => {
     await hook(
       {
         agent: 'compaction',
+        model: { providerID: 'other-provider' },
+        provider: { info: { id: 'other-provider' } }
+      },
+      otherProvider
+    )
+    expect(otherProvider.headers).toEqual({})
+  })
+
+  test('verbose diagnostics attach only hashed OpenCode correlation identities', async () => {
+    const previous = process.env.KIRO_DIAGNOSTIC_LOG_LEVEL
+    process.env.KIRO_DIAGNOSTIC_LOG_LEVEL = 'verbose'
+    let plugin: Awaited<ReturnType<typeof initPlugin>>
+    try {
+      plugin = await initPlugin()
+    } finally {
+      if (previous === undefined) delete process.env.KIRO_DIAGNOSTIC_LOG_LEVEL
+      else process.env.KIRO_DIAGNOSTIC_LOG_LEVEL = previous
+    }
+    const hook = (plugin as any)['chat.headers']
+    const output = { headers: {} as Record<string, string> }
+
+    await hook(
+      {
+        sessionID: 'ses-private-correlation',
+        agent: 'private-build-agent',
+        message: { id: 'msg-private-correlation' },
+        model: { providerID: PROVIDER_ID },
+        provider: { info: { id: PROVIDER_ID } }
+      },
+      output
+    )
+
+    expect(output.headers[KIRO_DIAGNOSTIC_TRACE_HEADER]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    )
+    expect(output.headers[KIRO_DIAGNOSTIC_SESSION_HEADER]).toBe(
+      hashDiagnosticIdentity('ses-private-correlation')
+    )
+    expect(output.headers[KIRO_DIAGNOSTIC_AGENT_HEADER]).toBe(
+      hashDiagnosticIdentity('private-build-agent')
+    )
+    expect(output.headers[KIRO_DIAGNOSTIC_MESSAGE_HEADER]).toBe(
+      hashDiagnosticIdentity('msg-private-correlation')
+    )
+    const serialized = JSON.stringify(output.headers)
+    expect(serialized).not.toContain('ses-private-correlation')
+    expect(serialized).not.toContain('private-build-agent')
+    expect(serialized).not.toContain('msg-private-correlation')
+
+    const otherProvider = { headers: {} as Record<string, string> }
+    await hook(
+      {
+        sessionID: 'ses-private-correlation',
+        agent: 'private-build-agent',
+        message: { id: 'msg-private-correlation' },
         model: { providerID: 'other-provider' },
         provider: { info: { id: 'other-provider' } }
       },

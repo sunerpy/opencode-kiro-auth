@@ -38,6 +38,7 @@ const KIRO_ENV_KEYS = [
   'KIRO_AUTH_SERVER_PORT_RANGE',
   'KIRO_USAGE_TRACKING_ENABLED',
   'KIRO_ENABLE_LOG_API_REQUEST',
+  'KIRO_DIAGNOSTIC_LOG_LEVEL',
   'KIRO_LOG_RETENTION_DAYS',
   'KIRO_LOG_MAX_TOTAL_SIZE_MB',
   'KIRO_LOG_COMPRESS_AFTER_DAYS',
@@ -114,6 +115,7 @@ describe('loadConfig defaults', () => {
     expect(cfg.usage_tracking_enabled).toBe(true)
     expect(cfg.auto_sync_kiro_cli).toBe(false)
     expect(cfg.enable_log_api_request).toBe(false)
+    expect(cfg.diagnostic_log_level).toBe('off')
     expect(cfg.log_retention_days).toBe(7)
     expect(cfg.log_max_total_size_mb).toBe(512)
     expect(cfg.log_compress_after_days).toBe(1)
@@ -132,6 +134,8 @@ describe('loadConfig defaults', () => {
       false
     )
     expect(DEFAULT_CONFIG.stream_recovery_reuse_conversation_id_across_accounts).toBe(false)
+    expect(KiroConfigSchema.parse({}).diagnostic_log_level).toBe('off')
+    expect(DEFAULT_CONFIG.diagnostic_log_level).toBe('off')
   })
 })
 
@@ -212,6 +216,16 @@ describe('loadConfig env overrides', () => {
   test('invalid recovery mode env falls back to off (schema .catch)', () => {
     process.env.KIRO_STREAM_RECOVERY_MODE = 'hybrid_experimental'
     expect(loadConfig(projectDir).stream_recovery_mode).toBe('off')
+  })
+
+  test('KIRO_DIAGNOSTIC_LOG_LEVEL selects privacy-safe request diagnostics', () => {
+    process.env.KIRO_DIAGNOSTIC_LOG_LEVEL = 'verbose'
+    expect(loadConfig(projectDir).diagnostic_log_level).toBe('verbose')
+  })
+
+  test('invalid diagnostic log level env falls back to off', () => {
+    process.env.KIRO_DIAGNOSTIC_LOG_LEVEL = 'full-prompt'
+    expect(loadConfig(projectDir).diagnostic_log_level).toBe('off')
   })
 
   test('number env overrides parse numerically', () => {
@@ -318,6 +332,14 @@ describe('loadConfig file merge', () => {
   test('user file accepts the exact replay recovery mode', () => {
     writeUserConfig({ stream_recovery_mode: 'exact_replay' })
     expect(loadConfig(projectDir).stream_recovery_mode).toBe('exact_replay')
+  })
+
+  test('user file accepts the basic diagnostic level and rejects unknown levels', () => {
+    writeUserConfig({ diagnostic_log_level: 'basic' })
+    expect(loadConfig(projectDir).diagnostic_log_level).toBe('basic')
+
+    writeUserConfig({ diagnostic_log_level: 'unsafe' })
+    expect(loadConfig(projectDir).diagnostic_log_level).toBe('off')
   })
 
   test('the config literal union stays assignable to the coordinator mode', () => {
