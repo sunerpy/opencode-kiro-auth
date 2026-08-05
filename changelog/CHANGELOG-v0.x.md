@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.19.0...v0.20.0) (2026-08-05)
+
+
+### Features
+
+* **request:** add privacy-safe session-stop diagnostics ([#89](https://github.com/sunerpy/opencode-kiro-auth/issues/89)) ([a1aaeff](https://github.com/sunerpy/opencode-kiro-auth/commit/a1aaeffba5c1e41272bcda56a43556cc0cefc93b))
+
 ## [0.19.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.18.0...v0.19.0) (2026-08-05)
 
 
