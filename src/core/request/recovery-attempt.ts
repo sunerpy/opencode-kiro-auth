@@ -5,13 +5,18 @@ import {
 import type { KiroConfig } from '../../plugin/config'
 import * as logger from '../../plugin/logger'
 import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output'
-import { StreamObserver } from '../../plugin/streaming/stream-observer'
+import { StreamObserver, type RequestTerminalSource } from '../../plugin/streaming/stream-observer'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import {
   accountLogAlias,
   recoveryIdentityLogFields,
   type RecoverySemanticSnapshot
 } from './recovery-request-identity'
+import {
+  buildStreamTerminalDiagnostics,
+  diagnosticContextLogFields,
+  type DiagnosticContext
+} from './request-shape-diagnostics'
 import type {
   ResponseHandler,
   SdkCompletionPayload,
@@ -19,7 +24,7 @@ import type {
   SdkStreamingAttempt
 } from './response-handler'
 import { SdkEventStreamIterationError } from './stream-error'
-import { STREAM_MISSING_COMPLETION_LOG } from './stream-log-events'
+import { STREAM_ATTEMPT_STARTED_LOG, STREAM_MISSING_COMPLETION_LOG } from './stream-log-events'
 
 type RecoveryConfig = Pick<
   KiroConfig,
@@ -54,6 +59,7 @@ export type RecoveryRequestContext = {
   readonly inheritedLoopId: string | undefined
   readonly signal: AbortSignal
   readonly priorStreamFailures: number
+  readonly diagnosticContext: DiagnosticContext
 }
 
 export type RecoveryAttemptServices = {
@@ -149,7 +155,11 @@ export class RecoveryAttemptFactory {
     const streamStartedAt = new Date(state.startedAt).toISOString()
     const logDetails = (details: Record<string, unknown> = {}): Record<string, unknown> => {
       const observed = state.observer.snapshot()
+      const emittedToolCount = state.emitted.toolUses().length
+      const terminalSource =
+        (details.terminalSource as RequestTerminalSource | undefined) ?? observed.terminalSource
       return {
+        ...diagnosticContextLogFields(this.request.diagnosticContext),
         ...recoveryIdentityLogFields(state.snapshot),
         model: this.request.model,
         effectiveModel: state.prepared.effectiveModel,
@@ -168,7 +178,7 @@ export class RecoveryAttemptFactory {
         streamElapsedMs: Date.now() - state.startedAt,
         emittedReasoningChars: state.emitted.reasoningText.length,
         emittedVisibleChars: state.emitted.visibleText.length,
-        emittedToolCount: state.emitted.toolUses().length,
+        emittedToolCount,
         sawToolIntent: observed.sawToolIntent,
         hasOpenToolIntent: observed.hasOpenToolIntent,
         reasoningPhase: observed.reasoningPhase,
@@ -176,9 +186,18 @@ export class RecoveryAttemptFactory {
         dialectMarkerIndex: observed.dialectMarkerIndex,
         dialectMarkerInCodeRegion: observed.dialectMarkerInCodeRegion,
         dialectResolution: observed.dialectResolution,
-        terminalSource: observed.terminalSource,
+        ...buildStreamTerminalDiagnostics(
+          this.request.diagnosticContext.level,
+          terminalSource,
+          emittedToolCount
+        ),
+        terminalSource,
         ...details
       }
+    }
+
+    if (attemptIndex > 1 && this.request.diagnosticContext.level !== 'off') {
+      logger.log(STREAM_ATTEMPT_STARTED_LOG, logDetails({ outcome: 'started' }))
     }
 
     if (state.apiTimestamp && attemptIndex > 1) {

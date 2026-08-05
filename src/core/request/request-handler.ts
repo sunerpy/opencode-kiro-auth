@@ -34,18 +34,31 @@ import {
   recoveryIdentityLogFields,
   type RecoverySemanticSnapshot
 } from './recovery-request-identity'
-import { consumeKiroRequestKind, type KiroRequestKind } from './request-kind'
+import {
+  consumeKiroRequestMetadata,
+  type KiroRequestDiagnostics,
+  type KiroRequestKind
+} from './request-kind'
+import {
+  buildRequestShapeDiagnostics,
+  buildStreamTerminalDiagnostics,
+  createDiagnosticContext,
+  diagnosticContextLogFields,
+  REQUEST_SHAPE_DIAGNOSTICS_LOG
+} from './request-shape-diagnostics'
 import { ResponseHandler, type SdkCompletionPayload } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 import { buildSdkRequestLogPayload } from './sdk-log-payload'
 import { SdkEventStreamIterationError, UpstreamUnexpectedError } from './stream-error'
 import {
+  STREAM_ATTEMPT_STARTED_LOG,
   STREAM_MISSING_COMPLETION_LOG,
   STREAM_REQUEST_STARTED_LOG,
   STREAM_TERMINAL_LOG
 } from './stream-log-events'
 
 export {
+  STREAM_ATTEMPT_STARTED_LOG,
   STREAM_MISSING_COMPLETION_LOG,
   STREAM_REQUEST_STARTED_LOG,
   STREAM_TERMINAL_LOG
@@ -133,9 +146,15 @@ export class RequestHandler {
       return fetch(input, init)
     }
 
-    const consumed = consumeKiroRequestKind(input, init)
+    const consumed = consumeKiroRequestMetadata(input, init)
     return this.enqueueKiroRequest(() =>
-      this.handleKiroRequest(url, consumed.init, showToast, consumed.requestKind)
+      this.handleKiroRequest(
+        url,
+        consumed.init,
+        showToast,
+        consumed.requestKind,
+        consumed.diagnostics
+      )
     )
   }
 
@@ -160,7 +179,8 @@ export class RequestHandler {
     url: string,
     init: any,
     showToast: ToastFunction,
-    requestKind: KiroRequestKind
+    requestKind: KiroRequestKind,
+    requestDiagnostics: KiroRequestDiagnostics
   ): Promise<Response> {
     const requestController = new AbortController()
     const inboundSignal = init?.signal as AbortSignal | undefined
@@ -219,6 +239,9 @@ export class RequestHandler {
     const bufferUntilComplete =
       this.config.stream_buffer_until_complete ||
       (requestKind === 'compaction' && this.config.compaction_buffer_until_complete)
+    const diagnosticLogLevel = this.config.diagnostic_log_level ?? 'off'
+    const diagnosticContext = createDiagnosticContext(diagnosticLogLevel, requestDiagnostics)
+    const diagnosticFields = diagnosticContextLogFields(diagnosticContext)
 
     let handlerContext: RequestContext = { retry: 0, forcedRefreshAccountIds: new Set<string>() }
     let semanticSnapshot: RecoverySemanticSnapshot | undefined
@@ -263,6 +286,7 @@ export class RequestHandler {
     }
     let consecutiveNullAccounts = 0
     let streamStartRecorded = false
+    let requestShapeRecorded = false
     let terminalSummaryRecorded = false
     let latestStreamLogDetails:
       ((details?: Record<string, unknown>) => Record<string, unknown>) | undefined
@@ -341,14 +365,27 @@ export class RequestHandler {
         const streamObserver = new StreamObserver()
         const emittedOutput = new EmittedOutputAccumulator()
         let upstreamEventCount = 0
-        // OpenCode's provider fetch boundary supplies only input/init; it exposes
-        // no session/message hook context. Keep real transport correlation below
-        // rather than emitting permanently empty sessionId/messageId fields.
+        if (diagnosticLogLevel !== 'off' && !requestShapeRecorded) {
+          requestShapeRecorded = true
+          logger.log(REQUEST_SHAPE_DIAGNOSTICS_LOG, {
+            ...diagnosticFields,
+            ...recoveryIdentityLogFields(sdkSnapshot),
+            requestKind,
+            model,
+            effectiveModel: sdkPrep.effectiveModel,
+            effort: sdkPrep.effort,
+            ...buildRequestShapeDiagnostics(body, sdkPrep, diagnosticLogLevel)
+          })
+        }
         const streamLogDetails = (
           details: Record<string, unknown> = {}
         ): Record<string, unknown> => {
           const observed = streamObserver.snapshot()
+          const emittedToolCount = emittedOutput.toolUses().length
+          const terminalSource =
+            (details.terminalSource as RequestTerminalSource | undefined) ?? observed.terminalSource
           return {
+            ...diagnosticFields,
             ...recoveryIdentityLogFields(sdkSnapshot),
             model,
             effectiveModel: sdkPrep.effectiveModel,
@@ -369,7 +406,7 @@ export class RequestHandler {
             // follows. A char count cannot reconstruct reasoning or reply text.
             emittedReasoningChars: emittedOutput.reasoningText.length,
             emittedVisibleChars: emittedOutput.visibleText.length,
-            emittedToolCount: emittedOutput.toolUses().length,
+            emittedToolCount,
             sawToolIntent: observed.sawToolIntent,
             hasOpenToolIntent: observed.hasOpenToolIntent,
             reasoningPhase: observed.reasoningPhase,
@@ -377,7 +414,8 @@ export class RequestHandler {
             dialectMarkerIndex: observed.dialectMarkerIndex,
             dialectMarkerInCodeRegion: observed.dialectMarkerInCodeRegion,
             dialectResolution: observed.dialectResolution,
-            terminalSource: observed.terminalSource,
+            ...buildStreamTerminalDiagnostics(diagnosticLogLevel, terminalSource, emittedToolCount),
+            terminalSource,
             ...details
           }
         }
@@ -386,6 +424,7 @@ export class RequestHandler {
         if (sdkPrep.streaming && streamAttempt === 1 && !streamStartRecorded) {
           streamStartRecorded = true
           logger.log(STREAM_REQUEST_STARTED_LOG, {
+            ...diagnosticFields,
             ...recoveryIdentityLogFields(sdkSnapshot),
             model,
             effectiveModel: sdkPrep.effectiveModel,
@@ -395,6 +434,9 @@ export class RequestHandler {
           })
         }
 
+        if (sdkPrep.streaming && diagnosticLogLevel !== 'off') {
+          logger.log(STREAM_ATTEMPT_STARTED_LOG, streamLogDetails({ outcome: 'started' }))
+        }
         if (this.config.enable_log_effort_debug) {
           try {
             logger.log('[effort-debug] request effort resolution', {
@@ -447,7 +489,8 @@ export class RequestHandler {
                 disableReasoningReplay: handlerContext.disableReasoningReplay === true,
                 inheritedLoopId,
                 signal,
-                priorStreamFailures
+                priorStreamFailures,
+                diagnosticContext
               },
               initial: {
                 account: acc,

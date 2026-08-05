@@ -2,7 +2,14 @@ import { KIRO_CONSTANTS } from './constants.js'
 import { AuthHandler } from './core/auth/auth-handler.js'
 import { KeepAliveController } from './core/auth/token-keepalive.js'
 import { RequestHandler } from './core/request/request-handler.js'
-import { KIRO_REQUEST_KIND_HEADER } from './core/request/request-kind.js'
+import {
+  hashDiagnosticIdentity,
+  KIRO_DIAGNOSTIC_AGENT_HEADER,
+  KIRO_DIAGNOSTIC_MESSAGE_HEADER,
+  KIRO_DIAGNOSTIC_SESSION_HEADER,
+  KIRO_DIAGNOSTIC_TRACE_HEADER,
+  KIRO_REQUEST_KIND_HEADER
+} from './core/request/request-kind.js'
 import { AccountCache } from './infrastructure/database/account-cache.js'
 import { AccountRepository } from './infrastructure/database/account-repository.js'
 import { AccountManager } from './plugin/accounts.js'
@@ -419,8 +426,18 @@ export const createKiroPlugin =
       },
       'chat.headers': async (input: any, output: { headers: Record<string, string> }) => {
         const providerID = input?.model?.providerID ?? input?.provider?.info?.id
-        if (input?.agent === 'compaction' && providerID === id) {
-          output.headers[KIRO_REQUEST_KIND_HEADER] = 'compaction'
+        if (providerID !== id) return
+        if (input?.agent === 'compaction') output.headers[KIRO_REQUEST_KIND_HEADER] = 'compaction'
+        if (config.diagnostic_log_level === 'off') return
+
+        output.headers[KIRO_DIAGNOSTIC_TRACE_HEADER] = crypto.randomUUID()
+        const identities = [
+          [KIRO_DIAGNOSTIC_SESSION_HEADER, hashDiagnosticIdentity(input?.sessionID)],
+          [KIRO_DIAGNOSTIC_AGENT_HEADER, hashDiagnosticIdentity(input?.agent)],
+          [KIRO_DIAGNOSTIC_MESSAGE_HEADER, hashDiagnosticIdentity(input?.message?.id)]
+        ] as const
+        for (const [header, value] of identities) {
+          if (value !== undefined) output.headers[header] = value
         }
       },
       auth: {

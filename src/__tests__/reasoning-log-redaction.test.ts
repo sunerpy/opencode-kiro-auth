@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RequestHandler } from '../core/request/request-handler.js'
+import {
+  hashDiagnosticIdentity,
+  KIRO_DIAGNOSTIC_AGENT_HEADER,
+  KIRO_DIAGNOSTIC_SESSION_HEADER,
+  KIRO_DIAGNOSTIC_TRACE_HEADER
+} from '../core/request/request-kind.js'
 import { buildSdkRequestLogPayload } from '../core/request/sdk-log-payload.js'
 import { UpstreamUnexpectedError } from '../core/request/stream-error.js'
 import { describeReasoningContentForLog, sha256Prefix } from '../plugin/log-redaction.js'
@@ -361,6 +367,7 @@ function wireHandler(
     rate_limit_max_retries: 1,
     rate_limit_retry_delay_ms: 1,
     enable_log_effort_debug: false,
+    diagnostic_log_level: 'off',
     enable_log_api_request: true,
     auto_effort_mapping: false,
     token_expiry_buffer_ms: 120000,
@@ -539,6 +546,50 @@ describe('§6.8 redaction — stream observability fields', () => {
     expect(text).not.toContain(REASONING)
     expect(text).not.toContain(STREAMED_REPLY)
     expectNoLeak(text)
+  })
+
+  test('verbose diagnostics correlate request shape and synthesized clean-EOF stop safely', async () => {
+    const trace = 'f95ab753-632a-4d4f-8dd2-fb4860123456'
+    const sessionHash = hashDiagnosticIdentity('ses-private-runtime')!
+    const agentHash = hashDiagnosticIdentity('private-runtime-agent')!
+    const privatePrompt = 'customer alpha private prompt'
+    const privateTool = 'customer_alpha_private_tool'
+    const handler = wireHandler(
+      streamingPrep(),
+      sdkStreamOf([{ assistantResponseEvent: { content: 'ok' } }]),
+      { diagnostic_log_level: 'verbose', enable_log_api_request: false }
+    )
+
+    await drain(
+      await handler.handle(
+        KIRO_URL,
+        {
+          headers: {
+            [KIRO_DIAGNOSTIC_TRACE_HEADER]: trace,
+            [KIRO_DIAGNOSTIC_SESSION_HEADER]: sessionHash,
+            [KIRO_DIAGNOSTIC_AGENT_HEADER]: agentHash
+          },
+          body: JSON.stringify({
+            model: MODEL,
+            messages: [{ role: 'user', content: privatePrompt }],
+            tools: [{ type: 'function', function: { name: privateTool } }]
+          })
+        },
+        noToast
+      )
+    )
+
+    const text = allLogText()
+    expect(text).toContain('Kiro request shape diagnostics')
+    expect(text).toContain('Kiro stream attempt started')
+    expect(text).toContain(`"diagnosticTraceId":"${trace}"`)
+    expect(text).toContain(`"sessionHash":"${sessionHash}"`)
+    expect(text).toContain('"terminalProvenance":"clean_eof"')
+    expect(text).toContain('"downstreamFinishReason":"stop"')
+    expect(text).not.toContain(privatePrompt)
+    expect(text).not.toContain(privateTool)
+    expect(text).not.toContain('ses-private-runtime')
+    expect(text).not.toContain('private-runtime-agent')
   })
 })
 

@@ -5,6 +5,7 @@ import { getLegacyUserConfigPath, getLogsDir, getUserConfigPath } from '../paths
 import {
   AccountSelectionStrategySchema,
   DEFAULT_CONFIG,
+  DiagnosticLogLevelSchema,
   KiroConfigSchema,
   RegionSchema,
   StreamRecoveryModeSchema,
@@ -259,6 +260,10 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       env.KIRO_ENABLE_LOG_API_REQUEST,
       config.enable_log_api_request
     ),
+
+    diagnostic_log_level: env.KIRO_DIAGNOSTIC_LOG_LEVEL
+      ? DiagnosticLogLevelSchema.catch('off').parse(env.KIRO_DIAGNOSTIC_LOG_LEVEL)
+      : config.diagnostic_log_level,
 
     log_retention_days: parseBoundedIntegerEnv(
       env.KIRO_LOG_RETENTION_DAYS,

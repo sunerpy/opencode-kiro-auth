@@ -70,6 +70,7 @@ describe('config backfill: additive new-key insertion', () => {
     expect(written.auto_sync_kiro_cli).toBe(false)
     expect(written.stream_recovery_mode).toBe('off')
     expect(written.compaction_buffer_until_complete).toBe(true)
+    expect(written.diagnostic_log_level).toBe('off')
     expect(written.stream_recovery_reuse_conversation_id_across_accounts).toBe(false)
     // every DEFAULT_CONFIG key is now present
     for (const key of Object.keys(DEFAULT_CONFIG)) {
