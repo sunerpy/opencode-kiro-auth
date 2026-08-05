@@ -27,6 +27,14 @@ import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler, isKiroContextOverflowBody, type RequestContext } from './error-handler'
 import { RecoveryAttemptFactory } from './recovery-attempt'
 import { createLiveRecoveryResponse } from './recovery-integration'
+import {
+  accountLogAlias,
+  bindRecoverySemanticSnapshot,
+  createRecoverySemanticSnapshot,
+  recoveryIdentityLogFields,
+  type RecoverySemanticSnapshot
+} from './recovery-request-identity'
+import { consumeKiroRequestKind, type KiroRequestKind } from './request-kind'
 import { ResponseHandler, type SdkCompletionPayload } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 import { buildSdkRequestLogPayload } from './sdk-log-payload'
@@ -125,7 +133,10 @@ export class RequestHandler {
       return fetch(input, init)
     }
 
-    return this.enqueueKiroRequest(() => this.handleKiroRequest(url, init, showToast))
+    const consumed = consumeKiroRequestKind(input, init)
+    return this.enqueueKiroRequest(() =>
+      this.handleKiroRequest(url, consumed.init, showToast, consumed.requestKind)
+    )
   }
 
   private async enqueueKiroRequest<T>(run: () => Promise<T>): Promise<T> {
@@ -148,7 +159,8 @@ export class RequestHandler {
   private async handleKiroRequest(
     url: string,
     init: any,
-    showToast: ToastFunction
+    showToast: ToastFunction,
+    requestKind: KiroRequestKind
   ): Promise<Response> {
     const requestController = new AbortController()
     const inboundSignal = init?.signal as AbortSignal | undefined
@@ -204,8 +216,51 @@ export class RequestHandler {
       body.thinkingConfig?.thinkingBudget ||
       body.thinkingConfig?.budget_tokens ||
       20000
+    const bufferUntilComplete =
+      this.config.stream_buffer_until_complete ||
+      (requestKind === 'compaction' && this.config.compaction_buffer_until_complete)
 
     let handlerContext: RequestContext = { retry: 0, forcedRefreshAccountIds: new Set<string>() }
+    let semanticSnapshot: RecoverySemanticSnapshot | undefined
+    let semanticSnapshotAccountId: string | undefined
+    const prepareRequestForAccount = (
+      account: ManagedAccount,
+      accountAuth: KiroAuthDetails
+    ): { prepared: SdkPreparedRequest; snapshot: RecoverySemanticSnapshot } => {
+      const disableReasoningReplay = handlerContext.disableReasoningReplay === true
+      const canReuse =
+        semanticSnapshot !== undefined &&
+        semanticSnapshot.disableReasoningReplay === disableReasoningReplay &&
+        (semanticSnapshotAccountId === account.id ||
+          this.config.stream_recovery_reuse_conversation_id_across_accounts)
+
+      if (canReuse && semanticSnapshot) {
+        return {
+          prepared: bindRecoverySemanticSnapshot(semanticSnapshot, accountAuth),
+          snapshot: semanticSnapshot
+        }
+      }
+
+      const transformed = this.prepareSdkRequest(
+        init?.body,
+        model,
+        accountAuth,
+        think,
+        budget,
+        showToast,
+        disableReasoningReplay
+      )
+      semanticSnapshot = createRecoverySemanticSnapshot(
+        transformed,
+        { requestKind, disableReasoningReplay },
+        semanticSnapshot
+      )
+      semanticSnapshotAccountId = account.id
+      return {
+        prepared: bindRecoverySemanticSnapshot(semanticSnapshot, accountAuth),
+        snapshot: semanticSnapshot
+      }
+    }
     let consecutiveNullAccounts = 0
     let streamStartRecorded = false
     let terminalSummaryRecorded = false
@@ -279,15 +334,7 @@ export class RequestHandler {
           continue
         }
 
-        const sdkPrep = this.prepareSdkRequest(
-          init?.body,
-          model,
-          auth,
-          think,
-          budget,
-          showToast,
-          handlerContext.disableReasoningReplay === true
-        )
+        const { prepared: sdkPrep, snapshot: sdkSnapshot } = prepareRequestForAccount(acc, auth)
         const streamAttempt = streamFailureCount + 1
         const streamAttemptStartedAt = Date.now()
         const streamStartedAt = new Date(streamAttemptStartedAt).toISOString()
@@ -302,15 +349,15 @@ export class RequestHandler {
         ): Record<string, unknown> => {
           const observed = streamObserver.snapshot()
           return {
-            conversationId: sdkPrep.conversationId,
+            ...recoveryIdentityLogFields(sdkSnapshot),
             model,
             effectiveModel: sdkPrep.effectiveModel,
             region: sdkPrep.region,
-            account: acc.email,
-            accountId: acc.id,
+            effort: sdkPrep.effort,
+            accountAlias: accountLogAlias(acc.id),
             streamAttempt,
             maxStreamAttempts: this.config.stream_max_attempts,
-            streamDeliveryMode: this.config.stream_buffer_until_complete ? 'buffered' : 'live',
+            streamDeliveryMode: bufferUntilComplete ? 'buffered' : 'live',
             sdkHttpKeepAlive: this.config.sdk_http_keep_alive,
             processId: process.pid,
             bunVersion: process.versions.bun,
@@ -339,9 +386,11 @@ export class RequestHandler {
         if (sdkPrep.streaming && streamAttempt === 1 && !streamStartRecorded) {
           streamStartRecorded = true
           logger.log(STREAM_REQUEST_STARTED_LOG, {
-            conversationId: sdkPrep.conversationId,
+            ...recoveryIdentityLogFields(sdkSnapshot),
             model,
             effectiveModel: sdkPrep.effectiveModel,
+            effort: sdkPrep.effort,
+            streamDeliveryMode: bufferUntilComplete ? 'buffered' : 'live',
             processId: process.pid
           })
         }
@@ -376,7 +425,7 @@ export class RequestHandler {
         try {
           const liveRecoveryEnabled =
             sdkPrep.streaming &&
-            !this.config.stream_buffer_until_complete &&
+            !bufferUntilComplete &&
             (this.config.stream_recovery_mode === 'reasoning_restart' ||
               this.config.stream_recovery_mode === 'exact_replay')
           if (liveRecoveryEnabled) {
@@ -404,6 +453,7 @@ export class RequestHandler {
                 account: acc,
                 auth,
                 prepared: sdkPrep,
+                snapshot: sdkSnapshot,
                 observer: streamObserver,
                 emitted: emittedOutput,
                 eventCount: upstreamEventCount,
@@ -419,16 +469,8 @@ export class RequestHandler {
                 refreshAccount: (account, accountAuth) =>
                   this.tokenRefresher.refreshIfNeeded(account, accountAuth, showToast),
                 wait: (milliseconds, waitSignal) => this.sleep(milliseconds, waitSignal),
-                prepareRequest: (_account, accountAuth) =>
-                  this.prepareSdkRequest(
-                    init?.body,
-                    model,
-                    accountAuth,
-                    think,
-                    budget,
-                    showToast,
-                    handlerContext.disableReasoningReplay === true
-                  ),
+                prepareRequest: (account, accountAuth) =>
+                  prepareRequestForAccount(account, accountAuth),
                 makeSdkClient: (accountAuth, prepared) =>
                   this.makeSdkClient(accountAuth, prepared.region, prepared.effort),
                 responseHandler: this.responseHandler,
@@ -602,7 +644,7 @@ export class RequestHandler {
                 cleanupRequest()
               },
               onCancel: (reason) => requestController.abort(reason),
-              bufferUntilComplete: this.config.stream_buffer_until_complete,
+              bufferUntilComplete,
               mapError: (error) => {
                 logger.error(
                   'Kiro SDK event stream iteration failed',
@@ -689,9 +731,8 @@ export class RequestHandler {
                 platform: process.platform,
                 nextAttempt: streamFailureCount + 1,
                 delayMs,
-                nextAccount: forcedStreamAccount.email,
-                nextAccountId: forcedStreamAccount.id,
-                failedAccountIds: [...failedAccountIds],
+                nextAccountAlias: accountLogAlias(forcedStreamAccount.id),
+                failedAccountAliases: [...failedAccountIds].map(accountLogAlias),
                 selectionReason,
                 error: describeError(e)
               })
@@ -883,7 +924,7 @@ export class RequestHandler {
           body: null,
           conversationId: prep.conversationId,
           model: prep.effectiveModel,
-          email: acc.email
+          accountAlias: accountLogAlias(acc.id)
         },
         rData,
         logger.getTimestamp()

@@ -161,6 +161,13 @@ export const KiroConfigSchema = z.object({
   stream_buffer_until_complete: z.boolean().default(false),
 
   /**
+   * Atomically buffer OpenCode compaction summaries while leaving ordinary
+   * chat requests live. The request is identified by the plugin's private
+   * chat.headers marker.
+   */
+  compaction_buffer_until_complete: z.boolean().default(true),
+
+  /**
    * Maximum number of complete event-stream attempts. Buffered mode can safely
    * use every attempt even when the failed upstream stream produced output.
    */
@@ -172,6 +179,13 @@ export const KiroConfigSchema = z.object({
    * 'reasoning_restart' only after Phase 1 acceptance.
    */
   stream_recovery_mode: StreamRecoveryModeSchema.default('off'),
+
+  /**
+   * Experimental: preserve one Kiro conversationId when a recovery attempt
+   * moves to another account. Disabled until a real API A/B confirms that Kiro
+   * accepts the identity with a different profileArn.
+   */
+  stream_recovery_reuse_conversation_id_across_accounts: z.boolean().default(false),
 
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
 
@@ -270,8 +284,10 @@ export const DEFAULT_CONFIG: KiroConfig = {
   stream_event_timeout_enabled: false,
   request_timeout_ms: 120000,
   stream_buffer_until_complete: false,
+  compaction_buffer_until_complete: true,
   stream_max_attempts: 3,
   stream_recovery_mode: 'off',
+  stream_recovery_reuse_conversation_id_across_accounts: false,
   token_expiry_buffer_ms: 300000,
   token_keepalive_enabled: false,
   token_keepalive_interval_ms: 600000,

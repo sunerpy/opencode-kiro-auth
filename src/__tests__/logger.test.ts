@@ -191,18 +191,20 @@ describe('logger API log segments', () => {
 
   test('logApiError writes correlated error records and an ERROR summary line', () => {
     const ts = '2024-01-04T00-00-00-000Z'
-    logApiError({ email: 'u@example.com' }, { status: 403 }, ts)
+    logApiError({ email: 'u@example.com', accountAlias: 'account-1' }, { status: 403 }, ts)
 
     const records = readApiRecords()
     expect(records).toHaveLength(2)
     expect(records.every((record) => record.error === true)).toBe(true)
     expect(records.every((record) => record.timestamp === ts)).toBe(true)
+    expect(records[0]!.data.email).toBe('u@example.com')
     const out = readPluginLog()
-    expect(out).toContain('HTTP 403 on u@example.com')
+    expect(out).toContain('HTTP 403 on account-1')
+    expect(out).not.toContain('u@example.com')
     expect(out).toContain(apiLogFiles()[0]!)
   })
 
-  test('logApiError with no status uses "Network Error" and falls back to unknown email', () => {
+  test('logApiError with no status uses "Network Error" and falls back to an unknown alias', () => {
     const ts = '2024-01-05T00-00-00-000Z'
     logApiError({}, {}, ts)
     const out = readPluginLog()

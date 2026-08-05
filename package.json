@@ -57,7 +57,8 @@
     "type": "plugin",
     "hooks": [
       "auth",
-      "event"
+      "event",
+      "chat.headers"
     ]
   },
   "files": [

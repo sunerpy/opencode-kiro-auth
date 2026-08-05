@@ -3,6 +3,7 @@ import type { StreamTerminalSource } from '../../plugin/streaming/stream-observe
 import type { ManagedAccount } from '../../plugin/types'
 import { classifyAccountFailure, type AccountFailureClass } from './account-failure-classifier'
 import type { RecoveryAttemptFactory, RecoveryAttemptResult } from './recovery-attempt'
+import { accountLogAlias } from './recovery-request-identity'
 import { encodeSseChunk, type SdkStreamingAttempt } from './response-handler'
 import { UpstreamUnexpectedError } from './stream-error'
 import {
@@ -62,12 +63,34 @@ type RecoveryAttemptContext = {
 
 type RequestLogIdentity = {
   readonly conversationId?: string
+  readonly recoveryGroupId?: string
+  readonly semanticFingerprint?: string
+  readonly wireConversationId?: string
+  readonly requestKind?: string
+  readonly sameConversationIdAsInitial?: boolean
+  readonly sameSemanticAsInitial?: boolean
   readonly model?: string
   readonly processId?: number
 }
 
 function requestLogIdentity(details: Record<string, unknown>): RequestLogIdentity | undefined {
   const identity: RequestLogIdentity = {
+    ...(typeof details['recoveryGroupId'] === 'string'
+      ? { recoveryGroupId: details['recoveryGroupId'] }
+      : {}),
+    ...(typeof details['semanticFingerprint'] === 'string'
+      ? { semanticFingerprint: details['semanticFingerprint'] }
+      : {}),
+    ...(typeof details['wireConversationId'] === 'string'
+      ? { wireConversationId: details['wireConversationId'] }
+      : {}),
+    ...(typeof details['requestKind'] === 'string' ? { requestKind: details['requestKind'] } : {}),
+    ...(typeof details['sameSemanticAsInitial'] === 'boolean'
+      ? { sameSemanticAsInitial: details['sameSemanticAsInitial'] }
+      : {}),
+    ...(typeof details['sameConversationIdAsInitial'] === 'boolean'
+      ? { sameConversationIdAsInitial: details['sameConversationIdAsInitial'] }
+      : {}),
     ...(typeof details['conversationId'] === 'string'
       ? { conversationId: details['conversationId'] }
       : {}),
@@ -84,6 +107,10 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   let latestRequestLogIdentity: RequestLogIdentity | undefined
   const failedAccountIds = options.failedAccountIds
   let terminalFinished = false
+  const accountAliasesTried = new Set<string>()
+  let initialFailure: unknown
+  let finalFailure: unknown
+  let quotaRelevant = false
 
   const getCurrentAttempt = (): RecoveryAttemptContext => {
     if (!currentAttempt) throw new Error('No active Kiro recovery attempt context is available')
@@ -102,6 +129,10 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   } => {
     const context = getCurrentAttempt()
     const failureClass = classifyAccountFailure(failure)
+    if (initialFailure === undefined) initialFailure = failure
+    finalFailure = failure
+    quotaRelevant ||= failureClass === 'quota_or_rate_limit'
+    accountAliasesTried.add(accountLogAlias(context.attemptedAccount.id))
     if (!context.failureRecorded) {
       context.failureRecorded = true
       failedAccountIds.add(context.attemptedAccount.id)
@@ -126,23 +157,17 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     details: Record<string, unknown> = {}
   ): Record<string, unknown> => {
     const baseDetails = context.logDetails
-      ? context.logDetails(details)
+      ? context.logDetails()
       : {
           ...latestRequestLogIdentity,
-          ...details,
           ...(latestRequestLogIdentity ? { identitySource: 'previous_attempt' } : {})
         }
     return {
       ...baseDetails,
-      account: context.attemptedAccount.email,
-      accountId: context.attemptedAccount.id,
-      attemptedAccount: context.attemptedAccount.email,
-      attemptedAccountId: context.attemptedAccount.id,
+      ...details,
+      attemptedAccountAlias: accountLogAlias(context.attemptedAccount.id),
       ...(context.resolvedAccount
-        ? {
-            resolvedAccount: context.resolvedAccount.email,
-            resolvedAccountId: context.resolvedAccount.id
-          }
+        ? { resolvedAccountAlias: accountLogAlias(context.resolvedAccount.id) }
         : {}),
       attemptIndex: context.attemptIndex,
       phase,
@@ -172,6 +197,16 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   const finishTerminal = (terminationReason: StreamRecoveryTerminationReason): void => {
     if (terminalFinished) return
     terminalFinished = true
+    const terminalSummary = {
+      attemptsUsed: options.priorStreamFailures + (currentAttempt?.attemptIndex ?? 0),
+      accountsTried: accountAliasesTried.size,
+      accountAliases: [...accountAliasesTried],
+      initialFailure: initialFailure === undefined ? null : options.describeError(initialFailure),
+      finalFailure: finalFailure === undefined ? null : options.describeError(finalFailure),
+      recovered: terminationReason === 'completed' && initialFailure !== undefined,
+      quotaRelevant
+    }
+
     if (currentAttempt) {
       const observed = currentAttempt.logDetails
         ? observedTerminalSource(currentAttempt.logDetails())
@@ -194,7 +229,8 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       options.onTerminal({
         ...attemptLogDetails(currentAttempt, phase, undefined, {
           outcome: 'terminal',
-          terminalSource
+          terminalSource,
+          ...terminalSummary
         }),
         terminalSource
       })
@@ -203,6 +239,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     options.onTerminal({
       outcome: 'terminal',
       phase: 'stream_iteration',
+      ...terminalSummary,
       terminalSource: options.signal.aborted
         ? 'caller_abort'
         : terminationReason === 'coordinator_failure'
@@ -215,6 +252,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
 
   const openAttempt = async (attemptIndex: number): Promise<SdkStreamingAttempt> => {
     const attemptedAccount = nextAccount
+    accountAliasesTried.add(accountLogAlias(attemptedAccount.id))
     const context: RecoveryAttemptContext = {
       attemptIndex,
       attemptedAccount,
@@ -281,9 +319,8 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
           platform: process.platform,
           nextAttempt: failureCount + 1,
           delayMs,
-          nextAccount: nextAccount.email,
-          nextAccountId: nextAccount.id,
-          failedAccountIds: [...failedAccountIds],
+          nextAccountAlias: accountLogAlias(nextAccount.id),
+          failedAccountAliases: [...failedAccountIds].map(accountLogAlias),
           selectionReason
         })
       )

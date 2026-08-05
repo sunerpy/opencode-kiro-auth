@@ -220,6 +220,13 @@ describe('createLiveRecoveryResponse — account rotation', () => {
         attemptIndex: 2,
         phase: 'pre_stream_open',
         outcome: 'terminal',
+        attemptsUsed: 2,
+        accountsTried: 1,
+        accountAliases: [expect.stringMatching(/^account-\d+$/)],
+        initialFailure: streamFailure,
+        finalFailure: openFailure,
+        recovered: false,
+        quotaRelevant: false,
         terminalSource: 'stream_attempt_budget_exhausted'
       })
     ])
@@ -405,6 +412,16 @@ describe('createLiveRecoveryResponse — account rotation', () => {
     expect(refreshedA?.rateLimitResetTime).toBeLessThanOrEqual(Date.now() + 30_000)
     expect(refreshedA?.isHealthy).toBe(true)
     expect(markUnhealthy).toHaveBeenCalledTimes(0)
+    expect(harness.terminalRecords()).toEqual([
+      expect.objectContaining({
+        attemptsUsed: 2,
+        accountsTried: 2,
+        initialFailure: quotaError,
+        finalFailure: quotaError,
+        recovered: true,
+        quotaRelevant: true
+      })
+    ])
   })
 
   test('pre-stream open failure retry log carries only prior stable request identity', async () => {
@@ -479,8 +496,10 @@ describe('createLiveRecoveryResponse — account rotation', () => {
         model: 'claude-opus-5-max',
         processId: 34567,
         identitySource: 'previous_attempt',
-        attemptedAccountId: accountB.id
+        attemptedAccountAlias: expect.stringMatching(/^account-\d+$/)
       })
+      expect(JSON.stringify(preStreamRecord)).not.toContain(accountB.id)
+      expect(JSON.stringify(preStreamRecord)).not.toContain(accountB.email)
       expect(preStreamRecord).not.toHaveProperty('upstreamEventCount')
       expect(preStreamRecord).not.toHaveProperty('streamAttempt')
       expect(preStreamRecord).not.toHaveProperty('region')

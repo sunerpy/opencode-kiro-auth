@@ -25,8 +25,10 @@ const KIRO_ENV_KEYS = [
   'KIRO_REQUEST_TIMEOUT_MS',
   'KIRO_STREAM_EVENT_TIMEOUT_ENABLED',
   'KIRO_STREAM_BUFFER_UNTIL_COMPLETE',
+  'KIRO_COMPACTION_BUFFER_UNTIL_COMPLETE',
   'KIRO_STREAM_MAX_ATTEMPTS',
   'KIRO_STREAM_RECOVERY_MODE',
+  'KIRO_STREAM_RECOVERY_REUSE_CONVERSATION_ID_ACROSS_ACCOUNTS',
   'KIRO_SDK_RESPONSE_TIMEOUT_ENABLED',
   'KIRO_SDK_RESPONSE_TIMEOUT_MS',
   'KIRO_SDK_HTTP_KEEP_ALIVE',
@@ -101,8 +103,10 @@ describe('loadConfig defaults', () => {
     expect(cfg.request_timeout_ms).toBe(120000)
     expect(cfg.stream_event_timeout_enabled).toBe(false)
     expect(cfg.stream_buffer_until_complete).toBe(false)
+    expect(cfg.compaction_buffer_until_complete).toBe(true)
     expect(cfg.stream_max_attempts).toBe(3)
     expect(cfg.stream_recovery_mode).toBe('off')
+    expect(cfg.stream_recovery_reuse_conversation_id_across_accounts).toBe(false)
     expect(cfg.sdk_response_timeout_enabled).toBe(false)
     expect(cfg.sdk_response_timeout_ms).toBe(300000)
     expect(cfg.sdk_http_keep_alive).toBe(false)
@@ -116,12 +120,18 @@ describe('loadConfig defaults', () => {
     expect(cfg.log_segment_size_mb).toBe(16)
   })
 
-  test('the zod default and the DEFAULT_CONFIG literal agree on the recovery mode', () => {
+  test('the zod defaults and DEFAULT_CONFIG agree on recovery behavior', () => {
     // loadConfig only ever runs KiroConfigSchema.partial(), which strips zod
     // defaults, so DEFAULT_CONFIG is the operative default and the two sources
     // can drift apart silently.
     expect(KiroConfigSchema.parse({}).stream_recovery_mode).toBe('off')
     expect(DEFAULT_CONFIG.stream_recovery_mode).toBe('off')
+    expect(KiroConfigSchema.parse({}).compaction_buffer_until_complete).toBe(true)
+    expect(DEFAULT_CONFIG.compaction_buffer_until_complete).toBe(true)
+    expect(KiroConfigSchema.parse({}).stream_recovery_reuse_conversation_id_across_accounts).toBe(
+      false
+    )
+    expect(DEFAULT_CONFIG.stream_recovery_reuse_conversation_id_across_accounts).toBe(false)
   })
 })
 
@@ -177,6 +187,16 @@ describe('loadConfig env overrides', () => {
   test('KIRO_STREAM_BUFFER_UNTIL_COMPLETE opts into replay-safe stream delivery', () => {
     process.env.KIRO_STREAM_BUFFER_UNTIL_COMPLETE = 'true'
     expect(loadConfig(projectDir).stream_buffer_until_complete).toBe(true)
+  })
+
+  test('KIRO_COMPACTION_BUFFER_UNTIL_COMPLETE can disable atomic compaction buffering', () => {
+    process.env.KIRO_COMPACTION_BUFFER_UNTIL_COMPLETE = 'false'
+    expect(loadConfig(projectDir).compaction_buffer_until_complete).toBe(false)
+  })
+
+  test('cross-account conversation ID reuse requires an explicit env opt-in', () => {
+    process.env.KIRO_STREAM_RECOVERY_REUSE_CONVERSATION_ID_ACROSS_ACCOUNTS = 'true'
+    expect(loadConfig(projectDir).stream_recovery_reuse_conversation_id_across_accounts).toBe(true)
   })
 
   test('KIRO_STREAM_RECOVERY_MODE selects a recovery strategy', () => {

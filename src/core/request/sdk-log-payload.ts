@@ -4,6 +4,7 @@ import type {
   ManagedAccount,
   SdkPreparedRequest
 } from '../../plugin/types.js'
+import { accountLogAlias } from './recovery-request-identity.js'
 
 export interface HistoryReasoningSummary {
   index: number
@@ -29,7 +30,7 @@ export function summarizeHistoryReasoning(
  */
 export function buildSdkRequestLogPayload(
   prep: SdkPreparedRequest,
-  account: Pick<ManagedAccount, 'email'>
+  account: Pick<ManagedAccount, 'id' | 'email'>
 ): Record<string, unknown> {
   const history = prep.conversationState.history
   const historyReasoning = summarizeHistoryReasoning(history)
@@ -49,6 +50,7 @@ export function buildSdkRequestLogPayload(
     },
     conversationId: prep.conversationId,
     model: prep.effectiveModel,
+    accountAlias: accountLogAlias(account.id),
     email: account.email
   }
 }

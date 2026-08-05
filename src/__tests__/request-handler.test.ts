@@ -5,6 +5,7 @@ import {
   STREAM_MISSING_COMPLETION_LOG,
   STREAM_REQUEST_STARTED_LOG
 } from '../core/request/request-handler.js'
+import { KIRO_REQUEST_KIND_HEADER } from '../core/request/request-kind.js'
 import { ResponseHandler, type SdkResponseLifecycle } from '../core/request/response-handler.js'
 import { SdkEventStreamIterationError } from '../core/request/stream-error.js'
 import { encodeRefreshToken } from '../kiro/auth.js'
@@ -32,6 +33,7 @@ afterEach(() => {
 const noToast = (_m: string, _v: Variant) => {}
 
 const KIRO_URL = 'https://q.us-east-1.amazonaws.com/generateAssistantResponse'
+const ACCOUNT_ALIAS_PATTERN = /^account-\d+$/
 
 function makeAccount(o: Partial<ManagedAccount> & { id: string }): ManagedAccount {
   return {
@@ -65,8 +67,10 @@ const baseConfig = {
   request_timeout_ms: 60000,
   stream_event_timeout_enabled: false,
   stream_buffer_until_complete: false,
+  compaction_buffer_until_complete: true,
   stream_max_attempts: 3,
   stream_recovery_mode: 'off',
+  stream_recovery_reuse_conversation_id_across_accounts: false,
   sdk_response_timeout_enabled: false,
   sdk_response_timeout_ms: 300000,
   sdk_http_keep_alive: false,
@@ -113,8 +117,10 @@ function buildHandler(opts: {
   requestTimeoutMs?: number
   streamEventTimeoutEnabled?: boolean
   streamBufferUntilComplete?: boolean
+  compactionBufferUntilComplete?: boolean
   streamMaxAttempts?: number
   streamRecoveryMode?: 'off' | 'reasoning_restart' | 'exact_replay'
+  reuseConversationIdAcrossAccounts?: boolean
   maxRequestIterations?: number
   sdkResponseTimeoutEnabled?: boolean
   sdkResponseTimeoutMs?: number
@@ -203,8 +209,13 @@ function buildHandler(opts: {
         opts.streamEventTimeoutEnabled ?? baseConfig.stream_event_timeout_enabled,
       stream_buffer_until_complete:
         opts.streamBufferUntilComplete ?? baseConfig.stream_buffer_until_complete,
+      compaction_buffer_until_complete:
+        opts.compactionBufferUntilComplete ?? baseConfig.compaction_buffer_until_complete,
       stream_max_attempts: opts.streamMaxAttempts ?? baseConfig.stream_max_attempts,
       stream_recovery_mode: opts.streamRecoveryMode ?? 'off',
+      stream_recovery_reuse_conversation_id_across_accounts:
+        opts.reuseConversationIdAcrossAccounts ??
+        baseConfig.stream_recovery_reuse_conversation_id_across_accounts,
       sdk_response_timeout_enabled:
         opts.sdkResponseTimeoutEnabled ?? baseConfig.sdk_response_timeout_enabled,
       sdk_response_timeout_ms: opts.sdkResponseTimeoutMs ?? baseConfig.sdk_response_timeout_ms
@@ -423,8 +434,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
         expect.objectContaining({
           outcome: 'retrying',
           conversationId: 'c1',
-          account: 'A@example.com',
-          accountId: 'A',
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           streamAttempt: 1,
           maxStreamAttempts: 3,
           sdkHttpKeepAlive: false,
@@ -434,7 +444,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
           streamElapsedMs: expect.any(Number),
           nextAttempt: 2,
           delayMs: 250,
-          nextAccount: 'A@example.com'
+          nextAccountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN)
         })
       )
       expect(logs.log).toHaveBeenCalledWith(
@@ -442,8 +452,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
         expect.objectContaining({
           outcome: 'recovered',
           conversationId: 'c1',
-          account: 'A@example.com',
-          accountId: 'A',
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           streamAttempt: 2,
           maxStreamAttempts: 3,
           sdkHttpKeepAlive: false,
@@ -480,8 +489,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
           outcome: 'exhausted',
           terminalSource: 'stream_attempt_budget_exhausted',
           conversationId: 'c1',
-          account: 'A@example.com',
-          accountId: 'A',
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           streamAttempt: 3,
           maxStreamAttempts: 3,
           attempts: 3
@@ -529,8 +537,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
           outcome: 'terminated_after_output',
           terminalSource: 'iterator_failure',
           conversationId: 'c1',
-          account: 'A@example.com',
-          accountId: 'A',
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           streamAttempt: 1,
           maxStreamAttempts: 3,
           emittedOutput: true
@@ -571,8 +578,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
         expect.objectContaining({
           outcome: 'ignored_after_completion_metadata',
           conversationId: 'c1',
-          account: 'A@example.com',
-          accountId: 'A',
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           streamAttempt: 1,
           maxStreamAttempts: 3
         })
@@ -783,6 +789,206 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
     expect(body).not.toContain('discarded-tool-id')
     expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
   })
+
+  test('compaction buffers atomically without enabling global stream buffering', async () => {
+    const acc = makeAccount({ id: 'compaction-A' })
+    const reset = new Error('compaction stream reset')
+    const logs = captureLogger()
+    try {
+      const { handler, fakes } = buildHandler({
+        selectResults: [acc],
+        sdkResults: [
+          sdkStream([{ assistantResponseEvent: { content: 'discarded partial summary' } }], reset),
+          sdkStream([{ assistantResponseEvent: { content: 'complete atomic summary' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamBufferUntilComplete: false,
+        compactionBufferUntilComplete: true
+      })
+      const prepare = mock(() => cannedPrep(true))
+      ;(handler as any).prepareSdkRequest = prepare
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(
+        KIRO_URL,
+        {
+          body: JSON.stringify({}),
+          headers: { [KIRO_REQUEST_KIND_HEADER]: 'compaction' }
+        },
+        noToast
+      )
+      const body = await response.text()
+
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(prepare).toHaveBeenCalledTimes(1)
+      expect(streamedText(body)).toBe('complete atomic summary')
+      expect(streamedText(body)).not.toContain('discarded partial summary')
+      expect(records(logs.log, STREAM_REQUEST_STARTED_LOG)[0]).toMatchObject({
+        requestKind: 'compaction',
+        streamDeliveryMode: 'buffered'
+      })
+    } finally {
+      logs.restore()
+    }
+  })
+
+  test('failed compaction exposes no partial summary bytes', async () => {
+    const acc = makeAccount({ id: 'compaction-failure' })
+    const failure = new Error('persistent compaction failure')
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([{ assistantResponseEvent: { content: 'partial one' } }], failure),
+        sdkStream([{ assistantResponseEvent: { content: 'partial two' } }], failure)
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamBufferUntilComplete: false,
+      compactionBufferUntilComplete: true,
+      streamMaxAttempts: 2
+    })
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(
+      KIRO_URL,
+      {
+        body: JSON.stringify({}),
+        headers: { [KIRO_REQUEST_KIND_HEADER]: 'compaction' }
+      },
+      noToast
+    )
+    const body = await response.text()
+
+    expect(response.status).toBe(503)
+    expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+    expect(body).not.toContain('partial one')
+    expect(body).not.toContain('partial two')
+  })
+
+  test('compaction does not return its Response until the upstream stream drains', async () => {
+    const acc = makeAccount({ id: 'compaction-gate' })
+    const waiting = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const { handler } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        {
+          generateAssistantResponseResponse: (async function* () {
+            yield { assistantResponseEvent: { content: 'summary prefix' } }
+            waiting.resolve()
+            await release.promise
+            yield { assistantResponseEvent: { content: ' summary suffix' } }
+          })()
+        }
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      compactionBufferUntilComplete: true
+    })
+
+    let settled = false
+    const responsePromise = handler
+      .handle(
+        KIRO_URL,
+        {
+          body: JSON.stringify({}),
+          headers: { [KIRO_REQUEST_KIND_HEADER]: 'compaction' }
+        },
+        noToast
+      )
+      .then((response) => {
+        settled = true
+        return response
+      })
+
+    await waiting.promise
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    release.resolve()
+    const response = await responsePromise
+    expect(streamedText(await response.text())).toBe('summary prefix summary suffix')
+  })
+
+  test('same-account live recovery transforms once and reuses the wire identity', async () => {
+    const acc = makeAccount({ id: 'identity-A' })
+    const { handler, fakes } = buildHandler({
+      selectResults: [acc],
+      sdkResults: [
+        sdkStream([{ reasoningContentEvent: { text: 'partial reasoning' } }], new Error('reset')),
+        sdkStream([{ assistantResponseEvent: { content: 'recovered' } }])
+      ],
+      streaming: true,
+      useRealResponseHandler: true,
+      streamRecoveryMode: 'reasoning_restart'
+    })
+    let transforms = 0
+    const prepare = mock(() => {
+      transforms++
+      const conversationId = `wire-${transforms}`
+      const result = cannedPrep(true)
+      result.conversationId = conversationId
+      result.conversationState.conversationId = conversationId
+      return result
+    })
+    ;(handler as any).prepareSdkRequest = prepare
+    installImmediateStreamBackoff(handler)
+
+    const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+    await response.text()
+
+    const wireIds = fakes.sdkSend.mock.calls.map(
+      (call) => (call[0] as any).input.conversationState.conversationId
+    )
+    expect(prepare).toHaveBeenCalledTimes(1)
+    expect(wireIds).toEqual(['wire-1', 'wire-1'])
+  })
+
+  for (const [reuseAcrossAccounts, expectedTransforms, expectedWireIds] of [
+    [false, 2, ['wire-1', 'wire-1', 'wire-2']],
+    [true, 1, ['wire-1', 'wire-1', 'wire-1']]
+  ] as const) {
+    test(`cross-account wire identity reuse is ${reuseAcrossAccounts ? 'enabled' : 'disabled'} explicitly`, async () => {
+      const a = makeAccount({ id: `identity-cross-A-${reuseAcrossAccounts}` })
+      const b = makeAccount({ id: `identity-cross-B-${reuseAcrossAccounts}` })
+      const failure = new Error('recovery reset')
+      const { handler, fakes } = buildHandler({
+        accounts: [a, b],
+        selectResults: [a],
+        alternativeAccount: b,
+        sdkResults: [
+          sdkStream([{ reasoningContentEvent: { text: 'attempt one' } }], failure),
+          sdkStream([{ reasoningContentEvent: { text: 'attempt two' } }], failure),
+          sdkStream([{ assistantResponseEvent: { content: 'attempt three succeeds' } }])
+        ],
+        streaming: true,
+        useRealResponseHandler: true,
+        streamRecoveryMode: 'reasoning_restart',
+        reuseConversationIdAcrossAccounts: reuseAcrossAccounts
+      })
+      let transforms = 0
+      const prepare = mock(() => {
+        transforms++
+        const conversationId = `wire-${transforms}`
+        const result = cannedPrep(true)
+        result.conversationId = conversationId
+        result.conversationState.conversationId = conversationId
+        return result
+      })
+      ;(handler as any).prepareSdkRequest = prepare
+      installImmediateStreamBackoff(handler)
+
+      const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
+      await response.text()
+
+      const wireIds = fakes.sdkSend.mock.calls.map(
+        (call) => (call[0] as any).input.conversationState.conversationId
+      )
+      expect(prepare).toHaveBeenCalledTimes(expectedTransforms)
+      expect(wireIds).toEqual([...expectedWireIds])
+    })
+  }
 
   test('stream retry exhaustion honors the configured maximum attempts', async () => {
     const acc = makeAccount({ id: 'A' })
@@ -1024,7 +1230,7 @@ describe('RequestHandler.handle — SDK event-stream retry boundary', () => {
       expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
       expect(records(logs.log, STREAM_TERMINAL_LOG)).toEqual([
         expect.objectContaining({
-          accountId: acc.id,
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           phase: 'stream_iteration',
           terminalSource: 'stream_processing_failure'
         })
@@ -1464,9 +1670,17 @@ describe('RequestHandler.handle — unconditional stream-start record', () => {
       const records = startRecords(logs.log)
       expect(records).toHaveLength(1)
       expect(records[0]![1]).toEqual({
+        recoveryGroupId: expect.any(String),
+        semanticFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
+        wireConversationId: 'c1',
         conversationId: 'c1',
+        requestKind: 'normal',
+        sameSemanticAsInitial: true,
+        sameConversationIdAsInitial: true,
         model: 'x',
         effectiveModel: 'claude-sonnet-4-5',
+        effort: undefined,
+        streamDeliveryMode: 'live',
         processId: process.pid
       })
     } finally {
@@ -1558,20 +1772,20 @@ describe('RequestHandler.handle — unconditional stream-start record', () => {
       expect(startRecords(logs.log)).toHaveLength(2)
       const terminalRecords = records(logs.log, STREAM_TERMINAL_LOG)
       expect(terminalRecords).toHaveLength(2)
-      expect(terminalRecords.filter((record) => record['accountId'] === httpAccount.id)).toEqual([
+      expect(terminalRecords).toEqual([
         expect.objectContaining({
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           phase: 'pre_stream_open',
           terminalSource: 'http_error'
+        }),
+        expect.objectContaining({
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
+          phase: 'pre_stream_open',
+          terminalSource: 'network_error'
         })
       ])
-      expect(terminalRecords.filter((record) => record['accountId'] === networkAccount.id)).toEqual(
-        [
-          expect.objectContaining({
-            phase: 'pre_stream_open',
-            terminalSource: 'network_error'
-          })
-        ]
-      )
+      expect(new Set(terminalRecords.map((record) => record['accountAlias'])).size).toBe(2)
+      expect(terminalRecords.every((record) => !('accountId' in record))).toBe(true)
     } finally {
       logs.restore()
     }
@@ -1625,7 +1839,7 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
         expect.objectContaining({
           outcome: 'clean_eof_without_completion_metadata',
           conversationId: 'c1',
-          accountId: 'A',
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           streamAttempt: 1,
           emittedReasoningChars: 0,
           emittedVisibleChars: 'partial answer'.length,
@@ -1752,7 +1966,7 @@ describe('RequestHandler.handle — clean end without completion metadata', () =
         expect.objectContaining({
           terminalSource: 'caller_abort',
           conversationId: 'c1',
-          accountId: 'abort-log',
+          accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN),
           eventTypeCounts: { reasoningContentEvent: 1 }
         })
       ])
@@ -3242,6 +3456,31 @@ describe('RequestHandler.handle — API request logging', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.message).toBe('bad request')
+  })
+
+  test('without raw API logging the failure diagnostic uses only an account alias', () => {
+    const acc = makeAccount({ id: 'raw-account-id', email: 'private@example.com' })
+    const { handler } = buildHandler({})
+    const logApiError = spyOn(logger, 'logApiError').mockImplementation(() => {})
+    try {
+      const httpError: any = new Error('bad request')
+      httpError.name = 'ValidationException'
+      httpError.$metadata = { httpStatusCode: 400 }
+
+      ;(handler as any).logSdkError(cannedPrep(), httpError, acc, 'unused')
+
+      expect(logApiError).toHaveBeenCalledTimes(1)
+      const requestData = logApiError.mock.calls[0]?.[0]
+      expect(requestData).toMatchObject({
+        body: null,
+        accountAlias: expect.stringMatching(ACCOUNT_ALIAS_PATTERN)
+      })
+      expect(JSON.stringify(requestData)).not.toContain(acc.id)
+      expect(JSON.stringify(requestData)).not.toContain(acc.email)
+      expect(requestData).not.toHaveProperty('email')
+    } finally {
+      logApiError.mockRestore()
+    }
   })
 })
 
