@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.18.0...v0.19.0) (2026-08-05)
+
+
+### Features
+
+* **request:** stabilize recovery identity and atomically buffer compaction ([#87](https://github.com/sunerpy/opencode-kiro-auth/issues/87)) ([f391487](https://github.com/sunerpy/opencode-kiro-auth/commit/f3914871c8a1dec70786fc34afd68a1af707728a))
+
 ## [0.18.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.17.0...v0.18.0) (2026-08-01)
 
 
