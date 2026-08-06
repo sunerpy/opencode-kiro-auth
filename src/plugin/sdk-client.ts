@@ -17,6 +17,8 @@ interface ClientCacheEntry {
 const clientCache = new Map<string, ClientCacheEntry>()
 const KIRO_CLI_MAX_ATTEMPTS = 3
 const SDK_MAX_SOCKETS = 50
+const UTF8_DECODER = new TextDecoder()
+const UTF8_ENCODER = new TextEncoder()
 
 export interface SdkTransportOptions {
   /**
@@ -24,6 +26,30 @@ export interface SdkTransportOptions {
    * active streams; maxSockets remains at the Smithy default of 50.
    */
   keepAlive?: boolean
+}
+
+export function injectEffortIntoSerializedBody(body: unknown, effort: Effort): unknown {
+  let bodyText: string
+  let encodeAsBytes = false
+
+  if (typeof body === 'string') {
+    bodyText = body
+  } else if (body instanceof Uint8Array) {
+    bodyText = UTF8_DECODER.decode(body)
+    encodeAsBytes = true
+  } else {
+    return body
+  }
+
+  try {
+    const parsedBody = JSON.parse(bodyText)
+    const wireModel = parsedBody?.conversationState?.currentMessage?.userInputMessage?.modelId
+    parsedBody.additionalModelRequestFields = buildEffortRequestFields(wireModel, effort)
+    const serializedBody = JSON.stringify(parsedBody)
+    return encodeAsBytes ? UTF8_ENCODER.encode(serializedBody) : serializedBody
+  } catch {
+    return body
+  }
 }
 
 export function createSdkClient(
@@ -76,14 +102,7 @@ export function createSdkClient(
     client.middlewareStack.add(
       (next: any) => async (args: any) => {
         if (args.request?.body) {
-          try {
-            const body = JSON.parse(args.request.body)
-            const wireModel = body?.conversationState?.currentMessage?.userInputMessage?.modelId
-            body.additionalModelRequestFields = buildEffortRequestFields(wireModel, effort)
-            args.request.body = JSON.stringify(body)
-          } catch {
-            // If body parsing fails, continue without modification
-          }
+          args.request.body = injectEffortIntoSerializedBody(args.request.body, effort)
         }
         return next(args)
       },
