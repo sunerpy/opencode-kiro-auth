@@ -1,6 +1,10 @@
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
 import { describe, expect, test } from 'bun:test'
-import { clearSdkClientCache, createSdkClient } from '../plugin/sdk-client'
+import {
+  clearSdkClientCache,
+  createSdkClient,
+  injectEffortIntoSerializedBody
+} from '../plugin/sdk-client'
 import type { KiroAuthDetails } from '../plugin/types'
 
 function auth(): KiroAuthDetails {
@@ -14,7 +18,53 @@ function auth(): KiroAuthDetails {
   }
 }
 
+const serializedRequest = JSON.stringify({
+  conversationState: {
+    currentMessage: {
+      userInputMessage: {
+        modelId: 'claude-opus-4.7'
+      }
+    }
+  }
+})
+
+class StrictJsonBytes extends Uint8Array {
+  override toString(): string {
+    throw new Error('request bytes must be decoded explicitly')
+  }
+}
+
 describe('SDK client', () => {
+  test('injects effort into a string request body without changing its representation', () => {
+    const updated = injectEffortIntoSerializedBody(serializedRequest, 'max')
+
+    expect(typeof updated).toBe('string')
+    expect(JSON.parse(updated as string).additionalModelRequestFields).toEqual({
+      output_config: { effort: 'max' }
+    })
+  })
+
+  test('decodes and re-encodes Uint8Array request bodies explicitly', () => {
+    const requestBytes = new StrictJsonBytes(new TextEncoder().encode(serializedRequest))
+    const updated = injectEffortIntoSerializedBody(requestBytes, 'high')
+
+    expect(updated).toBeInstanceOf(Uint8Array)
+    expect(updated).not.toBe(requestBytes)
+    const parsed = JSON.parse(new TextDecoder().decode(updated as Uint8Array))
+    expect(parsed.additionalModelRequestFields).toEqual({
+      output_config: { effort: 'high' }
+    })
+  })
+
+  test('leaves empty, invalid, and unsupported request bodies unchanged', () => {
+    const unsupportedBody = { serialized: false }
+    const bodies = [undefined, null, '', 'not-json', unsupportedBody]
+
+    for (const body of bodies) {
+      expect(injectEffortIntoSerializedBody(body, 'low')).toBe(body)
+    }
+  })
+
   test('uses Kiro CLI-style standard SDK retries for throttling', async () => {
     clearSdkClientCache()
 
