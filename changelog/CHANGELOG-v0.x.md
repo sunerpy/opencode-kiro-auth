@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.0...v0.20.1) (2026-08-06)
+
+
+### Bug Fixes
+
+* **request:** decode byte bodies before effort injection ([#91](https://github.com/sunerpy/opencode-kiro-auth/issues/91)) ([cdb10e0](https://github.com/sunerpy/opencode-kiro-auth/commit/cdb10e08731a4a348cbeb79cdf54aa6205370e9a))
+
 ## [0.20.0](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.19.0...v0.20.0) (2026-08-05)
 
 
