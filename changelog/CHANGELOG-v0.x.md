@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.2...v0.20.3) (2026-08-07)
+
+
+### Bug Fixes
+
+* **request:** recover clean EOF action commitments ([#95](https://github.com/sunerpy/opencode-kiro-auth/issues/95)) ([c37c986](https://github.com/sunerpy/opencode-kiro-auth/commit/c37c986a2319d3c08c69f1af56436e2e8305ddea))
+
 ## [0.20.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.1...v0.20.2) (2026-08-07)
 
 
