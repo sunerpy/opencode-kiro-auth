@@ -6,6 +6,7 @@ import type { RecoveryAttemptFactory, RecoveryAttemptResult } from './recovery-a
 import { accountLogAlias } from './recovery-request-identity'
 import { encodeSseChunk, type SdkStreamingAttempt } from './response-handler'
 import { UpstreamUnexpectedError } from './stream-error'
+import { STREAM_ACTION_COMMITMENT_RETRY_LOG } from './stream-log-events'
 import {
   StreamRecoveryCoordinator,
   type StreamRecoveryMode,
@@ -111,6 +112,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   let initialFailure: unknown
   let finalFailure: unknown
   let quotaRelevant = false
+  let actionCommitmentRetried = false
 
   const getCurrentAttempt = (): RecoveryAttemptContext => {
     if (!currentAttempt) throw new Error('No active Kiro recovery attempt context is available')
@@ -203,7 +205,9 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       accountAliases: [...accountAliasesTried],
       initialFailure: initialFailure === undefined ? null : options.describeError(initialFailure),
       finalFailure: finalFailure === undefined ? null : options.describeError(finalFailure),
-      recovered: terminationReason === 'completed' && initialFailure !== undefined,
+      recovered:
+        terminationReason === 'completed' &&
+        (initialFailure !== undefined || actionCommitmentRetried),
       quotaRelevant
     }
 
@@ -347,7 +351,8 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
           'Kiro SDK event stream retry recovered',
           attemptLogDetails(getCurrentAttempt(), 'completed', undefined, {
             outcome: 'recovered',
-            attempts: options.priorStreamFailures + completion.attemptIndex
+            attempts: options.priorStreamFailures + completion.attemptIndex,
+            ...(actionCommitmentRetried ? { recoveryTrigger: 'clean_eof_action_commitment' } : {})
           })
         )
       }
@@ -366,6 +371,21 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
             quotaNote: 'each exact replay attempt consumes one real SDK send'
           }
         )
+      )
+    },
+    onActionCommitmentRetry: (telemetry) => {
+      actionCommitmentRetried = true
+      logger.warn(
+        STREAM_ACTION_COMMITMENT_RETRY_LOG,
+        attemptLogDetails(getCurrentAttempt(), 'exact_replay', undefined, {
+          outcome: 'retrying',
+          recoveryTrigger: 'clean_eof_action_commitment',
+          actionCommitmentPattern: telemetry.pattern,
+          actionCommitmentVisibleChars: telemetry.visibleChars,
+          availableToolCount: telemetry.availableToolCount,
+          nextAttempt: options.priorStreamFailures + telemetry.attemptIndex + 1,
+          quotaNote: 'the one clean EOF action-commitment replay consumes one real SDK send'
+        })
       )
     },
     onTerminal: finishTerminal,

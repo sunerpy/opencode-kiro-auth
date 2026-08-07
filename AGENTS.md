@@ -149,6 +149,14 @@ delivered:
   **Zero chunks are delivered until the whole delivered prefix is matched**; any
   divergence — or a terminal chunk arriving before catch-up (`early_end`) — aborts
   that attempt. Each attempt reports `Kiro exact replay attempt finished` telemetry.
+- **Clean-EOF action-commitment replay** — separate from semantic truncation. Under
+  `exact_replay` only, a clean EOF may spend one remaining attempt when the exact
+  request exposes tools, the response emitted visible text but zero tool calls and
+  no tool intent, and `action-commitment.ts` recognizes either an immediate
+  first-person execution promise or an ordered unfinished self-owned action
+  sequence. The same `ExactReplayMatcher` withholds duplicate bytes. This dedicated
+  retry runs at most once and does not fail, rotate, rate-limit, or back off the
+  healthy account.
 - **`none`** — under `off`, or when neither tier is eligible; the failure is mapped
   to `UpstreamUnexpectedError` and terminates the stream.
 
@@ -160,7 +168,8 @@ tri-state (`DialectToolResolution` = `none` | `complete` | `incomplete`,
 parser's code-region rules. Under a recovery mode, an `incomplete` resolution makes
 `transformSdkStream` suppress both the dialect `remainderText` and the whole turn's
 tool calls (raw SDK tool calls included), so half an invocation or a partial tool set
-never leaks to the consumer.
+never leaks to the consumer. The action-commitment replay above is a separate,
+pattern-gated reliability guard; it must not be labeled or implemented as truncation.
 
 **Reasoning-signature publication is tier-dependent** (`commitReasoningCorrelation`,
 `request-handler.ts`). A Tier A recovery reports `recovered: true` and MUST NOT
@@ -182,12 +191,13 @@ emitted chunk. It is threaded in via `lifecycle.streamObserver` and exposes
 and `dialectActive`. Stream failure logs carry `emittedReasoningChars`,
 `emittedVisibleChars`, `emittedToolCount`, `sawToolIntent`, plus the transport-side
 `sdkHttpKeepAlive`, `processId`, `bunVersion`, `streamElapsedMs`, and
-`upstreamEventCount`. Two log-event constants live in
+`upstreamEventCount`. Three log-event constants live in
 `src/core/request/stream-log-events.ts` and are re-exported from `request-handler.ts`:
 `STREAM_REQUEST_STARTED_LOG` (`Kiro stream request started`, written unconditionally
 once per inbound streaming request — the denominator for failure-rate measurement) and
 `STREAM_MISSING_COMPLETION_LOG` (`Kiro stream ended without completion metadata`, a
-benign WARN that fires on essentially every stream from this endpoint).
+benign WARN that fires on essentially every stream from this endpoint), plus
+`STREAM_ACTION_COMMITMENT_RETRY_LOG` for the narrow one-shot replay.
 
 **Transport.** `sdk_http_keep_alive` (default `false`) disables socket reuse after a
 request completes, via `httpsAgent: { keepAlive, maxSockets: SDK_MAX_SOCKETS }` in
@@ -331,7 +341,11 @@ and is the only class with direct access to the OpenCode `client` (used for
   `STREAM_MISSING_COMPLETION_LOG` fires on essentially every stream this endpoint
   serves, so treating "no completion metadata" as truncation declares every healthy
   turn truncated and makes a recovery mode replay all of them. The only truncation
-  signal is an unclosed tool intent (`StreamObserver.hasOpenToolIntent`).
+  signal is an unclosed tool intent (`StreamObserver.hasOpenToolIntent`). The narrow
+  clean-EOF action-commitment replay is not a truncation verdict: preserve every
+  additional gate in `StreamRecoveryCoordinator`, including `exact_replay`, available
+  tools, zero tool calls/intent, explicit text pattern, one-use flag, and remaining
+  attempt budget.
 - **Keep the reasoning-signature publication split intact.** A Tier A recovery
   (`recovered: true`) must NOT publish its reasoning envelope — the delivered
   reasoning is old-partial + new-full, so publishing produces a false cache hit and
@@ -428,6 +442,7 @@ four does not surface them. `sqlite-multiprocess-stress.test.ts` uses five.
 | Recovery coordinator / tier decision | `src/core/request/stream-recovery.ts` `StreamRecoveryCoordinator`, `decideRecoveryTier`                                                              |
 | Recovery attempt opening             | `src/core/request/recovery-attempt.ts` `RecoveryAttemptFactory`                                                                                      |
 | Tier B prefix matching               | `src/core/request/replay-matcher.ts` `ExactReplayMatcher`                                                                                            |
+| Clean-EOF action commitment detector | `src/core/request/action-commitment.ts` `detectForwardActionCommitment`                                                                              |
 | Stream observation signals           | `src/plugin/streaming/stream-observer.ts` `StreamObserver`                                                                                           |
 | Stable stream log events             | `src/core/request/stream-log-events.ts` (re-exported from `request-handler.ts`)                                                                      |
 | Semantic truncation verdict          | `src/core/request/response-handler.ts` `isSemanticTruncation`                                                                                        |
