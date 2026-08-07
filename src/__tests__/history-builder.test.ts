@@ -135,11 +135,11 @@ describe('collapseAgenticLoops', () => {
     expect(collapseAgenticLoops(history)).toBe(history)
   })
 
-  test('collapses intermediate assistant text across a multi-pair tool loop', () => {
-    const mkPair = (n: number): CodeWhispererMessage[] => [
+  test('preserves unique assistant text across a multi-pair tool loop', () => {
+    const mkPair = (n: number, content = `preamble ${n}`): CodeWhispererMessage[] => [
       {
         assistantResponseMessage: {
-          content: `preamble ${n}`,
+          content,
           toolUses: [{ input: {}, name: 'tool', toolUseId: `u${n}` }]
         }
       },
@@ -156,12 +156,90 @@ describe('collapseAgenticLoops', () => {
     ]
     const history = [...mkPair(1), ...mkPair(2)]
     const result = collapseAgenticLoops(history)
-    // First pair keeps its original assistant text; subsequent pair's text is emptied,
-    // matching the official Kiro IDE shape for a tool-only assistant turn.
     expect(result[0]?.assistantResponseMessage?.content).toBe('preamble 1')
-    expect(result[2]?.assistantResponseMessage?.content).toBe('')
-    // toolUses are preserved through the collapse.
+    expect(result[2]?.assistantResponseMessage?.content).toBe('preamble 2')
     expect(result[2]?.assistantResponseMessage?.toolUses?.[0]?.toolUseId).toBe('u2')
+  })
+
+  test('removes only a byte-identical consecutive assistant preamble', () => {
+    const mkPair = (n: number): CodeWhispererMessage[] => [
+      {
+        assistantResponseMessage: {
+          content: 'same preamble',
+          toolUses: [{ input: {}, name: 'tool', toolUseId: `u${n}` }]
+        }
+      },
+      {
+        userInputMessage: {
+          content: '',
+          modelId: MODEL,
+          origin: 'AI_EDITOR',
+          userInputMessageContext: {
+            toolResults: [{ toolUseId: `u${n}`, content: [{ text: 'ok' }], status: 'success' }]
+          }
+        }
+      }
+    ]
+    const result = collapseAgenticLoops([...mkPair(1), ...mkPair(2)])
+    expect(result[0]?.assistantResponseMessage?.content).toBe('same preamble')
+    expect(result[2]?.assistantResponseMessage?.content).toBe('')
+    expect(result[2]?.assistantResponseMessage?.toolUses?.[0]?.toolUseId).toBe('u2')
+  })
+
+  test('does not erase forward-looking tool examples around prose checkpoints', () => {
+    const toolPair = (id: string, content: string): CodeWhispererMessage[] => [
+      {
+        assistantResponseMessage: {
+          content,
+          toolUses: [{ input: {}, name: 'tool', toolUseId: id }]
+        }
+      },
+      {
+        userInputMessage: {
+          content: '',
+          modelId: MODEL,
+          origin: 'AI_EDITOR',
+          userInputMessageContext: {
+            toolResults: [{ toolUseId: id, content: [{ text: 'ok' }], status: 'success' }]
+          }
+        }
+      }
+    ]
+    const checkpoint: CodeWhispererMessage[] = [
+      { assistantResponseMessage: { content: 'Next I will continue the task.' } },
+      {
+        userInputMessage: {
+          content: 'Continue.',
+          modelId: MODEL,
+          origin: 'AI_EDITOR'
+        }
+      }
+    ]
+    const history = [
+      ...toolPair('u1', ''),
+      ...toolPair('u2', 'I will inspect the next file and continue.'),
+      ...checkpoint,
+      ...toolPair('u3', ''),
+      ...toolPair('u4', 'I will run the next check and continue.')
+    ]
+
+    const result = collapseAgenticLoops(history)
+    const toolTexts = result
+      .map((entry) => entry.assistantResponseMessage)
+      .filter((assistant) => assistant?.toolUses?.length)
+      .map((assistant) => assistant?.content)
+
+    expect(toolTexts).toEqual([
+      '',
+      'I will inspect the next file and continue.',
+      '',
+      'I will run the next check and continue.'
+    ])
+    expect(
+      result.some(
+        (entry) => entry.assistantResponseMessage?.content === 'Next I will continue the task.'
+      )
+    ).toBe(true)
   })
 })
 
