@@ -191,6 +191,29 @@ describe('handleSdkSuccess — non-streaming', () => {
 })
 
 describe('handleSdkSuccess — streaming', () => {
+  test('attempt observation marks a clean EOF immediate action commitment', async () => {
+    const observer = new StreamObserver()
+    const commitment = '我现在派两个并行任务。'
+    const attempt = await new ResponseHandler().prepareSdkStreamingAttempt({
+      sdkResponse: makeSdkResponse([{ assistantResponseEvent: { content: commitment } }]),
+      model: 'auto',
+      conversationId: 'clean-eof-action-commitment',
+      lifecycle: { streamObserver: observer, availableToolCount: 94 },
+      recoveryMode: 'exact_replay'
+    })
+
+    while (!(await attempt.chunks.next()).done) {}
+
+    expect(attempt.observed()).toEqual({
+      emitted: { visibleChars: commitment.length, toolCount: 0 },
+      sawToolIntent: false,
+      terminalSource: 'clean_eof_without_completion_metadata',
+      availableToolCount: 94,
+      forwardActionCommitment: 'zh_immediate_first_person'
+    })
+    await attempt.close()
+  })
+
   test('live-recovery transformer failure records stream_processing_failure on its observer', async () => {
     const observer = new StreamObserver()
     const malformedEvent = {

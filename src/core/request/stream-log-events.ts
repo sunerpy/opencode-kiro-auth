@@ -7,5 +7,8 @@ export const STREAM_ATTEMPT_STARTED_LOG = 'Kiro stream attempt started'
 /** Stable marker for a clean SDK `done` without completion metadata. */
 export const STREAM_MISSING_COMPLETION_LOG = 'Kiro stream ended without completion metadata'
 
+/** High-confidence prose checkpoint retried once through exact replay. */
+export const STREAM_ACTION_COMMITMENT_RETRY_LOG = 'Kiro clean EOF action commitment retrying'
+
 /** Unified request-terminal summary across success, failure, and cancellation. */
 export const STREAM_TERMINAL_LOG = 'Kiro stream request terminal'

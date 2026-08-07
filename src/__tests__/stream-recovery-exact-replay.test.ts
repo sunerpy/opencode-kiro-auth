@@ -15,6 +15,15 @@ const VISIBLE_OBSERVATION = {
   sawToolIntent: false
 } as const
 
+const COMMITMENT_TEXT = '我现在派两个并行任务。'
+const COMMITMENT_OBSERVATION = {
+  emitted: { visibleChars: COMMITMENT_TEXT.length, toolCount: 0 },
+  sawToolIntent: false,
+  terminalSource: 'clean_eof_without_completion_metadata',
+  availableToolCount: 94,
+  forwardActionCommitment: 'zh_immediate_first_person'
+} as const
+
 function toolCall(index: number, id: string, name: string, argumentsJson: string): unknown {
   return { index, id, function: { name, arguments: argumentsJson } }
 }
@@ -60,6 +69,178 @@ describe('exact replay recovery tier', () => {
 })
 
 describe('StreamRecoveryCoordinator exact replay', () => {
+  test('retries one clean EOF action commitment and releases only the replay suffix', async () => {
+    // Given
+    const first = makeAttempt({
+      output: [
+        chunk('commitment', { content: COMMITMENT_TEXT }),
+        chunk('discarded-finish', {}, 'stop')
+      ],
+      observation: COMMITMENT_OBSERVATION
+    })
+    const replay = makeAttempt({
+      output: [
+        chunk('shadow', { content: COMMITMENT_TEXT }),
+        chunk('task', {
+          tool_calls: [toolCall(0, 'tool-1', 'task', '{"description":"fix titlebar"}')]
+        }),
+        chunk('finish', {}, 'tool_calls')
+      ]
+    })
+    const harness = createHarness([first, replay], { mode: 'exact_replay' })
+
+    // When
+    const labels = await collect(harness.coordinator.stream)
+
+    // Then
+    expect(labels).toEqual(['commitment', 'task', 'finish'])
+    expect(harness.requestedAttempts).toEqual([1, 2])
+    expect(harness.actionCommitmentRetries).toEqual([
+      {
+        attemptIndex: 1,
+        pattern: 'zh_immediate_first_person',
+        visibleChars: COMMITMENT_TEXT.length,
+        availableToolCount: 94
+      }
+    ])
+    expect(harness.replayTelemetry).toEqual([
+      {
+        matchedReasoningChars: 0,
+        matchedVisibleChars: COMMITMENT_TEXT.length,
+        matchedToolCount: 0,
+        divergenceChannel: 'none',
+        replayOutcome: 'caught_up',
+        attempts: 2
+      }
+    ])
+    expect(harness.completions).toEqual([
+      { attemptIndex: 2, recoveryTier: 'exact_replay', recovered: false }
+    ])
+  })
+
+  test('never retries the same action commitment more than once', async () => {
+    // Given
+    const first = makeAttempt({
+      output: [
+        chunk('commitment', { content: COMMITMENT_TEXT }),
+        chunk('discarded-finish', {}, 'stop')
+      ],
+      observation: COMMITMENT_OBSERVATION
+    })
+    const replay = makeAttempt({
+      output: [chunk('shadow', { content: COMMITMENT_TEXT }), chunk('accepted-finish', {}, 'stop')],
+      observation: COMMITMENT_OBSERVATION
+    })
+    const unused = makeAttempt({ output: [chunk('must-not-run', {}, 'stop')] })
+    const harness = createHarness([first, replay, unused], { mode: 'exact_replay' })
+
+    // When
+    const labels = await collect(harness.coordinator.stream)
+
+    // Then
+    expect(labels).toEqual(['commitment', 'accepted-finish'])
+    expect(harness.requestedAttempts).toEqual([1, 2])
+    expect(harness.actionCommitmentRetries).toHaveLength(1)
+  })
+
+  test('does not open a third attempt when the action-commitment replay diverges', async () => {
+    // Given
+    const mapped = new TestStreamFailure('action commitment replay diverged')
+    const first = makeAttempt({
+      output: [
+        chunk('commitment', { content: COMMITMENT_TEXT }),
+        chunk('discarded-finish', {}, 'stop')
+      ],
+      observation: COMMITMENT_OBSERVATION
+    })
+    const replay = makeAttempt({
+      output: [chunk('divergent-shadow', { content: '不同的开头。' })]
+    })
+    const unused = makeAttempt({ output: [chunk('must-not-run', {}, 'stop')] })
+    const harness = createHarness([first, replay, unused], {
+      mode: 'exact_replay',
+      mapError: () => mapped
+    })
+    const reader = harness.coordinator.stream.getReader()
+
+    // When
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('commitment')
+
+    // Then
+    await expectRejection(reader.read(), mapped)
+    expect(harness.requestedAttempts).toEqual([1, 2])
+    expect(harness.actionCommitmentRetries).toHaveLength(1)
+    expect(harness.replayTelemetry[0]?.divergenceChannel).toBe('text')
+    expect(harness.completions).toEqual([])
+    expect(harness.terminalCalls()).toBe(1)
+  })
+
+  test('requires every clean EOF action-commitment safety gate', async () => {
+    const cases = [
+      {
+        name: 'completion metadata',
+        observation: {
+          ...COMMITMENT_OBSERVATION,
+          terminalSource: 'completion_metadata_received'
+        } as const,
+        mode: 'exact_replay' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'available tools',
+        observation: { ...COMMITMENT_OBSERVATION, availableToolCount: 0 },
+        mode: 'exact_replay' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'no prior tool intent',
+        observation: { ...COMMITMENT_OBSERVATION, sawToolIntent: true },
+        mode: 'exact_replay' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'detected commitment',
+        observation: { ...COMMITMENT_OBSERVATION, forwardActionCommitment: null },
+        mode: 'exact_replay' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'exact replay mode',
+        observation: COMMITMENT_OBSERVATION,
+        mode: 'reasoning_restart' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'remaining attempt budget',
+        observation: COMMITMENT_OBSERVATION,
+        mode: 'exact_replay' as const,
+        maxAttempts: 1
+      }
+    ]
+
+    for (const row of cases) {
+      const first = makeAttempt({
+        output: [
+          chunk(`${row.name}-commitment`, { content: COMMITMENT_TEXT }),
+          chunk(`${row.name}-finish`, {}, 'stop')
+        ],
+        observation: row.observation
+      })
+      const unused = makeAttempt({ output: [chunk(`${row.name}-must-not-run`, {}, 'stop')] })
+      const harness = createHarness([first, unused], {
+        mode: row.mode,
+        maxAttempts: row.maxAttempts
+      })
+
+      expect(await collect(harness.coordinator.stream)).toEqual([
+        `${row.name}-commitment`,
+        `${row.name}-finish`
+      ])
+      expect(harness.requestedAttempts).toEqual([1])
+      expect(harness.actionCommitmentRetries).toEqual([])
+    }
+  })
+
   test('matches different text chunk splits and releases only the new suffix plus one terminal', async () => {
     // Given
     const first = makeAttempt({

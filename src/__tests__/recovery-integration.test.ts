@@ -5,6 +5,7 @@ import {
   type LiveRecoveryOptions
 } from '../core/request/recovery-integration.js'
 import type { SdkStreamingAttempt } from '../core/request/response-handler.js'
+import { STREAM_ACTION_COMMITMENT_RETRY_LOG } from '../core/request/stream-log-events.js'
 import { AccountManager } from '../plugin/accounts.js'
 import * as logger from '../plugin/logger.js'
 import type { ManagedAccount } from '../plugin/types.js'
@@ -509,6 +510,116 @@ describe('createLiveRecoveryResponse — account rotation', () => {
       expect(preStreamRecord).not.toHaveProperty('emittedVisibleChars')
       expect(preStreamRecord).not.toHaveProperty('emittedToolCount')
       expect(preStreamRecord).not.toHaveProperty('sawToolIntent')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  test('action-commitment replay does not classify or rotate the healthy account', async () => {
+    const commitment = '我现在派两个并行任务。'
+    const account = makeAccount('commitment')
+    let selectCalls = 0
+    let markRateLimitedCalls = 0
+    let retryDelayCalls = 0
+    let waitCalls = 0
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {})
+    const attemptFactory: Pick<RecoveryAttemptFactory, 'open'> = {
+      open: async (attemptIndex, selectedAccount) => ({
+        account: selectedAccount,
+        logDetails: (details = {}) => ({
+          conversationId: 'conversation-action-commitment',
+          model: 'claude-opus-5-xhigh',
+          terminalSource: 'clean_eof_without_completion_metadata',
+          ...details
+        }),
+        handle: {
+          ...(attemptIndex === 1
+            ? makeAttempt({
+                output: [
+                  chunk('commitment', { content: commitment }),
+                  chunk('discarded-finish', {}, 'stop')
+                ],
+                observation: {
+                  emitted: { visibleChars: commitment.length, toolCount: 0 },
+                  sawToolIntent: false,
+                  terminalSource: 'clean_eof_without_completion_metadata',
+                  availableToolCount: 94,
+                  forwardActionCommitment: 'zh_immediate_first_person'
+                }
+              })
+            : makeAttempt({
+                output: [
+                  chunk('shadow', { content: commitment }),
+                  chunk('task', {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'tool-1',
+                        function: { name: 'task', arguments: '{"description":"fix"}' }
+                      }
+                    ]
+                  }),
+                  chunk('finish', {}, 'tool_calls')
+                ]
+              })),
+          complete: async () => {}
+        }
+      })
+    }
+    const harness = recoveryOptions(attemptFactory)
+
+    try {
+      const response = await createLiveRecoveryResponse({
+        ...harness.options,
+        mode: 'exact_replay',
+        initialAccount: account,
+        retryDelay: () => {
+          retryDelayCalls++
+          return 0
+        },
+        wait: async () => {
+          waitCalls++
+        },
+        selectAlternativeAccount: async () => {
+          selectCalls++
+          return null
+        },
+        markRateLimited: () => {
+          markRateLimitedCalls++
+        }
+      })
+      await response.text()
+
+      expect(harness.options.failedAccountIds).toEqual(new Set())
+      expect(selectCalls).toBe(0)
+      expect(markRateLimitedCalls).toBe(0)
+      expect(retryDelayCalls).toBe(0)
+      expect(waitCalls).toBe(0)
+      expect(
+        warn.mock.calls.filter((call) => call[0] === 'Kiro SDK event stream iteration failed')
+      ).toEqual([])
+      expect(
+        warn.mock.calls.find((call) => call[0] === STREAM_ACTION_COMMITMENT_RETRY_LOG)?.[1]
+      ).toMatchObject({
+        outcome: 'retrying',
+        recoveryTrigger: 'clean_eof_action_commitment',
+        actionCommitmentPattern: 'zh_immediate_first_person',
+        actionCommitmentVisibleChars: commitment.length,
+        availableToolCount: 94,
+        nextAttempt: 2
+      })
+      expect(harness.terminalRecords()).toEqual([
+        expect.objectContaining({
+          conversationId: 'conversation-action-commitment',
+          attemptsUsed: 2,
+          accountsTried: 1,
+          initialFailure: null,
+          finalFailure: null,
+          recovered: true,
+          quotaRelevant: false,
+          terminalSource: 'clean_eof_without_completion_metadata'
+        })
+      ])
     } finally {
       warn.mockRestore()
     }

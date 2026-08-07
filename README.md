@@ -262,6 +262,13 @@ are already atomic by default; for ordinary requests, enable
 `stream_buffer_until_complete` when task continuity is more important than
 seeing tokens arrive live.
 
+With `stream_recovery_mode: "exact_replay"`, the plugin may make one additional
+SDK send after that otherwise-benign clean EOF only when a tool-enabled response
+ends with an explicit immediate or unfinished self-owned action commitment but
+contains no tool call or tool intent. The replay must byte-match the already
+delivered response before any new suffix is released. This is not a generic
+missing-metadata retry, and the additional SDK send consumes quota.
+
 ## Migration
 
 If you're upgrading from a version that used the provider id `kiro` instead of

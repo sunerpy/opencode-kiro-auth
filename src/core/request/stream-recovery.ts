@@ -8,6 +8,8 @@
  */
 
 import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output.js'
+import type { StreamTerminalSource } from '../../plugin/streaming/stream-observer.js'
+import type { ForwardActionCommitmentKind } from './action-commitment.js'
 import {
   ExactReplayMatcher,
   type ReplayDivergenceChannel,
@@ -33,6 +35,9 @@ export type AttemptObservation = {
     readonly toolCount: number
   }
   readonly sawToolIntent: boolean
+  readonly terminalSource?: StreamTerminalSource | null
+  readonly availableToolCount?: number
+  readonly forwardActionCommitment?: ForwardActionCommitmentKind | null
 }
 
 export type AttemptHandle = {
@@ -54,6 +59,13 @@ export type ReplayAttemptTelemetry = ReplayMatchProgress & {
   readonly divergenceChannel: ReplayDivergenceChannel
   readonly replayOutcome: 'caught_up' | 'diverged' | 'failed'
   readonly attempts: number
+}
+
+export type ActionCommitmentRetryTelemetry = {
+  readonly attemptIndex: number
+  readonly pattern: ForwardActionCommitmentKind
+  readonly visibleChars: number
+  readonly availableToolCount: number
 }
 
 export type StreamRecoveryTerminationReason =
@@ -79,6 +91,9 @@ export type StreamRecoveryOptions = {
   readonly onTerminal: (reason: StreamRecoveryTerminationReason) => void
   readonly onCancel?: (reason: unknown) => void
   readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry, failure?: Error) => void
+  readonly onActionCommitmentRetry?: (
+    telemetry: ActionCommitmentRetryTelemetry
+  ) => void | Promise<void>
 }
 
 export function decideRecoveryTier(input: RecoveryDecisionInput): RecoveryTier {
@@ -142,6 +157,8 @@ export class StreamRecoveryCoordinator {
   private sawToolIntent = false
   private activeRecoveryTier: RecoveryTier = 'none'
   private replayMatcher: ExactReplayMatcher | undefined
+  private actionCommitmentRetryUsed = false
+  private actionCommitmentReplayPending = false
   private terminal = false
   private completionFired = false
   private abortListener: (() => void) | undefined
@@ -233,6 +250,12 @@ export class StreamRecoveryCoordinator {
           }
           continue
         }
+        const observation = attempt.observed()
+        const actionCommitmentRetry = this.actionCommitmentRetryTelemetry(observation)
+        if (actionCommitmentRetry) {
+          if (!(await this.retryActionCommitment(observation, actionCommitmentRetry))) return
+          continue
+        }
         await this.complete(controller)
         return
       }
@@ -248,7 +271,10 @@ export class StreamRecoveryCoordinator {
         continue
       }
       if (match?.kind === 'release') {
-        if (match.caughtUp) this.reportReplayAttempt('caught_up', 'none')
+        if (match.caughtUp) {
+          this.actionCommitmentReplayPending = false
+          this.reportReplayAttempt('caught_up', 'none')
+        }
         this.pendingDeliveryChunks.push(...match.chunks)
         continue
       }
@@ -305,6 +331,13 @@ export class StreamRecoveryCoordinator {
     await this.closeActiveAttempt()
     if (this.terminal) return false
 
+    if (this.actionCommitmentReplayPending) {
+      this.actionCommitmentReplayPending = false
+      this.finish('recovery_unavailable')
+      controller.error(this.options.mapError(failure))
+      return false
+    }
+
     const tier = decideRecoveryTier({
       mode: this.options.mode,
       emitted: {
@@ -332,6 +365,56 @@ export class StreamRecoveryCoordinator {
       })
     }
     await this.options.delayFn(this.attemptIndex, this.options.signal, failure)
+    return !this.terminal
+  }
+
+  private actionCommitmentRetryTelemetry(
+    observation: AttemptObservation
+  ): ActionCommitmentRetryTelemetry | null {
+    const pattern = observation.forwardActionCommitment
+    const availableToolCount = observation.availableToolCount ?? 0
+    if (
+      this.options.mode !== 'exact_replay' ||
+      this.actionCommitmentRetryUsed ||
+      this.attemptIndex >= this.options.maxAttempts ||
+      observation.terminalSource !== 'clean_eof_without_completion_metadata' ||
+      observation.emitted.visibleChars === 0 ||
+      observation.emitted.toolCount !== 0 ||
+      this.delivered.toolUses().length !== 0 ||
+      observation.sawToolIntent ||
+      availableToolCount === 0 ||
+      pattern === null ||
+      pattern === undefined
+    ) {
+      return null
+    }
+    return {
+      attemptIndex: this.attemptIndex,
+      pattern,
+      visibleChars: this.delivered.visibleText.length,
+      availableToolCount
+    }
+  }
+
+  private async retryActionCommitment(
+    observation: AttemptObservation,
+    telemetry: ActionCommitmentRetryTelemetry
+  ): Promise<boolean> {
+    this.actionCommitmentRetryUsed = true
+    this.mergeObservation(observation)
+    this.pendingTerminalChunks.length = 0
+    this.pendingDeliveryChunks.length = 0
+    await this.closeActiveAttempt()
+    if (this.terminal) return false
+
+    this.activeRecoveryTier = 'exact_replay'
+    this.actionCommitmentReplayPending = true
+    this.replayMatcher = new ExactReplayMatcher({
+      reasoningText: this.delivered.reasoningText,
+      visibleText: this.delivered.visibleText,
+      toolUses: this.delivered.toolUses()
+    })
+    await this.options.onActionCommitmentRetry?.(telemetry)
     return !this.terminal
   }
 

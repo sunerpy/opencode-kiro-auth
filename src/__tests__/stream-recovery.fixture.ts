@@ -1,6 +1,7 @@
 import { expect } from 'bun:test'
 import {
   StreamRecoveryCoordinator,
+  type ActionCommitmentRetryTelemetry,
   type AttemptHandle,
   type AttemptObservation,
   type ReplayAttemptTelemetry,
@@ -83,6 +84,7 @@ export function createHarness(
   const requestedAttempts: number[] = []
   const completions: StreamRecoveryCompletion[] = []
   const replayTelemetry: ReplayAttemptTelemetry[] = []
+  const actionCommitmentRetries: ActionCommitmentRetryTelemetry[] = []
   let terminalCalls = 0
   const signal = overrides.signal ?? new AbortController().signal
   const coordinator = new StreamRecoveryCoordinator({
@@ -106,6 +108,9 @@ export function createHarness(
     onReplayAttempt: (telemetry) => {
       replayTelemetry.push(telemetry)
     },
+    onActionCommitmentRetry: (telemetry) => {
+      actionCommitmentRetries.push(telemetry)
+    },
     onTerminal: () => {
       terminalCalls++
     }
@@ -115,6 +120,7 @@ export function createHarness(
     requestedAttempts,
     completions,
     replayTelemetry,
+    actionCommitmentRetries,
     terminalCalls: () => terminalCalls
   }
 }
