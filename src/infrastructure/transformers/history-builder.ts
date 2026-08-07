@@ -21,13 +21,14 @@ import { deduplicateToolResults } from './tool-transformer.js'
  * (intent detection, greeting) every iteration. When replayed for the next user turn, the
  * model sees duplicate preambles and gets confused.
  *
- * Strips text from intermediate ASST(toolUses)→USER(toolResults) pairs, keeping only the
- * first assistant text and all tool_use/tool_result pairs.
+ * Removes only byte-identical consecutive assistant preambles from
+ * ASST(toolUses)→USER(toolResults) pairs. Unique text is part of the tool-call
+ * semantics and must survive replay.
  *
- * Collapsed turns carry `content: ''`, matching the official Kiro IDE shape for a
- * tool-only assistant turn. A placeholder string here is not cosmetic: the model reads
- * it as dozens of in-context examples of what an assistant turn looks like when it is
- * about to call a tool, and echoes it verbatim instead of emitting a real tool call.
+ * Deduplicated turns carry `content: ''`, matching the official Kiro IDE shape
+ * for a tool-only assistant turn. Blanket removal is unsafe: it changes unique
+ * "text + tool call" examples into tool-only examples while leaving prose-only
+ * stop turns intact.
  */
 export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhispererMessage[] {
   if (history.length < 4) return history
@@ -58,6 +59,7 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
       const pairCount = (seqEnd - seqStart) / 2
 
       if (pairCount > 1) {
+        let previousContent: string | undefined
         for (let k = seqStart; k < seqEnd; k += 2) {
           const asst = history[k]
           const user = history[k + 1]
@@ -65,7 +67,13 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
           if (!asst?.assistantResponseMessage || !user) continue
           const assistantResponse = asst.assistantResponseMessage
 
-          if (k === seqStart) {
+          const duplicateConsecutivePreamble =
+            k !== seqStart &&
+            assistantResponse.content.length > 0 &&
+            assistantResponse.content === previousContent
+          previousContent = assistantResponse.content
+
+          if (!duplicateConsecutivePreamble) {
             result.push(asst)
           } else {
             if (!assistantResponse.toolUses) continue

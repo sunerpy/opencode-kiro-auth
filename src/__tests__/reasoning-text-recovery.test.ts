@@ -221,13 +221,15 @@ describe('buildHistory — reasoning_content recovery', () => {
     expect(JSON.stringify(buildHistory(msgs, MODEL))).not.toContain('<thinking>')
   })
 
-  test('collapseAgenticLoops still strips intermediate turns, bounding replay cost', () => {
+  test('collapseAgenticLoops preserves visible tool text while bounding reasoning replay', () => {
     const msgs = toolLoopMsgs(['t1', 't2', 't3', 't4'])
     const serialized = JSON.stringify(buildHistory(msgs, MODEL))
     expect(serialized).toContain('<thinking>t4</thinking>')
     expect(serialized).not.toContain('<thinking>t1</thinking>')
     expect(serialized).not.toContain('<thinking>t2</thinking>')
     expect(serialized).not.toContain('<thinking>t3</thinking>')
+    expect(serialized).toContain('step 2')
+    expect(serialized).toContain('step 3')
     expect(serialized).not.toContain('tool calling continues')
   })
 })

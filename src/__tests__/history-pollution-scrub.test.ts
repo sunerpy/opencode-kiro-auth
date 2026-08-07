@@ -140,11 +140,12 @@ describe('long tool chain leaves no marker on the wire', () => {
   const state: any = request.conversationState
   const serialized = JSON.stringify(state)
 
-  test('the collapse produced at least three emptied assistant turns', () => {
-    const emptied = ((state.history ?? []) as CodeWhispererMessage[]).filter(
-      (e) => e.assistantResponseMessage?.toolUses && e.assistantResponseMessage.content === ''
-    )
-    expect(emptied.length).toBeGreaterThanOrEqual(3)
+  test('the collapse preserves each unique assistant tool preamble', () => {
+    const toolPreambles = ((state.history ?? []) as CodeWhispererMessage[])
+      .filter((entry) => entry.assistantResponseMessage?.toolUses)
+      .map((entry) => entry.assistantResponseMessage?.content)
+
+    expect(toolPreambles).toEqual(['starting the chain', 'step 2', 'step 3', 'step 4', 'step 5'])
   })
 
   test('the full serialization contains neither marker literal', () => {
