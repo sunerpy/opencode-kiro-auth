@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.2](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.1...v0.20.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **history:** preserve unique tool-loop assistant text ([#93](https://github.com/sunerpy/opencode-kiro-auth/issues/93)) ([1c9496f](https://github.com/sunerpy/opencode-kiro-auth/commit/1c9496f39d765fca92cd1d83d587702e1d05284c))
+
 ## [0.20.1](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.0...v0.20.1) (2026-08-06)
 
 
