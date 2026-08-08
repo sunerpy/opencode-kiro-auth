@@ -8,6 +8,7 @@ import {
 import { KIRO_REQUEST_KIND_HEADER } from '../core/request/request-kind.js'
 import { ResponseHandler, type SdkResponseLifecycle } from '../core/request/response-handler.js'
 import { SdkEventStreamIterationError } from '../core/request/stream-error.js'
+import { STREAM_EMPTY_CLEAN_EOF_RETRY_LOG } from '../core/request/stream-log-events.js'
 import { encodeRefreshToken } from '../kiro/auth.js'
 import { AccountManager } from '../plugin/accounts.js'
 import * as logger from '../plugin/logger.js'
@@ -3714,13 +3715,16 @@ describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix',
     }
   })
 
-  test('an empty upstream stream in recovery mode stays a success, not a truncation', async () => {
+  test('an empty clean EOF retries once without account failure classification', async () => {
     const acc = makeAccount({ id: 'A', failCount: 2, unhealthyReason: 'transient' })
     const logs = captureLogger()
     try {
       const { handler, fakes } = buildHandler({
         selectResults: [acc],
-        sdkResults: [sdkStream([]), sdkStream([{ assistantResponseEvent: { content: 'unused' } }])],
+        sdkResults: [
+          sdkStream([]),
+          sdkStream([{ assistantResponseEvent: { content: 'recovered answer' } }])
+        ],
         streaming: true,
         useRealResponseHandler: true,
         streamRecoveryMode: 'reasoning_restart'
@@ -3730,8 +3734,15 @@ describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix',
       const response = await handler.handle(KIRO_URL, { body: JSON.stringify({}) }, noToast)
       const frames = sseFrames(await response.text())
 
-      expect(fakes.sdkSend).toHaveBeenCalledTimes(1)
-      expect(frames.map((frame) => frame.choices?.[0]?.finish_reason)).toEqual(['stop'])
+      expect(fakes.sdkSend).toHaveBeenCalledTimes(2)
+      expect(frames.map((frame) => frame.choices?.[0]?.delta?.content ?? '').join('')).toBe(
+        'recovered answer'
+      )
+      expect(
+        frames
+          .map((frame) => frame.choices?.[0]?.finish_reason)
+          .filter((finishReason) => finishReason !== null)
+      ).toEqual(['stop'])
       expect(acc.failCount).toBe(0)
       expect(fakes.usageTracker.syncUsage).toHaveBeenCalledTimes(1)
       expect(
@@ -3739,8 +3750,14 @@ describe('RequestHandler.handle — §9 Tier A recovery fault-injection matrix',
           (call) => call[0] === STREAM_FAILURE_LOG
         )
       ).toBe(false)
-      // The truncation predicate requires an unclosed tool intent, so a zero-event
-      // stream is only ever marked, never turned into a recoverable failure.
+      expect(records(logs.warn, STREAM_EMPTY_CLEAN_EOF_RETRY_LOG)).toEqual([
+        expect.objectContaining({
+          outcome: 'retrying',
+          recoveryTrigger: 'clean_eof_empty_response',
+          nextAttempt: 2
+        })
+      ])
+      expect(records(logs.warn, STREAM_MISSING_COMPLETION_LOG)).toHaveLength(2)
       expect(records(logs.warn, STREAM_MISSING_COMPLETION_LOG)[0]).toMatchObject({
         outcome: 'clean_eof_without_completion_metadata',
         emittedReasoningChars: 0,
