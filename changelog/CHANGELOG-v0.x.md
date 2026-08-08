@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.4](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.3...v0.20.4) (2026-08-08)
+
+
+### Bug Fixes
+
+* **request:** retry empty clean EOF once ([#97](https://github.com/sunerpy/opencode-kiro-auth/issues/97)) ([f246c0c](https://github.com/sunerpy/opencode-kiro-auth/commit/f246c0c8d06e4be0310a3142df4733da9942fa5c))
+
 ## [0.20.3](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.2...v0.20.3) (2026-08-07)
 
 
