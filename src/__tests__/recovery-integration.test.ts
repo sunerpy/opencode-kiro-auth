@@ -5,7 +5,10 @@ import {
   type LiveRecoveryOptions
 } from '../core/request/recovery-integration.js'
 import type { SdkStreamingAttempt } from '../core/request/response-handler.js'
-import { STREAM_ACTION_COMMITMENT_RETRY_LOG } from '../core/request/stream-log-events.js'
+import {
+  STREAM_ACTION_COMMITMENT_RETRY_LOG,
+  STREAM_EMPTY_CLEAN_EOF_RETRY_LOG
+} from '../core/request/stream-log-events.js'
 import { AccountManager } from '../plugin/accounts.js'
 import * as logger from '../plugin/logger.js'
 import type { ManagedAccount } from '../plugin/types.js'
@@ -611,6 +614,104 @@ describe('createLiveRecoveryResponse — account rotation', () => {
       expect(harness.terminalRecords()).toEqual([
         expect.objectContaining({
           conversationId: 'conversation-action-commitment',
+          attemptsUsed: 2,
+          accountsTried: 1,
+          initialFailure: null,
+          finalFailure: null,
+          recovered: true,
+          quotaRelevant: false,
+          terminalSource: 'clean_eof_without_completion_metadata'
+        })
+      ])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  test('empty clean EOF retry does not classify, delay, or rotate the healthy account', async () => {
+    const account = makeAccount('empty-eof')
+    const selectedAccountIds: string[] = []
+    let selectCalls = 0
+    let markRateLimitedCalls = 0
+    let retryDelayCalls = 0
+    let waitCalls = 0
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {})
+    const attemptFactory: Pick<RecoveryAttemptFactory, 'open'> = {
+      open: async (attemptIndex, selectedAccount) => {
+        selectedAccountIds.push(selectedAccount.id)
+        return {
+          account: selectedAccount,
+          logDetails: (details = {}) => ({
+            conversationId: 'conversation-empty-clean-eof',
+            model: 'claude-opus-5-max',
+            terminalSource: 'clean_eof_without_completion_metadata',
+            ...details
+          }),
+          handle: {
+            ...(attemptIndex === 1
+              ? makeAttempt({
+                  output: [chunk('discarded-empty-finish', {}, 'stop')],
+                  observation: {
+                    emitted: { visibleChars: 0, toolCount: 0 },
+                    sawToolIntent: false,
+                    terminalSource: 'clean_eof_without_completion_metadata'
+                  }
+                })
+              : makeAttempt({
+                  output: [
+                    chunk('continued', { content: 'continued after tool error' }),
+                    chunk('finish', {}, 'stop')
+                  ]
+                })),
+            complete: async () => {}
+          }
+        }
+      }
+    }
+    const harness = recoveryOptions(attemptFactory)
+
+    try {
+      const response = await createLiveRecoveryResponse({
+        ...harness.options,
+        mode: 'exact_replay',
+        maxAttempts: 2,
+        initialAccount: account,
+        retryDelay: () => {
+          retryDelayCalls++
+          return 0
+        },
+        wait: async () => {
+          waitCalls++
+        },
+        selectAlternativeAccount: async () => {
+          selectCalls++
+          return null
+        },
+        markRateLimited: () => {
+          markRateLimitedCalls++
+        }
+      })
+      await response.text()
+
+      expect(selectedAccountIds).toEqual([account.id, account.id])
+      expect(harness.options.failedAccountIds).toEqual(new Set())
+      expect(selectCalls).toBe(0)
+      expect(markRateLimitedCalls).toBe(0)
+      expect(retryDelayCalls).toBe(0)
+      expect(waitCalls).toBe(0)
+      expect(
+        warn.mock.calls.filter((call) => call[0] === 'Kiro SDK event stream iteration failed')
+      ).toEqual([])
+      expect(
+        warn.mock.calls.find((call) => call[0] === STREAM_EMPTY_CLEAN_EOF_RETRY_LOG)?.[1]
+      ).toMatchObject({
+        outcome: 'retrying',
+        recoveryTrigger: 'clean_eof_empty_response',
+        nextAttempt: 2
+      })
+      expect(harness.terminalRecords()).toEqual([
+        expect.objectContaining({
+          conversationId: 'conversation-empty-clean-eof',
           attemptsUsed: 2,
           accountsTried: 1,
           initialFailure: null,

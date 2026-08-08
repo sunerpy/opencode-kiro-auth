@@ -10,5 +10,8 @@ export const STREAM_MISSING_COMPLETION_LOG = 'Kiro stream ended without completi
 /** High-confidence prose checkpoint retried once through exact replay. */
 export const STREAM_ACTION_COMMITMENT_RETRY_LOG = 'Kiro clean EOF action commitment retrying'
 
+/** Fully empty clean EOF retried once on the same account without failure classification. */
+export const STREAM_EMPTY_CLEAN_EOF_RETRY_LOG = 'Kiro empty clean EOF retrying'
+
 /** Unified request-terminal summary across success, failure, and cancellation. */
 export const STREAM_TERMINAL_LOG = 'Kiro stream request terminal'

@@ -68,6 +68,10 @@ export type ActionCommitmentRetryTelemetry = {
   readonly availableToolCount: number
 }
 
+export type EmptyCleanEofRetryTelemetry = {
+  readonly attemptIndex: number
+}
+
 export type StreamRecoveryTerminationReason =
   | 'completed'
   | 'caller_abort'
@@ -94,6 +98,7 @@ export type StreamRecoveryOptions = {
   readonly onActionCommitmentRetry?: (
     telemetry: ActionCommitmentRetryTelemetry
   ) => void | Promise<void>
+  readonly onEmptyCleanEofRetry?: (telemetry: EmptyCleanEofRetryTelemetry) => void | Promise<void>
 }
 
 export function decideRecoveryTier(input: RecoveryDecisionInput): RecoveryTier {
@@ -159,6 +164,7 @@ export class StreamRecoveryCoordinator {
   private replayMatcher: ExactReplayMatcher | undefined
   private actionCommitmentRetryUsed = false
   private actionCommitmentReplayPending = false
+  private emptyCleanEofRetryUsed = false
   private terminal = false
   private completionFired = false
   private abortListener: (() => void) | undefined
@@ -254,6 +260,11 @@ export class StreamRecoveryCoordinator {
         const actionCommitmentRetry = this.actionCommitmentRetryTelemetry(observation)
         if (actionCommitmentRetry) {
           if (!(await this.retryActionCommitment(observation, actionCommitmentRetry))) return
+          continue
+        }
+        const emptyCleanEofRetry = this.emptyCleanEofRetryTelemetry(observation)
+        if (emptyCleanEofRetry) {
+          if (!(await this.retryEmptyCleanEof(observation, emptyCleanEofRetry))) return
           continue
         }
         await this.complete(controller)
@@ -415,6 +426,42 @@ export class StreamRecoveryCoordinator {
       toolUses: this.delivered.toolUses()
     })
     await this.options.onActionCommitmentRetry?.(telemetry)
+    return !this.terminal
+  }
+
+  private emptyCleanEofRetryTelemetry(
+    observation: AttemptObservation
+  ): EmptyCleanEofRetryTelemetry | null {
+    if (
+      this.options.mode === 'off' ||
+      this.emptyCleanEofRetryUsed ||
+      this.attemptIndex >= this.options.maxAttempts ||
+      observation.terminalSource !== 'clean_eof_without_completion_metadata' ||
+      observation.emitted.visibleChars !== 0 ||
+      observation.emitted.toolCount !== 0 ||
+      this.delivered.visibleText.length !== 0 ||
+      this.delivered.toolUses().length !== 0 ||
+      observation.sawToolIntent ||
+      this.sawToolIntent
+    ) {
+      return null
+    }
+    return { attemptIndex: this.attemptIndex }
+  }
+
+  private async retryEmptyCleanEof(
+    observation: AttemptObservation,
+    telemetry: EmptyCleanEofRetryTelemetry
+  ): Promise<boolean> {
+    this.emptyCleanEofRetryUsed = true
+    this.mergeObservation(observation)
+    this.pendingTerminalChunks.length = 0
+    this.pendingDeliveryChunks.length = 0
+    await this.closeActiveAttempt()
+    if (this.terminal) return false
+
+    this.activeRecoveryTier = 'reasoning_restart'
+    await this.options.onEmptyCleanEofRetry?.(telemetry)
     return !this.terminal
   }
 

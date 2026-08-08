@@ -24,6 +24,12 @@ const COMMITMENT_OBSERVATION = {
   forwardActionCommitment: 'zh_immediate_first_person'
 } as const
 
+const EMPTY_CLEAN_EOF_OBSERVATION = {
+  emitted: { visibleChars: 0, toolCount: 0 },
+  sawToolIntent: false,
+  terminalSource: 'clean_eof_without_completion_metadata'
+} as const
+
 function toolCall(index: number, id: string, name: string, argumentsJson: string): unknown {
   return { index, id, function: { name, arguments: argumentsJson } }
 }
@@ -69,6 +75,101 @@ describe('exact replay recovery tier', () => {
 })
 
 describe('StreamRecoveryCoordinator exact replay', () => {
+  test('retries one fully empty clean EOF through reasoning restart', async () => {
+    for (const mode of ['reasoning_restart', 'exact_replay'] as const) {
+      const first = makeAttempt({
+        output: [chunk(`${mode}-discarded-finish`, {}, 'stop')],
+        observation: EMPTY_CLEAN_EOF_OBSERVATION
+      })
+      const retry = makeAttempt({
+        output: [
+          chunk(`${mode}-continued`, { content: 'continued' }),
+          chunk(`${mode}-finish`, {}, 'stop')
+        ]
+      })
+      const harness = createHarness([first, retry], { mode })
+
+      expect(await collect(harness.coordinator.stream)).toEqual([
+        `${mode}-continued`,
+        `${mode}-finish`
+      ])
+      expect(harness.requestedAttempts).toEqual([1, 2])
+      expect(harness.emptyCleanEofRetries).toEqual([{ attemptIndex: 1 }])
+      expect(harness.actionCommitmentRetries).toEqual([])
+      expect(harness.completions).toEqual([
+        { attemptIndex: 2, recoveryTier: 'reasoning_restart', recovered: true }
+      ])
+    }
+  })
+
+  test('never retries a fully empty clean EOF more than once', async () => {
+    const first = makeAttempt({
+      output: [chunk('discarded-first-finish', {}, 'stop')],
+      observation: EMPTY_CLEAN_EOF_OBSERVATION
+    })
+    const retry = makeAttempt({
+      output: [chunk('accepted-second-finish', {}, 'stop')],
+      observation: EMPTY_CLEAN_EOF_OBSERVATION
+    })
+    const unused = makeAttempt({ output: [chunk('must-not-run', {}, 'stop')] })
+    const harness = createHarness([first, retry, unused], {
+      mode: 'exact_replay',
+      maxAttempts: 3
+    })
+
+    expect(await collect(harness.coordinator.stream)).toEqual(['accepted-second-finish'])
+    expect(harness.requestedAttempts).toEqual([1, 2])
+    expect(harness.emptyCleanEofRetries).toEqual([{ attemptIndex: 1 }])
+  })
+
+  test('requires every empty clean EOF safety gate', async () => {
+    const cases = [
+      {
+        name: 'completion metadata',
+        observation: {
+          ...EMPTY_CLEAN_EOF_OBSERVATION,
+          terminalSource: 'completion_metadata_received'
+        } as const,
+        mode: 'exact_replay' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'no tool intent',
+        observation: { ...EMPTY_CLEAN_EOF_OBSERVATION, sawToolIntent: true },
+        mode: 'exact_replay' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'enabled mode',
+        observation: EMPTY_CLEAN_EOF_OBSERVATION,
+        mode: 'off' as const,
+        maxAttempts: 2
+      },
+      {
+        name: 'remaining attempt budget',
+        observation: EMPTY_CLEAN_EOF_OBSERVATION,
+        mode: 'exact_replay' as const,
+        maxAttempts: 1
+      }
+    ]
+
+    for (const row of cases) {
+      const first = makeAttempt({
+        output: [chunk(`${row.name}-finish`, {}, 'stop')],
+        observation: row.observation
+      })
+      const unused = makeAttempt({ output: [chunk(`${row.name}-must-not-run`, {}, 'stop')] })
+      const harness = createHarness([first, unused], {
+        mode: row.mode,
+        maxAttempts: row.maxAttempts
+      })
+
+      expect(await collect(harness.coordinator.stream)).toEqual([`${row.name}-finish`])
+      expect(harness.requestedAttempts).toEqual([1])
+      expect(harness.emptyCleanEofRetries).toEqual([])
+    }
+  })
+
   test('retries one clean EOF action commitment and releases only the replay suffix', async () => {
     // Given
     const first = makeAttempt({
