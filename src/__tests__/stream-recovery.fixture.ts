@@ -4,6 +4,7 @@ import {
   type ActionCommitmentRetryTelemetry,
   type AttemptHandle,
   type AttemptObservation,
+  type EmptyCleanEofRetryTelemetry,
   type ReplayAttemptTelemetry,
   type StreamRecoveryCompletion,
   type StreamRecoveryMode
@@ -85,6 +86,7 @@ export function createHarness(
   const completions: StreamRecoveryCompletion[] = []
   const replayTelemetry: ReplayAttemptTelemetry[] = []
   const actionCommitmentRetries: ActionCommitmentRetryTelemetry[] = []
+  const emptyCleanEofRetries: EmptyCleanEofRetryTelemetry[] = []
   let terminalCalls = 0
   const signal = overrides.signal ?? new AbortController().signal
   const coordinator = new StreamRecoveryCoordinator({
@@ -111,6 +113,9 @@ export function createHarness(
     onActionCommitmentRetry: (telemetry) => {
       actionCommitmentRetries.push(telemetry)
     },
+    onEmptyCleanEofRetry: (telemetry) => {
+      emptyCleanEofRetries.push(telemetry)
+    },
     onTerminal: () => {
       terminalCalls++
     }
@@ -121,6 +126,7 @@ export function createHarness(
     completions,
     replayTelemetry,
     actionCommitmentRetries,
+    emptyCleanEofRetries,
     terminalCalls: () => terminalCalls
   }
 }
