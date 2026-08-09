@@ -193,7 +193,8 @@ describe('handleSdkSuccess — non-streaming', () => {
 describe('handleSdkSuccess — streaming', () => {
   test('attempt observation marks a clean EOF immediate action commitment', async () => {
     const observer = new StreamObserver()
-    const commitment = '我现在派两个并行任务。'
+    const commitment =
+      '实现已完成且 8 个改动文件的 LSP 诊断均为零；现在依次执行用户指定的五道完整门禁，首次成功后不重复验证。'
     const attempt = await new ResponseHandler().prepareSdkStreamingAttempt({
       sdkResponse: makeSdkResponse([{ assistantResponseEvent: { content: commitment } }]),
       model: 'auto',

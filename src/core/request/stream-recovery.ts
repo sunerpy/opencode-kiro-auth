@@ -68,6 +68,19 @@ export type ActionCommitmentRetryTelemetry = {
   readonly availableToolCount: number
 }
 
+/** First failed safety gate, or `retried` once the dedicated replay is opened. */
+export type ActionCommitmentRetryDecision =
+  | 'retried'
+  | 'mode_not_exact_replay'
+  | 'already_retried'
+  | 'attempt_budget_exhausted'
+  | 'not_clean_eof'
+  | 'no_visible_output'
+  | 'tool_output_present'
+  | 'tool_intent_seen'
+  | 'no_tools_available'
+  | 'pattern_not_detected'
+
 export type EmptyCleanEofRetryTelemetry = {
   readonly attemptIndex: number
 }
@@ -79,6 +92,10 @@ export type StreamRecoveryTerminationReason =
   | 'recovery_unavailable'
   | 'attempt_budget_exhausted'
   | 'coordinator_failure'
+
+export type StreamRecoveryTerminalTelemetry = {
+  readonly actionCommitmentRetryDecision?: ActionCommitmentRetryDecision
+}
 
 export type StreamRecoveryOptions = {
   readonly mode: StreamRecoveryMode
@@ -92,7 +109,10 @@ export type StreamRecoveryOptions = {
   readonly mapError: (failure: unknown) => Error
   readonly encodeChunk: (chunk: unknown) => Uint8Array
   readonly onComplete: (completion: StreamRecoveryCompletion) => void | Promise<void>
-  readonly onTerminal: (reason: StreamRecoveryTerminationReason) => void
+  readonly onTerminal: (
+    reason: StreamRecoveryTerminationReason,
+    telemetry: StreamRecoveryTerminalTelemetry
+  ) => void
   readonly onCancel?: (reason: unknown) => void
   readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry, failure?: Error) => void
   readonly onActionCommitmentRetry?: (
@@ -165,6 +185,7 @@ export class StreamRecoveryCoordinator {
   private actionCommitmentRetryUsed = false
   private actionCommitmentReplayPending = false
   private emptyCleanEofRetryUsed = false
+  private actionCommitmentRetryDecision: ActionCommitmentRetryDecision | undefined
   private terminal = false
   private completionFired = false
   private abortListener: (() => void) | undefined
@@ -382,29 +403,38 @@ export class StreamRecoveryCoordinator {
   private actionCommitmentRetryTelemetry(
     observation: AttemptObservation
   ): ActionCommitmentRetryTelemetry | null {
-    const pattern = observation.forwardActionCommitment
     const availableToolCount = observation.availableToolCount ?? 0
-    if (
-      this.options.mode !== 'exact_replay' ||
-      this.actionCommitmentRetryUsed ||
-      this.attemptIndex >= this.options.maxAttempts ||
-      observation.terminalSource !== 'clean_eof_without_completion_metadata' ||
-      observation.emitted.visibleChars === 0 ||
-      observation.emitted.toolCount !== 0 ||
-      this.delivered.toolUses().length !== 0 ||
-      observation.sawToolIntent ||
-      availableToolCount === 0 ||
-      pattern === null ||
-      pattern === undefined
-    ) {
-      return null
-    }
+    if (this.options.mode !== 'exact_replay')
+      return this.skipActionCommitmentRetry('mode_not_exact_replay')
+    if (this.actionCommitmentRetryUsed) return this.skipActionCommitmentRetry('already_retried')
+    if (this.attemptIndex >= this.options.maxAttempts)
+      return this.skipActionCommitmentRetry('attempt_budget_exhausted')
+    if (observation.terminalSource !== 'clean_eof_without_completion_metadata')
+      return this.skipActionCommitmentRetry('not_clean_eof')
+    if (observation.emitted.visibleChars === 0)
+      return this.skipActionCommitmentRetry('no_visible_output')
+    if (observation.emitted.toolCount !== 0 || this.delivered.toolUses().length !== 0)
+      return this.skipActionCommitmentRetry('tool_output_present')
+    if (observation.sawToolIntent) return this.skipActionCommitmentRetry('tool_intent_seen')
+    if (availableToolCount === 0) return this.skipActionCommitmentRetry('no_tools_available')
+
+    const pattern = observation.forwardActionCommitment
+    if (pattern === null || pattern === undefined)
+      return this.skipActionCommitmentRetry('pattern_not_detected')
+
     return {
       attemptIndex: this.attemptIndex,
       pattern,
       visibleChars: this.delivered.visibleText.length,
       availableToolCount
     }
+  }
+
+  private skipActionCommitmentRetry(
+    decision: Exclude<ActionCommitmentRetryDecision, 'retried'>
+  ): null {
+    this.actionCommitmentRetryDecision ??= decision
+    return null
   }
 
   private async retryActionCommitment(
@@ -419,6 +449,7 @@ export class StreamRecoveryCoordinator {
     if (this.terminal) return false
 
     this.activeRecoveryTier = 'exact_replay'
+    this.actionCommitmentRetryDecision = 'retried'
     this.actionCommitmentReplayPending = true
     this.replayMatcher = new ExactReplayMatcher({
       reasoningText: this.delivered.reasoningText,
@@ -538,6 +569,10 @@ export class StreamRecoveryCoordinator {
       this.options.signal.removeEventListener('abort', this.abortListener)
       this.abortListener = undefined
     }
-    this.options.onTerminal(reason)
+    this.options.onTerminal(reason, {
+      ...(this.actionCommitmentRetryDecision
+        ? { actionCommitmentRetryDecision: this.actionCommitmentRetryDecision }
+        : {})
+    })
   }
 }

@@ -21,6 +21,19 @@ describe('detectForwardActionCommitment', () => {
     ).toBe('en_immediate_first_person')
   })
 
+  test('detects the observed semicolon-delimited implicit Chinese execution commitment', () => {
+    const observed =
+      '实现已完成且 8 个改动文件的 LSP 诊断均为零；现在依次执行用户指定的五道完整门禁，首次成功后不重复验证。'
+
+    expect(detectForwardActionCommitment(observed)).toBe('zh_immediate_first_person')
+    expect(detectForwardActionCommitment('实现已完成；我现在执行用户指定的五道完整门禁。')).toBe(
+      'zh_immediate_first_person'
+    )
+    expect(detectForwardActionCommitment('我现在依次执行用户指定的五道完整门禁。')).toBe(
+      'zh_immediate_first_person'
+    )
+  })
+
   test('detects the observed unfinished verification sequence before a later blocker note', () => {
     const text = [
       '## 剩下要做的',
@@ -53,6 +66,9 @@ describe('detectForwardActionCommitment', () => {
       '后续计划是补充回归测试。',
       '我现在已经完成了两个任务。',
       '我现在运行正常。',
+      '你现在依次执行用户指定的五道完整门禁。',
+      '请现在依次执行以下命令。',
+      '现在依次执行以下命令即可。',
       '模型最后说“我现在运行测试”。',
       '我还没核验真实渲染，因为需要你在屏幕前登录。本轮先停在这里。',
       '我还没核验。然后你可以提交、推送。',

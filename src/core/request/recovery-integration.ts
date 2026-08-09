@@ -13,6 +13,7 @@ import {
 import {
   StreamRecoveryCoordinator,
   type StreamRecoveryMode,
+  type StreamRecoveryTerminalTelemetry,
   type StreamRecoveryTerminationReason
 } from './stream-recovery'
 
@@ -200,7 +201,10 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     }
   }
 
-  const finishTerminal = (terminationReason: StreamRecoveryTerminationReason): void => {
+  const finishTerminal = (
+    terminationReason: StreamRecoveryTerminationReason,
+    telemetry: StreamRecoveryTerminalTelemetry
+  ): void => {
     if (terminalFinished) return
     terminalFinished = true
     const terminalSummary = {
@@ -212,7 +216,10 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       recovered:
         terminationReason === 'completed' &&
         (initialFailure !== undefined || actionCommitmentRetried || emptyCleanEofRetried),
-      quotaRelevant
+      quotaRelevant,
+      ...(telemetry.actionCommitmentRetryDecision
+        ? { actionCommitmentRetryDecision: telemetry.actionCommitmentRetryDecision }
+        : {})
     }
 
     if (currentAttempt) {

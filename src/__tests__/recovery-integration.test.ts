@@ -620,12 +620,58 @@ describe('createLiveRecoveryResponse — account rotation', () => {
           finalFailure: null,
           recovered: true,
           quotaRelevant: false,
+          actionCommitmentRetryDecision: 'retried',
           terminalSource: 'clean_eof_without_completion_metadata'
         })
       ])
     } finally {
       warn.mockRestore()
     }
+  })
+
+  test('terminal record explains a clean EOF action-commitment pattern miss', async () => {
+    const answer = '当前分析已经完成。'
+    const attemptFactory: Pick<RecoveryAttemptFactory, 'open'> = {
+      open: async (_attemptIndex, selectedAccount) => ({
+        account: selectedAccount,
+        logDetails: (details = {}) => ({
+          conversationId: 'conversation-action-pattern-miss',
+          model: 'claude-opus-5-xhigh',
+          terminalSource: 'clean_eof_without_completion_metadata',
+          ...details
+        }),
+        handle: {
+          ...makeAttempt({
+            output: [chunk('answer', { content: answer }), chunk('accepted-finish', {}, 'stop')],
+            observation: {
+              emitted: { visibleChars: answer.length, toolCount: 0 },
+              sawToolIntent: false,
+              terminalSource: 'clean_eof_without_completion_metadata',
+              availableToolCount: 94,
+              forwardActionCommitment: null
+            }
+          }),
+          complete: async () => {}
+        }
+      })
+    }
+    const harness = recoveryOptions(attemptFactory)
+
+    const response = await createLiveRecoveryResponse({
+      ...harness.options,
+      mode: 'exact_replay'
+    })
+    await response.text()
+
+    expect(harness.terminalRecords()).toEqual([
+      expect.objectContaining({
+        conversationId: 'conversation-action-pattern-miss',
+        attemptsUsed: 1,
+        recovered: false,
+        actionCommitmentRetryDecision: 'pattern_not_detected',
+        terminalSource: 'clean_eof_without_completion_metadata'
+      })
+    ])
   })
 
   test('empty clean EOF retry does not classify, delay, or rotate the healthy account', async () => {
