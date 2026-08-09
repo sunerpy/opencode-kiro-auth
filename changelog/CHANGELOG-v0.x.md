@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.6](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.5...v0.20.6) (2026-08-09)
+
+
+### Bug Fixes
+
+* **request:** stop replaying clean EOF from assistant prose ([#101](https://github.com/sunerpy/opencode-kiro-auth/issues/101)) ([dd00af9](https://github.com/sunerpy/opencode-kiro-auth/commit/dd00af9d8bd7c0d46ec019536bda099289078e8f))
+
 ## [0.20.5](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.4...v0.20.5) (2026-08-09)
 
 
