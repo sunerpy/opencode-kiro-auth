@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.5](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.4...v0.20.5) (2026-08-09)
+
+
+### Bug Fixes
+
+* **request:** recognize implicit Chinese action commitments ([#99](https://github.com/sunerpy/opencode-kiro-auth/issues/99)) ([9aa8807](https://github.com/sunerpy/opencode-kiro-auth/commit/9aa880785d9ced6957542a8f8a2cf21a5135216d))
+
 ## [0.20.4](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.3...v0.20.4) (2026-08-08)
 
 
