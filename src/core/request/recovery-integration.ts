@@ -6,14 +6,10 @@ import type { RecoveryAttemptFactory, RecoveryAttemptResult } from './recovery-a
 import { accountLogAlias } from './recovery-request-identity'
 import { encodeSseChunk, type SdkStreamingAttempt } from './response-handler'
 import { UpstreamUnexpectedError } from './stream-error'
-import {
-  STREAM_ACTION_COMMITMENT_RETRY_LOG,
-  STREAM_EMPTY_CLEAN_EOF_RETRY_LOG
-} from './stream-log-events'
+import { STREAM_EMPTY_CLEAN_EOF_RETRY_LOG } from './stream-log-events'
 import {
   StreamRecoveryCoordinator,
   type StreamRecoveryMode,
-  type StreamRecoveryTerminalTelemetry,
   type StreamRecoveryTerminationReason
 } from './stream-recovery'
 
@@ -116,7 +112,6 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
   let initialFailure: unknown
   let finalFailure: unknown
   let quotaRelevant = false
-  let actionCommitmentRetried = false
   let emptyCleanEofRetried = false
 
   const getCurrentAttempt = (): RecoveryAttemptContext => {
@@ -201,10 +196,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
     }
   }
 
-  const finishTerminal = (
-    terminationReason: StreamRecoveryTerminationReason,
-    telemetry: StreamRecoveryTerminalTelemetry
-  ): void => {
+  const finishTerminal = (terminationReason: StreamRecoveryTerminationReason): void => {
     if (terminalFinished) return
     terminalFinished = true
     const terminalSummary = {
@@ -214,12 +206,8 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
       initialFailure: initialFailure === undefined ? null : options.describeError(initialFailure),
       finalFailure: finalFailure === undefined ? null : options.describeError(finalFailure),
       recovered:
-        terminationReason === 'completed' &&
-        (initialFailure !== undefined || actionCommitmentRetried || emptyCleanEofRetried),
-      quotaRelevant,
-      ...(telemetry.actionCommitmentRetryDecision
-        ? { actionCommitmentRetryDecision: telemetry.actionCommitmentRetryDecision }
-        : {})
+        terminationReason === 'completed' && (initialFailure !== undefined || emptyCleanEofRetried),
+      quotaRelevant
     }
 
     if (currentAttempt) {
@@ -363,11 +351,7 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
           attemptLogDetails(getCurrentAttempt(), 'completed', undefined, {
             outcome: 'recovered',
             attempts: options.priorStreamFailures + completion.attemptIndex,
-            ...(actionCommitmentRetried
-              ? { recoveryTrigger: 'clean_eof_action_commitment' }
-              : emptyCleanEofRetried
-                ? { recoveryTrigger: 'clean_eof_empty_response' }
-                : {})
+            ...(emptyCleanEofRetried ? { recoveryTrigger: 'clean_eof_empty_response' } : {})
           })
         )
       }
@@ -397,21 +381,6 @@ export async function createLiveRecoveryResponse(options: LiveRecoveryOptions): 
           recoveryTrigger: 'clean_eof_empty_response',
           nextAttempt: options.priorStreamFailures + telemetry.attemptIndex + 1,
           quotaNote: 'the one empty clean EOF retry consumes one real SDK send'
-        })
-      )
-    },
-    onActionCommitmentRetry: (telemetry) => {
-      actionCommitmentRetried = true
-      logger.warn(
-        STREAM_ACTION_COMMITMENT_RETRY_LOG,
-        attemptLogDetails(getCurrentAttempt(), 'exact_replay', undefined, {
-          outcome: 'retrying',
-          recoveryTrigger: 'clean_eof_action_commitment',
-          actionCommitmentPattern: telemetry.pattern,
-          actionCommitmentVisibleChars: telemetry.visibleChars,
-          availableToolCount: telemetry.availableToolCount,
-          nextAttempt: options.priorStreamFailures + telemetry.attemptIndex + 1,
-          quotaNote: 'the one clean EOF action-commitment replay consumes one real SDK send'
         })
       )
     },

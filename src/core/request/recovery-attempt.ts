@@ -208,9 +208,6 @@ export class RecoveryAttemptFactory {
     const isCurrent = (): boolean => this.services.isAccountAttemptCurrent(state.account.id, epoch)
     const attemptId = crypto.randomUUID()
     this.services.setCurrentAttemptId(attemptId)
-    const availableToolCount =
-      state.prepared.conversationState.currentMessage?.userInputMessage?.userInputMessageContext
-        ?.tools?.length ?? 0
     let completionDone = false
     const onComplete = async (completed?: SdkCompletionPayload): Promise<void> => {
       if (!completionDone) {
@@ -272,8 +269,7 @@ export class RecoveryAttemptFactory {
         ? { inheritedLoopId: this.request.inheritedLoopId }
         : {}),
       effectiveModel: state.prepared.effectiveModel,
-      recoveryMode: this.config.stream_recovery_mode,
-      availableToolCount
+      recoveryMode: this.config.stream_recovery_mode
     }
 
     const client = this.services.makeSdkClient(state.auth, state.prepared)

@@ -9,7 +9,6 @@
 
 import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output.js'
 import type { StreamTerminalSource } from '../../plugin/streaming/stream-observer.js'
-import type { ForwardActionCommitmentKind } from './action-commitment.js'
 import {
   ExactReplayMatcher,
   type ReplayDivergenceChannel,
@@ -36,8 +35,6 @@ export type AttemptObservation = {
   }
   readonly sawToolIntent: boolean
   readonly terminalSource?: StreamTerminalSource | null
-  readonly availableToolCount?: number
-  readonly forwardActionCommitment?: ForwardActionCommitmentKind | null
 }
 
 export type AttemptHandle = {
@@ -61,26 +58,6 @@ export type ReplayAttemptTelemetry = ReplayMatchProgress & {
   readonly attempts: number
 }
 
-export type ActionCommitmentRetryTelemetry = {
-  readonly attemptIndex: number
-  readonly pattern: ForwardActionCommitmentKind
-  readonly visibleChars: number
-  readonly availableToolCount: number
-}
-
-/** First failed safety gate, or `retried` once the dedicated replay is opened. */
-export type ActionCommitmentRetryDecision =
-  | 'retried'
-  | 'mode_not_exact_replay'
-  | 'already_retried'
-  | 'attempt_budget_exhausted'
-  | 'not_clean_eof'
-  | 'no_visible_output'
-  | 'tool_output_present'
-  | 'tool_intent_seen'
-  | 'no_tools_available'
-  | 'pattern_not_detected'
-
 export type EmptyCleanEofRetryTelemetry = {
   readonly attemptIndex: number
 }
@@ -92,10 +69,6 @@ export type StreamRecoveryTerminationReason =
   | 'recovery_unavailable'
   | 'attempt_budget_exhausted'
   | 'coordinator_failure'
-
-export type StreamRecoveryTerminalTelemetry = {
-  readonly actionCommitmentRetryDecision?: ActionCommitmentRetryDecision
-}
 
 export type StreamRecoveryOptions = {
   readonly mode: StreamRecoveryMode
@@ -109,15 +82,9 @@ export type StreamRecoveryOptions = {
   readonly mapError: (failure: unknown) => Error
   readonly encodeChunk: (chunk: unknown) => Uint8Array
   readonly onComplete: (completion: StreamRecoveryCompletion) => void | Promise<void>
-  readonly onTerminal: (
-    reason: StreamRecoveryTerminationReason,
-    telemetry: StreamRecoveryTerminalTelemetry
-  ) => void
+  readonly onTerminal: (reason: StreamRecoveryTerminationReason) => void
   readonly onCancel?: (reason: unknown) => void
   readonly onReplayAttempt?: (telemetry: ReplayAttemptTelemetry, failure?: Error) => void
-  readonly onActionCommitmentRetry?: (
-    telemetry: ActionCommitmentRetryTelemetry
-  ) => void | Promise<void>
   readonly onEmptyCleanEofRetry?: (telemetry: EmptyCleanEofRetryTelemetry) => void | Promise<void>
 }
 
@@ -182,10 +149,7 @@ export class StreamRecoveryCoordinator {
   private sawToolIntent = false
   private activeRecoveryTier: RecoveryTier = 'none'
   private replayMatcher: ExactReplayMatcher | undefined
-  private actionCommitmentRetryUsed = false
-  private actionCommitmentReplayPending = false
   private emptyCleanEofRetryUsed = false
-  private actionCommitmentRetryDecision: ActionCommitmentRetryDecision | undefined
   private terminal = false
   private completionFired = false
   private abortListener: (() => void) | undefined
@@ -278,11 +242,6 @@ export class StreamRecoveryCoordinator {
           continue
         }
         const observation = attempt.observed()
-        const actionCommitmentRetry = this.actionCommitmentRetryTelemetry(observation)
-        if (actionCommitmentRetry) {
-          if (!(await this.retryActionCommitment(observation, actionCommitmentRetry))) return
-          continue
-        }
         const emptyCleanEofRetry = this.emptyCleanEofRetryTelemetry(observation)
         if (emptyCleanEofRetry) {
           if (!(await this.retryEmptyCleanEof(observation, emptyCleanEofRetry))) return
@@ -303,10 +262,7 @@ export class StreamRecoveryCoordinator {
         continue
       }
       if (match?.kind === 'release') {
-        if (match.caughtUp) {
-          this.actionCommitmentReplayPending = false
-          this.reportReplayAttempt('caught_up', 'none')
-        }
+        if (match.caughtUp) this.reportReplayAttempt('caught_up', 'none')
         this.pendingDeliveryChunks.push(...match.chunks)
         continue
       }
@@ -363,13 +319,6 @@ export class StreamRecoveryCoordinator {
     await this.closeActiveAttempt()
     if (this.terminal) return false
 
-    if (this.actionCommitmentReplayPending) {
-      this.actionCommitmentReplayPending = false
-      this.finish('recovery_unavailable')
-      controller.error(this.options.mapError(failure))
-      return false
-    }
-
     const tier = decideRecoveryTier({
       mode: this.options.mode,
       emitted: {
@@ -397,66 +346,6 @@ export class StreamRecoveryCoordinator {
       })
     }
     await this.options.delayFn(this.attemptIndex, this.options.signal, failure)
-    return !this.terminal
-  }
-
-  private actionCommitmentRetryTelemetry(
-    observation: AttemptObservation
-  ): ActionCommitmentRetryTelemetry | null {
-    const availableToolCount = observation.availableToolCount ?? 0
-    if (this.options.mode !== 'exact_replay')
-      return this.skipActionCommitmentRetry('mode_not_exact_replay')
-    if (this.actionCommitmentRetryUsed) return this.skipActionCommitmentRetry('already_retried')
-    if (this.attemptIndex >= this.options.maxAttempts)
-      return this.skipActionCommitmentRetry('attempt_budget_exhausted')
-    if (observation.terminalSource !== 'clean_eof_without_completion_metadata')
-      return this.skipActionCommitmentRetry('not_clean_eof')
-    if (observation.emitted.visibleChars === 0)
-      return this.skipActionCommitmentRetry('no_visible_output')
-    if (observation.emitted.toolCount !== 0 || this.delivered.toolUses().length !== 0)
-      return this.skipActionCommitmentRetry('tool_output_present')
-    if (observation.sawToolIntent) return this.skipActionCommitmentRetry('tool_intent_seen')
-    if (availableToolCount === 0) return this.skipActionCommitmentRetry('no_tools_available')
-
-    const pattern = observation.forwardActionCommitment
-    if (pattern === null || pattern === undefined)
-      return this.skipActionCommitmentRetry('pattern_not_detected')
-
-    return {
-      attemptIndex: this.attemptIndex,
-      pattern,
-      visibleChars: this.delivered.visibleText.length,
-      availableToolCount
-    }
-  }
-
-  private skipActionCommitmentRetry(
-    decision: Exclude<ActionCommitmentRetryDecision, 'retried'>
-  ): null {
-    this.actionCommitmentRetryDecision ??= decision
-    return null
-  }
-
-  private async retryActionCommitment(
-    observation: AttemptObservation,
-    telemetry: ActionCommitmentRetryTelemetry
-  ): Promise<boolean> {
-    this.actionCommitmentRetryUsed = true
-    this.mergeObservation(observation)
-    this.pendingTerminalChunks.length = 0
-    this.pendingDeliveryChunks.length = 0
-    await this.closeActiveAttempt()
-    if (this.terminal) return false
-
-    this.activeRecoveryTier = 'exact_replay'
-    this.actionCommitmentRetryDecision = 'retried'
-    this.actionCommitmentReplayPending = true
-    this.replayMatcher = new ExactReplayMatcher({
-      reasoningText: this.delivered.reasoningText,
-      visibleText: this.delivered.visibleText,
-      toolUses: this.delivered.toolUses()
-    })
-    await this.options.onActionCommitmentRetry?.(telemetry)
     return !this.terminal
   }
 
@@ -569,10 +458,6 @@ export class StreamRecoveryCoordinator {
       this.options.signal.removeEventListener('abort', this.abortListener)
       this.abortListener = undefined
     }
-    this.options.onTerminal(reason, {
-      ...(this.actionCommitmentRetryDecision
-        ? { actionCommitmentRetryDecision: this.actionCommitmentRetryDecision }
-        : {})
-    })
+    this.options.onTerminal(reason)
   }
 }

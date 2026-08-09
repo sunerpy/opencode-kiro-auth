@@ -9,7 +9,6 @@ import { ReasoningAccumulator } from '../../plugin/streaming/reasoning-accumulat
 import { transformSdkStream } from '../../plugin/streaming/sdk-stream-transformer.js'
 import type { StreamObserver } from '../../plugin/streaming/stream-observer.js'
 import type { KiroReasoningContent } from '../../plugin/types.js'
-import { detectForwardActionCommitment } from './action-commitment.js'
 import { SdkEventStreamIterationError } from './stream-error.js'
 import type {
   AttemptHandle,
@@ -80,8 +79,6 @@ export interface SdkResponseLifecycle {
    */
   onCleanEofWithoutCompletionMetadata?: () => void
   recoveryMode?: StreamRecoveryMode
-  /** Number of callable tools present on this exact prepared request. */
-  availableToolCount?: number
 }
 
 interface WrappedSdkStream {
@@ -375,19 +372,13 @@ export class ResponseHandler {
       observed: () => {
         const observed = lifecycle.streamObserver?.snapshot()
         const toolCount = emitted.toolUses().length
-        const availableToolCount = lifecycle.availableToolCount ?? 0
         return {
           emitted: {
             visibleChars: emitted.visibleText.length,
             toolCount
           },
           sawToolIntent: observed?.sawToolIntent ?? false,
-          terminalSource: observed?.terminalSource ?? null,
-          availableToolCount,
-          forwardActionCommitment:
-            availableToolCount > 0 && toolCount === 0 && observed?.sawToolIntent !== true
-              ? detectForwardActionCommitment(emitted.visibleText)
-              : null
+          terminalSource: observed?.terminalSource ?? null
         }
       },
       close,

@@ -262,12 +262,13 @@ are already atomic by default; for ordinary requests, enable
 `stream_buffer_until_complete` when task continuity is more important than
 seeing tokens arrive live.
 
-With `stream_recovery_mode: "exact_replay"`, the plugin may make one additional
-SDK send after that otherwise-benign clean EOF only when a tool-enabled response
-ends with an explicit immediate or unfinished self-owned action commitment but
-contains no tool call or tool intent. The replay must byte-match the already
-delivered response before any new suffix is released. This is not a generic
-missing-metadata retry, and the additional SDK send consumes quota.
+Assistant prose is never interpreted as a recovery control signal. A non-empty
+clean EOF completes normally regardless of whether the response describes a next
+step. With `stream_recovery_mode` set to `reasoning_restart` or `exact_replay`, the
+plugin may spend one additional same-account SDK send only for a fully empty clean
+EOF with no tool output or tool intent. Iterator failures and unclosed tool intent
+continue through the configured recovery tier; every additional SDK send consumes
+quota.
 
 ## Migration
 

@@ -191,26 +191,24 @@ describe('handleSdkSuccess — non-streaming', () => {
 })
 
 describe('handleSdkSuccess — streaming', () => {
-  test('attempt observation marks a clean EOF immediate action commitment', async () => {
+  test('attempt observation does not classify assistant prose', async () => {
     const observer = new StreamObserver()
-    const commitment =
+    const prose =
       '实现已完成且 8 个改动文件的 LSP 诊断均为零；现在依次执行用户指定的五道完整门禁，首次成功后不重复验证。'
     const attempt = await new ResponseHandler().prepareSdkStreamingAttempt({
-      sdkResponse: makeSdkResponse([{ assistantResponseEvent: { content: commitment } }]),
+      sdkResponse: makeSdkResponse([{ assistantResponseEvent: { content: prose } }]),
       model: 'auto',
-      conversationId: 'clean-eof-action-commitment',
-      lifecycle: { streamObserver: observer, availableToolCount: 94 },
+      conversationId: 'clean-eof-action-prose',
+      lifecycle: { streamObserver: observer },
       recoveryMode: 'exact_replay'
     })
 
     while (!(await attempt.chunks.next()).done) {}
 
     expect(attempt.observed()).toEqual({
-      emitted: { visibleChars: commitment.length, toolCount: 0 },
+      emitted: { visibleChars: prose.length, toolCount: 0 },
       sawToolIntent: false,
-      terminalSource: 'clean_eof_without_completion_metadata',
-      availableToolCount: 94,
-      forwardActionCommitment: 'zh_immediate_first_person'
+      terminalSource: 'clean_eof_without_completion_metadata'
     })
     await attempt.close()
   })
