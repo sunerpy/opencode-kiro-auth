@@ -13,6 +13,27 @@ import { isInteractiveTty, ttyConfirm, ttySelect } from './tty-menu.js'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
+const USAGE_TOAST_DELAY_MS = 3000
+
+type UnrefTimer = {
+  readonly unref: () => void
+}
+
+function hasUnref(
+  timer: ReturnType<typeof setTimeout>
+): timer is ReturnType<typeof setTimeout> & UnrefTimer {
+  return typeof timer === 'object' && timer !== null && 'unref' in timer
+}
+
+function scheduleUsageToast(
+  showToast: ToastFunction,
+  message: string,
+  variant: 'info' | 'warning'
+): void {
+  const timer = setTimeout(() => showToast(message, variant), USAGE_TOAST_DELAY_MS)
+  if (hasUnref(timer)) timer.unref()
+}
+
 export class AuthHandler {
   private accountManager?: any
   private accountRefreshService?: Pick<AccountRefreshService, 'refreshAll' | 'refreshAccount'>
@@ -45,6 +66,11 @@ export class AuthHandler {
     const accounts = this.accountManager.getAccounts()
     if (!accounts.length) return
 
+    const toastEntries: Array<{
+      message: string
+      variant: 'info' | 'warning'
+    }> = []
+
     for (const acc of accounts) {
       const used = acc.usedCount ?? 0
       const limit = acc.limitCount ?? 0
@@ -52,16 +78,29 @@ export class AuthHandler {
         const pct = Math.round((used / limit) * 100)
         const msg = `Kiro usage (${acc.email}): ${used}/${limit} (${pct}%)`
         logger.log(msg)
-        if (showToast) {
-          const variant = pct >= 90 ? 'warning' : 'info'
-          setTimeout(() => showToast(msg, variant), 3000)
-        }
+        toastEntries.push({ message: msg, variant: pct >= 90 ? 'warning' : 'info' })
       } else if (used > 0) {
         const msg = `Kiro usage (${acc.email}): ${used} requests used`
         logger.log(msg)
-        if (showToast) setTimeout(() => showToast(msg, 'info'), 3000)
+        toastEntries.push({ message: msg, variant: 'info' })
       }
     }
+
+    if (!showToast || toastEntries.length === 0) return
+
+    if (toastEntries.length === 1) {
+      const entry = toastEntries[0]!
+      scheduleUsageToast(showToast, entry.message, entry.variant)
+      return
+    }
+
+    const warningCount = toastEntries.filter((entry) => entry.variant === 'warning').length
+    const warningSuffix = warningCount > 0 ? `; ${warningCount} at or above 90%` : ''
+    scheduleUsageToast(
+      showToast,
+      `Kiro usage: ${toastEntries.length}/${accounts.length} accounts tracked${warningSuffix}`,
+      warningCount > 0 ? 'warning' : 'info'
+    )
   }
 
   setAccountManager(am: any): void {

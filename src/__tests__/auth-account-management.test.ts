@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, describe, expect, jest, mock, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
 import type { RefreshAllSummary } from '../core/account/account-refresh-service.js'
 import { AuthHandler } from '../core/auth/auth-handler.js'
@@ -113,6 +113,7 @@ function makeSummary(account: FakeAccount, beforeUsed: number): RefreshAllSummar
 }
 
 afterEach(() => {
+  jest.useRealTimers()
   Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true })
   Object.defineProperty(process, 'stdout', { value: realStdout, configurable: true })
   fakeStdin = undefined
@@ -120,6 +121,50 @@ afterEach(() => {
 })
 
 describe('auth account management', () => {
+  test('startup usage reporting emits one aggregate toast for multiple accounts', async () => {
+    jest.useFakeTimers()
+    const { handler } = makeHandler([
+      {
+        id: 'near-quota',
+        email: 'near@example.com',
+        usedCount: 95,
+        limitCount: 100,
+        isHealthy: true,
+        region: 'us-east-1'
+      },
+      {
+        id: 'healthy',
+        email: 'healthy@example.com',
+        usedCount: 10,
+        limitCount: 100,
+        isHealthy: true,
+        region: 'us-east-1'
+      },
+      {
+        id: 'unbounded',
+        email: 'unbounded@example.com',
+        usedCount: 7,
+        limitCount: 0,
+        isHealthy: true,
+        region: 'us-east-1'
+      }
+    ])
+    const toasts: Array<{ message: string; variant: string }> = []
+
+    await handler.initialize((message, variant) => {
+      toasts.push({ message, variant })
+    })
+
+    expect(toasts).toEqual([])
+    jest.advanceTimersByTime(3000)
+    expect(toasts).toEqual([
+      {
+        message: 'Kiro usage: 3/3 accounts tracked; 1 at or above 90%',
+        variant: 'warning'
+      }
+    ])
+  })
+
   test('first login label includes existing accounts + usage summary', () => {
     const { handler } = makeHandler([
       {
