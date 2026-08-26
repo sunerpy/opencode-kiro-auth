@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.7](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.6...v0.20.7) (2026-08-26)
+
+
+### Bug Fixes
+
+* **auth:** aggregate startup usage notifications ([#104](https://github.com/sunerpy/opencode-kiro-auth/issues/104)) ([494db40](https://github.com/sunerpy/opencode-kiro-auth/commit/494db40aa0c20f97532ba32cd1e419f92cb4e369))
+
 ## [0.20.6](https://github.com/sunerpy/opencode-kiro-auth/compare/v0.20.5...v0.20.6) (2026-08-09)
 
 
