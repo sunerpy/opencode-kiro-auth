@@ -7,7 +7,7 @@ import { getContextWindowSize } from '../plugin/models.js'
 // tokens back to OpenCode) MUST agree with the context window the plugin
 // advertises to OpenCode in the config hook (models[id].limit.context).
 //
-// When they disagree — as they did for gpt-5.6-* (advertised 272000, but
+// When they disagree — as they did for gpt-5.6-* (advertised 1M, but
 // getContextWindowSize hard-capped at 200000) — OpenCode's overflow check
 // never trips before Kiro's real limit and the request hard-fails with
 // HTTP 400 "Input is too long." This test locks the two sources together.
@@ -35,18 +35,19 @@ describe('context-window SSOT: getContextWindowSize matches advertised limit.con
 })
 
 describe('context-window: effort/thinking suffixes resolve to the base limit', () => {
-  test('gpt-5.6-sol family is 272000, suffix-independent', () => {
-    expect(getContextWindowSize('gpt-5.6-sol')).toBe(272000)
-    expect(getContextWindowSize('gpt-5.6-sol-max')).toBe(272000)
+  test('gpt-5.6-sol family is 1000000, suffix-independent', () => {
+    expect(getContextWindowSize('gpt-5.6-sol')).toBe(1000000)
+    expect(getContextWindowSize('gpt-5.6-sol-max')).toBe(1000000)
     expect(getContextWindowSize('gpt-5.6-sol-xhigh')).toBe(getContextWindowSize('gpt-5.6-sol'))
-    expect(getContextWindowSize('gpt-5.6-terra-high')).toBe(272000)
-    expect(getContextWindowSize('gpt-5.6-luna-low')).toBe(272000)
+    expect(getContextWindowSize('gpt-5.6-terra-high')).toBe(1000000)
+    expect(getContextWindowSize('gpt-5.6-luna-low')).toBe(1000000)
   })
 
   test('claude opus/sonnet long-context families are 1000000, suffix-independent', () => {
     expect(getContextWindowSize('claude-opus-5')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-5-xhigh')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-5-thinking')).toBe(1000000)
+    expect(getContextWindowSize('claude-opus-5-5')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-4-8')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-4-8-xhigh')).toBe(1000000)
     expect(getContextWindowSize('claude-opus-4-8-thinking')).toBe(1000000)

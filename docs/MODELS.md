@@ -160,6 +160,11 @@ Haiku variants plus the open-weight models Kiro proxies):
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5 (2.0x)",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+        },
         "claude-opus-5": {
           "name": "Claude Opus 5",
           "limit": { "context": 1000000, "output": 64000 },
@@ -252,18 +257,18 @@ Haiku variants plus the open-weight models Kiro proxies):
           "limit": { "context": 256000, "output": 64000 }
         },
         "gpt-5.6-sol": {
-          "name": "GPT 5.6 Sol (2.4x)",
-          "limit": { "context": 272000, "output": 64000 },
+          "name": "GPT 5.6 Sol (4.4x)",
+          "limit": { "context": 1000000, "output": 64000 },
           "modalities": { "input": ["text", "image"], "output": ["text"] }
         },
         "gpt-5.6-terra": {
-          "name": "GPT 5.6 Terra (1.2x)",
-          "limit": { "context": 272000, "output": 64000 },
+          "name": "GPT 5.6 Terra (2.2x)",
+          "limit": { "context": 1000000, "output": 64000 },
           "modalities": { "input": ["text", "image"], "output": ["text"] }
         },
         "gpt-5.6-luna": {
-          "name": "GPT 5.6 Luna",
-          "limit": { "context": 272000, "output": 64000 },
+          "name": "GPT 5.6 Luna (1.1x)",
+          "limit": { "context": 1000000, "output": 64000 },
           "modalities": { "input": ["text", "image"], "output": ["text"] }
         }
       }
@@ -279,7 +284,7 @@ Haiku variants plus the open-weight models Kiro proxies):
 > [docs/VARIANTS.md](VARIANTS.md).
 >
 > **GPT 5.6 (Sol / Terra / Luna)** are OpenAI models Kiro proxies via Mantle,
-> each with a 272k context window and **text + image** input. Their wire ids
+> each with a 1M context window and **text + image** input. Their wire ids
 > (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) were confirmed against the
 > live `generateAssistantResponse` endpoint (HTTP 200, `us-east-1`).
 >

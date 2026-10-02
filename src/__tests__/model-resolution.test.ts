@@ -65,6 +65,10 @@ describe('resolveKiroModel', () => {
     expect(resolveKiroModel('claude-opus-5-thinking')).toBe(resolveKiroModel('claude-opus-5'))
   })
 
+  test('resolves probe-confirmed Opus 5.5 to its dotted wire id', () => {
+    expect(resolveKiroModel('claude-opus-5-5')).toBe('claude-opus-5.5')
+  })
+
   test('rejects an unconfirmed Opus slug (claude-opus-9)', () => {
     expect(() => resolveKiroModel('claude-opus-9')).toThrow('Unsupported model')
   })
