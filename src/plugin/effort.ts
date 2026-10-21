@@ -18,9 +18,11 @@ const GPT_REASONING_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-l
  * These models support up to 128k thinking tokens with max effort.
  */
 const XHIGH_CAPABLE_MODELS = new Set([
+  'claude-opus-5.5',
   'claude-opus-5',
   'claude-opus-4.7',
   'claude-opus-4.8',
+  'claude-sonnet-5.5',
   'claude-sonnet-5',
   ...GPT_REASONING_MODELS
 ])

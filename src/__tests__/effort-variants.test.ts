@@ -40,6 +40,24 @@ describe('resolveModelVariant', () => {
       }
     })
 
+    test('all claude-opus-5-5 effort variants resolve to wire id claude-opus-5.5', () => {
+      for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+        expect(resolveModelVariant(`claude-opus-5-5-${effort}`)).toEqual({
+          wireId: 'claude-opus-5.5',
+          effort
+        })
+      }
+    })
+
+    test('all claude-sonnet-5-5 effort variants resolve to wire id claude-sonnet-5.5', () => {
+      for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+        expect(resolveModelVariant(`claude-sonnet-5-5-${effort}`)).toEqual({
+          wireId: 'claude-sonnet-5.5',
+          effort
+        })
+      }
+    })
+
     test('claude-sonnet-4-6-max -> {wireId: claude-sonnet-4.6, effort: max}', () => {
       expect(resolveModelVariant('claude-sonnet-4-6-max')).toEqual({
         wireId: 'claude-sonnet-4.6',
@@ -129,6 +147,15 @@ describe('effort capability', () => {
     expect(supportsEffort('claude-sonnet-5')).toBe(true)
     expect(supportsXHighEffort('claude-sonnet-5')).toBe(true)
     expect(resolveEffort('claude-sonnet-5', 'xhigh')).toBe('xhigh')
+  })
+
+  test('claude-opus-5.5 and claude-sonnet-5.5 support effort and xhigh (probe-confirmed)', () => {
+    for (const wire of ['claude-opus-5.5', 'claude-sonnet-5.5']) {
+      expect(supportsEffort(wire)).toBe(true)
+      expect(supportsXHighEffort(wire)).toBe(true)
+      expect(resolveEffort(wire, 'xhigh')).toBe('xhigh')
+      expect(resolveEffort(wire, 'max')).toBe('max')
+    }
   })
 
   test('gpt-5.6 models support effort and xhigh (probe-confirmed, credits scale)', () => {
