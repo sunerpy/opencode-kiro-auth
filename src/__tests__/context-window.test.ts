@@ -52,6 +52,11 @@ describe('context-window: effort/thinking suffixes resolve to the base limit', (
     expect(getContextWindowSize('claude-opus-4-8-thinking')).toBe(1000000)
     expect(getContextWindowSize('claude-sonnet-5-max')).toBe(1000000)
     expect(getContextWindowSize('claude-sonnet-4-6-medium')).toBe(1000000)
+    expect(getContextWindowSize('claude-opus-5-5')).toBe(1000000)
+    expect(getContextWindowSize('claude-opus-5-5-xhigh')).toBe(1000000)
+    expect(getContextWindowSize('claude-opus-5-5-thinking')).toBe(1000000)
+    expect(getContextWindowSize('claude-sonnet-5-5')).toBe(1000000)
+    expect(getContextWindowSize('claude-sonnet-5-5-max')).toBe(1000000)
   })
 
   test('standard-context and open-weight bases keep their advertised sizes', () => {

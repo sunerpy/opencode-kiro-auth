@@ -193,6 +193,36 @@ export const createKiroPlugin =
               limit: { context: 1000000, output: 64000 },
               modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
             },
+            'claude-sonnet-5-5': {
+              name: 'Claude Sonnet 5.5 (1.3x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-sonnet-5-5-low': {
+              name: 'Claude Sonnet 5.5 (low) (1.3x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-sonnet-5-5-medium': {
+              name: 'Claude Sonnet 5.5 (medium) (1.3x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-sonnet-5-5-high': {
+              name: 'Claude Sonnet 5.5 (high) (1.3x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-sonnet-5-5-xhigh': {
+              name: 'Claude Sonnet 5.5 (xhigh) (1.3x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-sonnet-5-5-max': {
+              name: 'Claude Sonnet 5.5 (max) (1.3x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
             // Claude Haiku
             'claude-haiku-4-5': {
               name: 'Claude Haiku 4.5 (0.4x)',
@@ -302,6 +332,36 @@ export const createKiroPlugin =
             },
             'claude-opus-5-max': {
               name: 'Claude Opus 5 (max) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-5': {
+              name: 'Claude Opus 5.5 (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-5-low': {
+              name: 'Claude Opus 5.5 (low) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-5-medium': {
+              name: 'Claude Opus 5.5 (medium) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-5-high': {
+              name: 'Claude Opus 5.5 (high) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-5-xhigh': {
+              name: 'Claude Opus 5.5 (xhigh) (2.2x)',
+              limit: { context: 1000000, output: 64000 },
+              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
+            },
+            'claude-opus-5-5-max': {
+              name: 'Claude Opus 5.5 (max) (2.2x)',
               limit: { context: 1000000, output: 64000 },
               modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
             },

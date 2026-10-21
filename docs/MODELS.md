@@ -176,6 +176,38 @@ Haiku variants plus the open-weight models Kiro proxies):
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+        },
+        "claude-opus-5-5-thinking": {
+          "name": "Claude Opus 5.5 Thinking",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "variants": {
+            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
+            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
+            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
+          }
+        },
+        "claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+        },
+        "claude-sonnet-5-5-thinking": {
+          "name": "Claude Sonnet 5.5 Thinking",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "variants": {
+            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
+            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
+            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
+          }
+        },
         "claude-sonnet-4-5-1m": {
           "name": "Claude Sonnet 4.5 (1M Context)",
           "limit": { "context": 1000000, "output": 64000 },
@@ -277,6 +309,12 @@ Haiku variants plus the open-weight models Kiro proxies):
 > levels. The default model list exposes `claude-opus-5` plus the
 > `-low` / `-medium` / `-high` / `-xhigh` / `-max` variants documented in
 > [docs/VARIANTS.md](VARIANTS.md).
+>
+> **Claude Opus 5.5** and **Claude Sonnet 5.5** use the probe-confirmed
+> `claude-opus-5.5` and `claude-sonnet-5.5` wire ids, each with a 1M context
+> window, text/image/PDF input, and all five Kiro effort levels. Their default
+> model ids are `claude-opus-5-5` and `claude-sonnet-5-5` (plus the
+> `-low` / `-medium` / `-high` / `-xhigh` / `-max` effort variants).
 >
 > **GPT 5.6 (Sol / Terra / Luna)** are OpenAI models Kiro proxies via Mantle,
 > each with a 272k context window and **text + image** input. Their wire ids

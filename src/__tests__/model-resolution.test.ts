@@ -65,6 +65,12 @@ describe('resolveKiroModel', () => {
     expect(resolveKiroModel('claude-opus-5-thinking')).toBe(resolveKiroModel('claude-opus-5'))
   })
 
+  test('resolves probe-confirmed Opus 5.5 to wire id claude-opus-5.5', () => {
+    expect(resolveKiroModel('claude-opus-5-5')).toBe('claude-opus-5.5')
+    expect(resolveKiroModel('claude-opus-5-5-thinking')).toBe('claude-opus-5.5')
+    expect(resolveKiroModel('claude-opus-5-5-thinking')).toBe(resolveKiroModel('claude-opus-5-5'))
+  })
+
   test('rejects an unconfirmed Opus slug (claude-opus-9)', () => {
     expect(() => resolveKiroModel('claude-opus-9')).toThrow('Unsupported model')
   })
@@ -73,6 +79,14 @@ describe('resolveKiroModel', () => {
     expect(resolveKiroModel('claude-sonnet-5')).toBe('claude-sonnet-5')
     expect(resolveKiroModel('claude-sonnet-5-thinking')).toBe('claude-sonnet-5')
     expect(resolveKiroModel('claude-sonnet-5-thinking')).toBe(resolveKiroModel('claude-sonnet-5'))
+  })
+
+  test('resolves probe-confirmed Sonnet 5.5 to wire id claude-sonnet-5.5', () => {
+    expect(resolveKiroModel('claude-sonnet-5-5')).toBe('claude-sonnet-5.5')
+    expect(resolveKiroModel('claude-sonnet-5-5-thinking')).toBe('claude-sonnet-5.5')
+    expect(resolveKiroModel('claude-sonnet-5-5-thinking')).toBe(
+      resolveKiroModel('claude-sonnet-5-5')
+    )
   })
 
   test('rejects the probe-rejected Sonnet 5 variants (.0 and -1m returned 400)', () => {
